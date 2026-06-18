@@ -33,8 +33,8 @@ use windows::Win32::System::Pipes::{
 };
 
 use dlp_common::hook_ipc::CacheHint;
+use dlp_common::{AccessContext, Action, Environment, EvaluateRequest, Resource, Subject};
 use dlp_common::{Classification, Decision, HookRequest, HookResponse};
-use dlp_common::{Action, EvaluateRequest, Resource, Subject, Environment, AccessContext};
 
 use crate::interception::policy_mapper::PolicyMapper;
 use crate::ipc::frame::{read_frame, write_frame};
@@ -330,10 +330,8 @@ impl HookIpcServer {
             // PolicyMapper::provisional_classification in hook_request_to_evaluate_request).
             // The response does not carry classification directly; we use the
             // classification from the request that produced the response.
-            let cache_hint = build_cache_hint(
-                &req.path,
-                Some(evaluate_request.resource.classification),
-            );
+            let cache_hint =
+                build_cache_hint(&req.path, Some(evaluate_request.resource.classification));
 
             HookResponse {
                 decision: evaluate_response.decision,
@@ -773,7 +771,8 @@ pub fn close_pipe(pipe: HANDLE) {
 /// Test helper: starts a [`HookIpcServer`] on a dedicated thread using the
 /// given handler, waits until the pipe is ready, and returns the thread
 /// handle so the caller can join it later (or let it run).
-#[cfg(test)]
+///
+/// Available in both unit tests and integration tests.
 pub fn start_mock_server(
     pipe_name: &str,
     handler: HookHandler,
@@ -840,6 +839,8 @@ mod tests {
                 cache_version: 0,
                 protocol_version: 1,
                 op: dlp_common::hook_ipc::HookOp::Read,
+                source_volume_class: None,
+                destination_volume_class: None,
             };
 
             let start = Instant::now();
@@ -903,6 +904,8 @@ mod tests {
             cache_version: 0,
             protocol_version: 1,
             op: dlp_common::hook_ipc::HookOp::Read,
+            source_volume_class: None,
+            destination_volume_class: None,
         };
         let resp = send_request(client, &req).expect("send empty path request");
         assert_eq!(resp.decision, Decision::ALLOW);
@@ -1079,6 +1082,8 @@ mod tests {
             cache_version: 0,
             protocol_version: 1,
             op: dlp_common::hook_ipc::HookOp::Write,
+            source_volume_class: None,
+            destination_volume_class: None,
         };
 
         // Serialisation itself should succeed.
@@ -1123,6 +1128,8 @@ mod tests {
             cache_version: 5, // stale
             protocol_version: 1,
             op: dlp_common::hook_ipc::HookOp::Write,
+            source_volume_class: None,
+            destination_volume_class: None,
         };
 
         let resp = handle_hook_request(req, &inner, &cache, None);
@@ -1154,6 +1161,8 @@ mod tests {
             cache_version: 42, // fresh
             protocol_version: 1,
             op: dlp_common::hook_ipc::HookOp::Read,
+            source_volume_class: None,
+            destination_volume_class: None,
         };
 
         let resp = handle_hook_request(req, &inner, &cache, None);
@@ -1181,6 +1190,8 @@ mod tests {
             cache_version: 0, // never seen cache
             protocol_version: 1,
             op: dlp_common::hook_ipc::HookOp::Write,
+            source_volume_class: None,
+            destination_volume_class: None,
         };
 
         let resp = handle_hook_request(req, &inner, &cache, None);
@@ -1296,6 +1307,8 @@ mod tests {
             cache_version: 0,
             protocol_version: 1,
             op: dlp_common::hook_ipc::HookOp::Read,
+            source_volume_class: None,
+            destination_volume_class: None,
         };
         let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
             payload: dlp_common::hook_ipc::IpcPayloadV1::Request(req),
@@ -1333,6 +1346,8 @@ mod tests {
             cache_version: 0,
             protocol_version: 1,
             op: dlp_common::hook_ipc::HookOp::Write,
+            source_volume_class: None,
+            destination_volume_class: None,
         };
         let raw_bytes = bincode::serialize(&req).unwrap();
 
@@ -1476,6 +1491,8 @@ mod tests {
             cache_version: 1,
             protocol_version: 1,
             op: dlp_common::hook_ipc::HookOp::Write,
+            source_volume_class: None,
+            destination_volume_class: None,
         };
 
         let resp = handle_hook_request(req, &inner, &cache, Some(&approval_cache));
@@ -1504,6 +1521,8 @@ mod tests {
             cache_version: 1,
             protocol_version: 1,
             op: dlp_common::hook_ipc::HookOp::Read,
+            source_volume_class: None,
+            destination_volume_class: None,
         };
 
         let resp = handle_hook_request(req, &inner, &cache, None);

@@ -2802,6 +2802,8 @@ mod print_tc {
             destination_application: None,
             source_origin: None,
             destination_origin: None,
+            source_volume_class: None,
+            destination_volume_class: None,
         }
     }
 

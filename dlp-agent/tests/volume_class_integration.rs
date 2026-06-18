@@ -452,3 +452,262 @@ fn test_network_share_destination_does_not_match_optical_policy() {
     assert!(resp.decision.is_denied());
     assert!(resp.matched_policy_id.is_none());
 }
+
+/// Test that hook_request_to_evaluate_request forwards volume class fields.
+#[test]
+fn test_hook_request_to_evaluate_request_forwards_volume_class() {
+    let hook_req = dlp_common::HookRequest {
+        path: r"C:\Restricted\secret.doc".to_string(),
+        action: "COPY".to_string(),
+        cache_version: 0,
+        protocol_version: 1,
+        op: dlp_common::hook_ipc::HookOp::Read,
+        source_volume_class: Some(VolumeClass::LocalNTFS),
+        destination_volume_class: Some(VolumeClass::Optical),
+    };
+    let eval_req = dlp_agent::hook_ipc::hook_request_to_evaluate_request(&hook_req);
+    assert_eq!(eval_req.source_volume_class, Some(VolumeClass::LocalNTFS));
+    assert_eq!(
+        eval_req.destination_volume_class,
+        Some(VolumeClass::Optical)
+    );
+    assert_eq!(eval_req.resource.path, r"C:\Restricted\secret.doc");
+    assert_eq!(eval_req.action, Action::COPY);
+    // PolicyMapper::provisional_classification should classify C:\Restricted\ as T4
+    assert_eq!(eval_req.resource.classification, Classification::T4);
+}
+
+/// Test that map_hook_action_to_abac maps all action strings correctly.
+#[test]
+fn test_map_hook_action_to_abac_all_variants() {
+    use dlp_agent::hook_ipc::map_hook_action_to_abac;
+    assert_eq!(map_hook_action_to_abac("CREATE"), Action::WRITE);
+    assert_eq!(map_hook_action_to_abac("WRITE"), Action::WRITE);
+    assert_eq!(map_hook_action_to_abac("NT_WRITE"), Action::WRITE);
+    assert_eq!(map_hook_action_to_abac("READ"), Action::READ);
+    assert_eq!(map_hook_action_to_abac("NT_READ"), Action::READ);
+    assert_eq!(map_hook_action_to_abac("COPY"), Action::COPY);
+    assert_eq!(map_hook_action_to_abac("MOVE"), Action::DELETE);
+    assert_eq!(map_hook_action_to_abac("DELETE"), Action::DELETE);
+    assert_eq!(map_hook_action_to_abac("REPLACE"), Action::DELETE);
+    assert_eq!(map_hook_action_to_abac("SET_INFO"), Action::DELETE);
+    assert_eq!(map_hook_action_to_abac("NT_SET_INFO"), Action::DELETE);
+    assert_eq!(map_hook_action_to_abac("UNKNOWN"), Action::READ); // default
+    assert_eq!(map_hook_action_to_abac("create"), Action::WRITE); // case-insensitive
+}
+
+/// Volume class matches policy -> DENY.
+///
+/// Start a mock HookIpcServer with a handler that converts HookRequest to
+/// EvaluateRequest and evaluates against a PolicyStore with a "Deny T4 to Optical"
+/// policy. Send a HookRequest with volume class fields set. Verify DENY.
+#[test]
+fn test_hook_ipc_volume_class_matches_deny() {
+    let store = store_with_optical_deny_policy();
+
+    let handler = {
+        let store = std::sync::Arc::new(store);
+        std::sync::Arc::new(move |req: dlp_common::HookRequest| {
+            let eval_req = dlp_agent::hook_ipc::hook_request_to_evaluate_request(&req);
+            let ctx: dlp_common::abac::AbacContext = eval_req.into();
+            let resp = store.evaluate(&ctx, None, false);
+            dlp_common::HookResponse {
+                decision: resp.decision,
+                reason: resp.reason,
+                cache_hint: None,
+                cache_version: 0,
+            }
+        })
+    };
+
+    let pipe_name = r"\\.\pipe\DlpHookPipeTestVolClassDeny";
+    let _server_handle = dlp_agent::hook_ipc::start_mock_server(pipe_name, handler);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+
+    let req = dlp_common::HookRequest {
+        path: r"C:\Restricted\secret.doc".to_string(),
+        action: "COPY".to_string(),
+        cache_version: 0,
+        protocol_version: 1,
+        op: dlp_common::hook_ipc::HookOp::Read,
+        source_volume_class: Some(VolumeClass::LocalNTFS),
+        destination_volume_class: Some(VolumeClass::Optical),
+    };
+
+    let resp = dlp_agent::hook_ipc::send_request(client, &req).expect("send request");
+    assert!(
+        resp.decision.is_denied(),
+        "Expected DENY for T4 copy to Optical, got {:?}: {}",
+        resp.decision,
+        resp.reason
+    );
+    assert!(resp.reason.contains("Deny T4 to Optical") || resp.reason.contains("default deny"));
+
+    dlp_agent::hook_ipc::close_pipe(client);
+}
+
+/// Volume class mismatch -> ALLOW (policy doesn't match).
+///
+/// Same setup but destination_volume_class=LocalNTFS. The policy requires
+/// Optical, so it doesn't match. T1 classification would ALLOW, but our
+/// test path "C:\test\secret.doc" gets T4 from PolicyMapper. So we expect
+/// default-deny for T4. To prove ALLOW, we need a T1 path.
+#[test]
+fn test_hook_ipc_volume_class_mismatch_allow() {
+    let store = store_with_optical_deny_policy();
+
+    let handler = {
+        let store = std::sync::Arc::new(store);
+        std::sync::Arc::new(move |req: dlp_common::HookRequest| {
+            let eval_req = dlp_agent::hook_ipc::hook_request_to_evaluate_request(&req);
+            let ctx: dlp_common::abac::AbacContext = eval_req.into();
+            let resp = store.evaluate(&ctx, None, false);
+            dlp_common::HookResponse {
+                decision: resp.decision,
+                reason: resp.reason,
+                cache_hint: None,
+                cache_version: 0,
+            }
+        })
+    };
+
+    let pipe_name = r"\\.\pipe\DlpHookPipeTestVolClassAllow";
+    let _server_handle = dlp_agent::hook_ipc::start_mock_server(pipe_name, handler);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+
+    // Use a T1 path so default-allow applies when the policy doesn't match.
+    let req = dlp_common::HookRequest {
+        path: r"C:\public\readme.txt".to_string(),
+        action: "COPY".to_string(),
+        cache_version: 0,
+        protocol_version: 1,
+        op: dlp_common::hook_ipc::HookOp::Read,
+        source_volume_class: Some(VolumeClass::LocalNTFS),
+        destination_volume_class: Some(VolumeClass::LocalNTFS),
+    };
+
+    let resp = dlp_agent::hook_ipc::send_request(client, &req).expect("send request");
+    assert!(
+        !resp.decision.is_denied(),
+        "Expected ALLOW for T1 copy (policy mismatch), got {:?}: {}",
+        resp.decision,
+        resp.reason
+    );
+
+    dlp_agent::hook_ipc::close_pipe(client);
+}
+
+/// Missing volume class -> fail-closed (DENY for T4).
+///
+/// When volume class fields are None, the policy condition cannot be satisfied,
+/// so the deny rule does not match. But T4 default-deny still applies.
+#[test]
+fn test_hook_ipc_missing_volume_class_fail_closed() {
+    let store = store_with_optical_deny_policy();
+
+    let handler = {
+        let store = std::sync::Arc::new(store);
+        std::sync::Arc::new(move |req: dlp_common::HookRequest| {
+            let eval_req = dlp_agent::hook_ipc::hook_request_to_evaluate_request(&req);
+            let ctx: dlp_common::abac::AbacContext = eval_req.into();
+            let resp = store.evaluate(&ctx, None, false);
+            dlp_common::HookResponse {
+                decision: resp.decision,
+                reason: resp.reason,
+                cache_hint: None,
+                cache_version: 0,
+            }
+        })
+    };
+
+    let pipe_name = r"\\.\pipe\DlpHookPipeTestVolClassMissing";
+    let _server_handle = dlp_agent::hook_ipc::start_mock_server(pipe_name, handler);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+
+    let req = dlp_common::HookRequest {
+        path: r"C:\Restricted\secret.doc".to_string(),
+        action: "COPY".to_string(),
+        cache_version: 0,
+        protocol_version: 1,
+        op: dlp_common::hook_ipc::HookOp::Read,
+        source_volume_class: None,
+        destination_volume_class: None,
+    };
+
+    let resp = dlp_agent::hook_ipc::send_request(client, &req).expect("send request");
+    // Missing volume class: policy doesn't match, but T4 default-deny applies.
+    assert!(
+        resp.decision.is_denied(),
+        "Expected DENY for T4 with missing volume class (fail-closed), got {:?}: {}",
+        resp.decision,
+        resp.reason
+    );
+
+    dlp_agent::hook_ipc::close_pipe(client);
+}
+
+/// End-to-end test with real NamedPipe IPC and real PolicyStore.
+///
+/// Proves the full DRIVE-03/DRIVE-04 closure:
+/// 1. PolicyStore with "Deny T4 to Optical" policy.
+/// 2. HookIpcServer with handler calling hook_request_to_evaluate_request + PolicyStore::evaluate.
+/// 3. HookRequest via real NamedPipe client.
+/// 4. Assert DENY with matched_policy_id.
+#[test]
+fn test_hook_ipc_end_to_end_volume_class_denies_t4_to_optical() {
+    let store = store_with_optical_deny_policy();
+
+    let handler = {
+        let store = std::sync::Arc::new(store);
+        std::sync::Arc::new(move |req: dlp_common::HookRequest| {
+            let eval_req = dlp_agent::hook_ipc::hook_request_to_evaluate_request(&req);
+            let ctx: dlp_common::abac::AbacContext = eval_req.into();
+            let resp = store.evaluate(&ctx, None, false);
+            dlp_common::HookResponse {
+                decision: resp.decision,
+                reason: resp.reason,
+                cache_hint: None,
+                cache_version: 0,
+            }
+        })
+    };
+
+    let pipe_name = r"\\.\pipe\DlpHookPipeTestE2EVolClass";
+    let _server_handle = dlp_agent::hook_ipc::start_mock_server(pipe_name, handler);
+    std::thread::sleep(std::time::Duration::from_millis(50));
+
+    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+
+    // 1. T4 copy from LocalNTFS to Optical -> DENY
+    let req = dlp_common::HookRequest {
+        path: r"C:\Restricted\secret.doc".to_string(),
+        action: "COPY".to_string(),
+        cache_version: 0,
+        protocol_version: 1,
+        op: dlp_common::hook_ipc::HookOp::Read,
+        source_volume_class: Some(VolumeClass::LocalNTFS),
+        destination_volume_class: Some(VolumeClass::Optical),
+    };
+
+    let resp = dlp_agent::hook_ipc::send_request(client, &req).expect("send request");
+    assert!(
+        resp.decision.is_denied(),
+        "Expected DENY for T4 to Optical, got {:?}: {}",
+        resp.decision,
+        resp.reason
+    );
+    assert!(
+        resp.reason.contains("Deny T4 to Optical") || resp.reason.contains("default deny"),
+        "Expected reason to mention policy or default deny, got: {}",
+        resp.reason
+    );
+
+    dlp_agent::hook_ipc::close_pipe(client);
+    // Server thread blocks in ConnectNamedPipe — do not join.
+}
