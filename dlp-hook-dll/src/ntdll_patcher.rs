@@ -655,6 +655,8 @@ pub fn build_bypass_alert_envelope(
     timestamp_secs: u64,
     pid: u32,
 ) -> dlp_common::hook_ipc::IpcEnvelope {
+    // TODO(Phase-53-followup): populate ETW correlation fields (agent_id, image_path,
+    // file_path, operation, severity, correlation_reason) from the actual ETW event.
     let alert = dlp_common::hook_ipc::BypassAlert {
         reason,
         stub_name: stub_name.to_string(),
