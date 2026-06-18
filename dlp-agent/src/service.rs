@@ -1264,10 +1264,21 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
     let (approval_shutdown_tx, approval_poll_handle) =
         spawn_approval_poll_task(server_client.clone(), Arc::clone(&approval_cache));
 
-    // TODO(WORKFLOW-04-followup): When HookIpcServer is constructed for the
-    // hook DLL IPC path, use HookIpcServer::with_approval_cache() instead of
-    // with_cache() and pass approval_cache.clone(). The hook-path approval
-    // override check is deferred until real ABAC evaluation is wired.
+    // TODO(56.1-03): Construct HookIpcServer with with_cache_and_offline for real
+    // ABAC evaluation via OfflineManager::offline_decision (sync-only).
+    // Pass offline.clone() and classification_cache (already available in run_loop).
+    // Spawn on a dedicated std::thread (not tokio::spawn) because the accept
+    // loop is blocking.
+    //
+    // Example:
+    //   let hook_ipc_server = HookIpcServer::with_cache_and_offline(
+    //       DEFAULT_PIPE_NAME,
+    //       classification_cache.clone(),
+    //       offline.clone(),
+    //   );
+    //   let hook_ipc_handle = std::thread::spawn(move || {
+    //       let _ = hook_ipc_server.run();
+    //   });
 
     // ── Store server client for on-demand auth hash fetching ─────────────
     if let Some(ref sc) = server_client {

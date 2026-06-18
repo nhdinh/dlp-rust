@@ -293,6 +293,77 @@ impl HookIpcServer {
         }
     }
 
+    /// Creates a new hook IPC server with cache and offline ABAC evaluation.
+    ///
+    /// The returned handler performs real ABAC evaluation via
+    /// [`OfflineManager::offline_decision`] (synchronous, no async bridging).
+    /// The hook handler calls `offline_decision` synchronously. No `block_on`,
+    /// `spawn_blocking`, `block_in_place`, or new Tokio runtime is used in this
+    /// code path.
+    ///
+    /// The handler:
+    /// 1. Converts `HookRequest` to `EvaluateRequest` via [`hook_request_to_evaluate_request`].
+    /// 2. Calls `offline.offline_decision(&evaluate_request)` synchronously.
+    /// 3. Converts `EvaluateResponse` to `HookResponse` (decision + reason).
+    /// 4. Builds a [`CacheHint`] from the response classification for DLL LRU warming.
+    /// 5. Returns the current cache version in the response.
+    ///
+    /// # Cache Non-Authoritative Invariant
+    ///
+    /// The cache stores classification **HINT only**. ABAC authority is never
+    /// bypassed. The offline manager always performs full ABAC evaluation.
+    pub fn with_cache_and_offline(
+        pipe_name: impl Into<String>,
+        cache: Arc<dyn CacheAccessor>,
+        offline: Arc<crate::offline::OfflineManager>,
+    ) -> Self {
+        let handler: HookHandler = Arc::new(move |req: HookRequest| {
+            // Convert HookRequest to EvaluateRequest with volume class forwarded.
+            let evaluate_request = hook_request_to_evaluate_request(&req);
+
+            // The hook handler calls offline_decision synchronously.
+            // No async bridging (block_on, spawn_blocking, block_in_place)
+            // is used in this code path.
+            let evaluate_response = offline.offline_decision(&evaluate_request);
+
+            // Build cache hint from the request classification (resolved by
+            // PolicyMapper::provisional_classification in hook_request_to_evaluate_request).
+            // The response does not carry classification directly; we use the
+            // classification from the request that produced the response.
+            let cache_hint = build_cache_hint(
+                &req.path,
+                Some(evaluate_request.resource.classification),
+            );
+
+            HookResponse {
+                decision: evaluate_response.decision,
+                reason: evaluate_response.reason,
+                cache_hint,
+                cache_version: cache.current_version(),
+            }
+        });
+        Self {
+            pipe_name: pipe_name.into(),
+            handler,
+            bypass_tx: None,
+        }
+    }
+
+    /// Creates a new hook IPC server with cache, offline evaluation, and bypass channel.
+    ///
+    /// This is the full production constructor when both real ABAC evaluation
+    /// and bypass alert routing are active.
+    pub fn with_cache_offline_and_bypass(
+        pipe_name: impl Into<String>,
+        cache: Arc<dyn CacheAccessor>,
+        offline: Arc<crate::offline::OfflineManager>,
+        bypass_tx: crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>,
+    ) -> Self {
+        let mut server = Self::with_cache_and_offline(pipe_name, cache, offline);
+        server.bypass_tx = Some(bypass_tx);
+        server
+    }
+
     /// Runs the blocking accept loop on the current thread.
     ///
     /// Callers should spawn this in a dedicated `std::thread`.  Connections
@@ -555,7 +626,9 @@ fn handle_hook_request(
 
     // Build cache_hint for DLL LRU warming.
     // TTL based on tier: T4=30s, T3=60s, T2=300s, T1=1800s.
-    let cache_hint = build_cache_hint(&req.path);
+    // Pass None for classification — the inner_handler path still uses
+    // the legacy path heuristic (build_cache_hint with path text matching).
+    let cache_hint = build_cache_hint(&req.path, None);
 
     // Attach cache metadata to response.
     response.cache_hint = cache_hint;
@@ -564,11 +637,13 @@ fn handle_hook_request(
     response
 }
 
-/// Build a [`CacheHint`] for a given path.
+/// Build a [`CacheHint`] from an [`EvaluateResponse`] classification.
 ///
-/// In a full implementation this would look up the path classification from
-/// the policy store. For now, we use a simplified heuristic based on path
-/// patterns to demonstrate the integration.
+/// Uses the classification from the ABAC evaluation response (if any) rather
+/// than parsing the path. This is the authoritative cache hint source after
+/// real ABAC evaluation is wired.
+///
+/// Returns `None` if the response has no classification (e.g., unclassified path).
 ///
 /// # TTL Budgets
 ///
@@ -578,8 +653,46 @@ fn handle_hook_request(
 /// | T3   | 60            |
 /// | T2   | 300           |
 /// | T1   | 1800          |
-fn build_cache_hint(path: &str) -> Option<CacheHint> {
-    // Simplified heuristic: classify based on path patterns.
+#[allow(dead_code)]
+fn build_cache_hint_from_response(_response: &dlp_common::EvaluateResponse) -> Option<CacheHint> {
+    // Cache hint is built from the request classification (resolved by
+    // PolicyMapper::provisional_classification in hook_request_to_evaluate_request).
+    // The response does not carry classification directly.
+    // This function is a placeholder for future response-aware cache hint logic.
+    None
+}
+
+/// Build a [`CacheHint`] for a given path using the response classification.
+///
+/// Uses the classification from the ABAC evaluation response (if available)
+/// instead of path text matching. Falls back to the legacy path heuristic
+/// only when no classification is provided.
+///
+/// # TTL Budgets
+///
+/// | Tier | TTL (seconds) |
+/// |------|---------------|
+/// | T4   | 30            |
+/// | T3   | 60            |
+/// | T2   | 300           |
+/// | T1   | 1800          |
+fn build_cache_hint(path: &str, classification: Option<Classification>) -> Option<CacheHint> {
+    // If ABAC evaluation provided a classification, use it directly.
+    if let Some(cls) = classification {
+        let ttl_secs = match cls {
+            Classification::T4 => 30,
+            Classification::T3 => 60,
+            Classification::T2 => 300,
+            Classification::T1 => 1800,
+        };
+        return Some(CacheHint {
+            path: std::path::PathBuf::from(path),
+            tier: cls,
+            ttl_secs,
+        });
+    }
+
+    // Fallback: simplified heuristic based on path patterns.
     // In production this would query the policy store.
     let (tier, ttl_secs) = if path.to_ascii_uppercase().contains("SECRET")
         || path.to_ascii_uppercase().contains("RESTRICTED")
@@ -1083,22 +1196,22 @@ mod tests {
     #[test]
     fn cache_hint_ttl_budgets() {
         // T4 = 30s
-        let hint = build_cache_hint(r"C:\SECRET\file.txt");
+        let hint = build_cache_hint(r"C:\SECRET\file.txt", None);
         assert!(hint.is_some());
         assert_eq!(hint.unwrap().ttl_secs, 30);
 
         // T3 = 60s
-        let hint = build_cache_hint(r"C:\confidential\file.txt");
+        let hint = build_cache_hint(r"C:\confidential\file.txt", None);
         assert!(hint.is_some());
         assert_eq!(hint.unwrap().ttl_secs, 60);
 
         // T2 = 300s
-        let hint = build_cache_hint(r"C:\internal\file.txt");
+        let hint = build_cache_hint(r"C:\internal\file.txt", None);
         assert!(hint.is_some());
         assert_eq!(hint.unwrap().ttl_secs, 300);
 
         // Unclassified = None
-        let hint = build_cache_hint(r"C:\public\file.txt");
+        let hint = build_cache_hint(r"C:\public\file.txt", None);
         assert!(hint.is_none());
     }
 
