@@ -194,7 +194,6 @@ fn connect_pipe(pipe_name: &str, timeout_ms: u32) -> Result<HANDLE, PipeError> {
             Ok(_) => return Err(PipeError::ConnectionRefused),
             Err(e) => {
                 let code = (e.code().0 as u32) & 0xFFFF;
-                eprintln!("[connect_pipe] CreateFileW failed with code={}", code);
                 // ERROR_FILE_NOT_FOUND (2) — server hasn't created the pipe yet.
                 if code == 2 {
                     if start.elapsed() >= deadline {
