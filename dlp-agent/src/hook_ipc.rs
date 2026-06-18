@@ -33,7 +33,7 @@ use windows::Win32::System::Pipes::{
 };
 
 use dlp_common::hook_ipc::CacheHint;
-use dlp_common::{Classification, HookRequest, HookResponse};
+use dlp_common::{Classification, Decision, HookRequest, HookResponse};
 
 use crate::ipc::frame::{read_frame, write_frame};
 use crate::ipc::pipe_security::PipeSecurity;
@@ -342,20 +342,46 @@ fn handle_connection(
                         } else {
                             warn!("Hook IPC: received BypassAlert but no bypass channel configured — dropping");
                         }
+                        // Send minimal acknowledgment so clients using request-style sends do not deadlock.
+                        let ack = IpcEnvelope::V1(IpcMessageV1 {
+                            payload: IpcPayloadV1::Response(HookResponse {
+                                decision: Decision::ALLOW,
+                                reason: "BypassAlert received".to_string(),
+                                cache_hint: None,
+                                cache_version: 0,
+                            }),
+                        });
+                        let ack_bytes = bincode::serialize(&ack)
+                            .context("serialize BypassAlert ack")?;
+                        if let Err(e) = write_frame(pipe, &ack_bytes) {
+                            warn!(error = %e, "Hook IPC: write BypassAlert ack failed — disconnecting");
+                            break;
+                        }
                     }
                     IpcPayloadV1::VolumeClassQuery(_query) => {
-                        // Route to existing volume-class handler if implemented.
-                        // If not yet implemented, log at debug level and continue (per REVIEW-M-05).
-                        debug!(
-                            "Hook IPC: received VolumeClassQuery — not yet implemented, continuing"
-                        );
-                        // TODO: When volume-class handler is wired, route here.
+                        // Fail-closed: respond with VolumeClassResponse { class: None } so
+                        // clients using request-style sends do not deadlock.
+                        let resp = IpcEnvelope::V1(IpcMessageV1 {
+                            payload: IpcPayloadV1::VolumeClassResponse(
+                                dlp_common::hook_ipc::VolumeClassResponse { class: None }
+                            ),
+                        });
+                        let resp_bytes = bincode::serialize(&resp)
+                            .context("serialize VolumeClassQuery response")?;
+                        if let Err(e) = write_frame(pipe, &resp_bytes) {
+                            warn!(error = %e, "Hook IPC: write VolumeClassQuery response failed — disconnecting");
+                            break;
+                        }
                     }
                     IpcPayloadV1::VolumeClassResponse(_resp) => {
                         warn!("Hook IPC: unexpected VolumeClassResponse from hook DLL — dropping");
+                        // Disconnect explicitly since this is an unexpected client-side payload.
+                        break;
                     }
                     IpcPayloadV1::Response(_resp) => {
                         warn!("Hook IPC: unexpected Response payload from hook DLL — dropping");
+                        // Disconnect explicitly since this is an unexpected client-side payload.
+                        break;
                     }
                 }
             }
