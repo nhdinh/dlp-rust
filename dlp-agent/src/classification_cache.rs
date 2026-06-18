@@ -863,11 +863,13 @@ impl Drop for ClassificationCache {
     fn drop(&mut self) {
         #[cfg(windows)]
         unsafe {
+            use windows::Win32::Foundation::CloseHandle;
             use windows::Win32::System::Memory::UnmapViewOfFile;
             let _ = UnmapViewOfFile(windows::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS {
                 Value: self.mapping as *mut _,
             });
-            // mapping_handle is dropped when Self is dropped (HANDLE has no Drop).
+            // Explicitly close the mapping handle so the name is released.
+            let _ = CloseHandle(self.mapping_handle);
         }
     }
 }
@@ -900,7 +902,6 @@ fn tier_priority(tier: Classification) -> u8 {
 // Test-only accessors
 // ---------------------------------------------------------------------------
 
-#[cfg(test)]
 impl ClassificationCache {
     /// Returns a raw pointer to the cache header for test use.
     ///

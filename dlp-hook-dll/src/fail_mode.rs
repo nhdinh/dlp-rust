@@ -286,6 +286,11 @@ impl FailModeState {
         self.cache_version_seen_at.load(Ordering::Relaxed)
     }
 
+    /// Sets the last known good cache version (test-only).
+    pub fn set_cache_version_seen_at(&self, version: u64) {
+        self.cache_version_seen_at.store(version, Ordering::Relaxed);
+    }
+
     /// Returns the last pipe attempt epoch seconds.
     #[must_use]
     #[allow(dead_code)]

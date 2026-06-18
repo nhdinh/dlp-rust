@@ -24,7 +24,7 @@
 //! bypassed.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 
 use crate::classification_cache::CacheHeader;
 use crate::fail_mode::{FailModeState, FailState};
@@ -41,12 +41,8 @@ const TRAMPOLINE_VERIFY_TICKS: u32 = TRAMPOLINE_VERIFY_INTERVAL_MS / 100;
 
 /// Global background thread handle.
 ///
-/// Initialized lazily on first hook call via `OnceLock` in production.
-/// In tests, uses a `Mutex` to allow reset between tests.
-#[cfg(not(test))]
-static BACKGROUND_THREAD: OnceLock<BackgroundThread> = OnceLock::new();
-
-#[cfg(test)]
+/// Uses a `Mutex` to allow reset between tests. In production, the Mutex
+/// is only accessed once during initialization, so the overhead is negligible.
 static BACKGROUND_THREAD: std::sync::Mutex<Option<BackgroundThread>> = std::sync::Mutex::new(None);
 
 /// Flag to prevent multiple background thread starts.
@@ -118,15 +114,8 @@ pub fn start_background_thread(
         thread_handle: Some(thread_handle),
     };
 
-    #[cfg(not(test))]
-    {
-        let _ = BACKGROUND_THREAD.set(bt);
-    }
-    #[cfg(test)]
-    {
-        let mut guard = BACKGROUND_THREAD.lock().unwrap();
-        *guard = Some(bt);
-    }
+    let mut guard = BACKGROUND_THREAD.lock().unwrap();
+    *guard = Some(bt);
 }
 
 /// Shutdown the background thread.
@@ -134,37 +123,24 @@ pub fn start_background_thread(
 /// Signals the shutdown event and joins with a 5-second timeout.
 #[allow(dead_code)]
 pub fn shutdown_background_thread() {
-    #[cfg(not(test))]
-    {
-        if let Some(bt) = BACKGROUND_THREAD.get() {
-            // SAFETY: SetEvent on a valid event handle.
-            unsafe {
-                use windows::Win32::System::Threading::SetEvent;
-                let _ = SetEvent(bt.shutdown_event);
-            }
+    let mut guard = BACKGROUND_THREAD.lock().unwrap();
+    if let Some(bt) = guard.as_ref() {
+        // SAFETY: SetEvent on a valid event handle.
+        unsafe {
+            use windows::Win32::System::Threading::SetEvent;
+            let _ = SetEvent(bt.shutdown_event);
         }
-    }
-    #[cfg(test)]
-    {
-        let mut guard = BACKGROUND_THREAD.lock().unwrap();
-        if let Some(bt) = guard.as_ref() {
-            // SAFETY: SetEvent on a valid event handle.
-            unsafe {
-                use windows::Win32::System::Threading::SetEvent;
-                let _ = SetEvent(bt.shutdown_event);
-            }
-            // Take ownership of the handle so we can join.
-            if let Some(handle) = guard.as_mut().unwrap().thread_handle.take() {
-                // Wait up to 5 seconds for the thread to exit.
-                let start = std::time::Instant::now();
-                while start.elapsed().as_secs() < 5 {
-                    if handle.is_finished() {
-                        break;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(10));
+        // Take ownership of the handle so we can join.
+        if let Some(handle) = guard.as_mut().unwrap().thread_handle.take() {
+            // Wait up to 5 seconds for the thread to exit.
+            let start = std::time::Instant::now();
+            while start.elapsed().as_secs() < 5 {
+                if handle.is_finished() {
+                    break;
                 }
-                let _ = handle.join();
+                std::thread::sleep(std::time::Duration::from_millis(10));
             }
+            let _ = handle.join();
         }
     }
 }
@@ -173,7 +149,6 @@ pub fn shutdown_background_thread() {
 ///
 /// Must only be called after `shutdown_background_thread()` has joined the
 /// thread. This is test-only and gated by `#[cfg(test)]`.
-#[cfg(test)]
 pub fn reset_background_thread_for_test() {
     // Reset the thread-started flag so a new thread can be spawned.
     THREAD_STARTED.store(false, Ordering::SeqCst);

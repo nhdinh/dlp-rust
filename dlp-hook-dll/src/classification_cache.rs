@@ -130,8 +130,9 @@ const CACHE_HEADER_SIZE: u32 = 128;
 const CACHE_NAME: &str = "Global\\DlpClassificationCache";
 
 /// Test-specific mapping name to avoid collision with live agent.
+/// Uses Local\ prefix (not Global\) to avoid requiring administrator privileges.
 #[cfg(test)]
-const CACHE_NAME: &str = "Global\\DlpClassificationCache_TestPhase50_1";
+const CACHE_NAME: &str = "Local\\DlpClassificationCache_TestPhase50_1";
 
 // ---------------------------------------------------------------------------
 // CacheLookup — lazy-init shared-memory reader
@@ -248,7 +249,6 @@ impl CacheLookup {
     /// - `mapping_handle` is a valid Windows file mapping handle.
     /// - The mapping outlives the returned `CacheLookup`.
     /// - If `validate` is true, the header must have a valid checksum and magic.
-    #[cfg(test)]
     pub unsafe fn from_raw_pointer(
         header: *const CacheHeader,
         mapping_handle: windows::Win32::Foundation::HANDLE,
