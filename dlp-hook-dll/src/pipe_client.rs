@@ -7,8 +7,8 @@
 use std::cell::RefCell;
 use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::Storage::FileSystem::{
-    CreateFileW, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES, FILE_GENERIC_READ,
-    FILE_GENERIC_WRITE, FILE_SHARE_NONE, OPEN_EXISTING,
+    CreateFileW, FlushFileBuffers, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES,
+    FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_NONE, OPEN_EXISTING,
 };
 use windows::Win32::System::Pipes::{SetNamedPipeHandleState, PIPE_READMODE_MESSAGE};
 
@@ -172,6 +172,8 @@ pub fn send_raw_oneway(pipe_name: &str, payload: &[u8]) -> Result<(), PipeError>
         return Err(e);
     }
 
+    // Best-effort flush before close to reduce truncation risk under load.
+    let _ = unsafe { FlushFileBuffers(pipe) };
     let _ = unsafe { CloseHandle(pipe) };
     Ok(())
 }
