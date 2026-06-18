@@ -419,14 +419,14 @@ fn stale_cache_triggers_isolated_helper() {
 
     // cache_version=5, header_version=6 (newer), age=31s > T4=30s budget.
     assert!(
-        is_cache_stale(5, 6, old_created_at, now_secs),
+        is_cache_stale(5, 6, old_created_at, now_secs, Classification::T4),
         "cache older than T4 budget (30s) should be stale"
     );
 
     // Within budget: not stale.
     let recent_created_at = 1975u64; // 25 seconds ago
     assert!(
-        !is_cache_stale(5, 6, recent_created_at, now_secs),
+        !is_cache_stale(5, 6, recent_created_at, now_secs, Classification::T4),
         "cache within T4 budget should not be stale"
     );
 }

@@ -421,10 +421,14 @@ pub fn decide_resync(classification: Option<Classification>, op: HookOp) -> Opti
 // Staleness checking
 // ---------------------------------------------------------------------------
 
-/// Check if the cache is stale based on the most conservative budget (T4).
+/// Check if the cache is stale based on the tier-specific budget.
+///
+/// Uses the appropriate staleness budget for the given classification tier.
+/// T1 (Public) = 30 min, T2 (Internal) = 5 min, T3 (Confidential) = 60 s,
+/// T4 (Restricted) = 30 s.
 ///
 /// Used for state transition decisions (DEGRADED -> ISOLATED when cache
-/// exceeds T4 budget).
+/// exceeds the tier's budget).
 ///
 /// # Arguments
 ///
@@ -432,10 +436,11 @@ pub fn decide_resync(classification: Option<Classification>, op: HookOp) -> Opti
 /// * `header_version` - The current version from the cache header.
 /// * `header_created_at` - When the cache buffer was built (Unix epoch).
 /// * `now_secs` - Current wall-clock seconds (Unix epoch).
+/// * `classification` - The classification tier of the data being accessed.
 ///
 /// # Returns
 ///
-/// `true` if the cache is stale (older than T4 budget or never validated).
+/// `true` if the cache is stale (older than the tier's budget or never validated).
 #[must_use]
 #[allow(dead_code)]
 pub fn is_cache_stale(
@@ -443,6 +448,7 @@ pub fn is_cache_stale(
     header_version: u64,
     header_created_at: u64,
     now_secs: u64,
+    classification: Classification,
 ) -> bool {
     if cache_version == 0 {
         // Never seen a valid cache -> stale.
@@ -454,9 +460,9 @@ pub fn is_cache_stale(
         return false;
     }
 
-    // Newer version available: check age against T4 budget (most conservative).
+    // Newer version available: check age against tier-specific budget.
     let age = now_secs.saturating_sub(header_created_at);
-    age > STALENESS_BUDGETS[3] // T4 budget = 30s
+    age > staleness_budget_for(classification)
 }
 
 /// Check if a specific cache entry has expired.
@@ -814,34 +820,34 @@ mod tests {
 
     #[test]
     fn is_cache_stale_never_seen() {
-        assert!(is_cache_stale(0, 1, 1000, 2000));
+        assert!(is_cache_stale(0, 1, 1000, 2000, Classification::T4));
     }
 
     #[test]
     fn is_cache_stale_fresh_version() {
         // Header version <= cache version: not stale
-        assert!(!is_cache_stale(5, 5, 1000, 2000));
-        assert!(!is_cache_stale(5, 4, 1000, 2000));
+        assert!(!is_cache_stale(5, 5, 1000, 2000, Classification::T4));
+        assert!(!is_cache_stale(5, 4, 1000, 2000, Classification::T4));
     }
 
     #[test]
     fn is_cache_stale_new_version_within_budget() {
         // Newer version, age = 20s (within T4=30s budget)
-        assert!(!is_cache_stale(5, 6, 1000, 1019));
+        assert!(!is_cache_stale(5, 6, 1000, 1019, Classification::T4));
     }
 
     #[test]
     fn is_cache_stale_new_version_exceeds_budget() {
         // Newer version, age = 31s (exceeds T4=30s budget)
-        assert!(is_cache_stale(5, 6, 1000, 1031));
+        assert!(is_cache_stale(5, 6, 1000, 1031, Classification::T4));
     }
 
     #[test]
     fn is_cache_stale_boundary() {
         // Exactly at budget: not stale (strict >)
-        assert!(!is_cache_stale(5, 6, 1000, 1030));
+        assert!(!is_cache_stale(5, 6, 1000, 1030, Classification::T4));
         // One second over: stale
-        assert!(is_cache_stale(5, 6, 1000, 1031));
+        assert!(is_cache_stale(5, 6, 1000, 1031, Classification::T4));
     }
 
     #[test]
@@ -1088,7 +1094,7 @@ mod tests {
         // staleness before calling record_pipe_failure.
         let now_secs = 2000;
         let created_at = 1000; // 1000s old, exceeds T4=30s
-        assert!(is_cache_stale(5, 6, created_at, now_secs));
+        assert!(is_cache_stale(5, 6, created_at, now_secs, Classification::T4));
     }
 
     #[test]
