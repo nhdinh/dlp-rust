@@ -78,12 +78,24 @@ pub type HookHandler = Arc<dyn Fn(HookRequest) -> HookResponse + Send + Sync + '
 /// | (any other) | READ | Default fallback (least-privilege) |
 #[must_use]
 pub fn map_hook_action_to_abac(action: &str) -> Action {
-    match action.to_ascii_uppercase().as_str() {
-        "CREATE" | "WRITE" | "NT_WRITE" => Action::WRITE,
-        "READ" | "NT_READ" => Action::READ,
-        "COPY" => Action::COPY,
-        "MOVE" | "DELETE" | "REPLACE" | "SET_INFO" | "NT_SET_INFO" => Action::DELETE,
-        _ => Action::READ,
+    if action.eq_ignore_ascii_case("CREATE")
+        || action.eq_ignore_ascii_case("WRITE")
+        || action.eq_ignore_ascii_case("NT_WRITE")
+    {
+        Action::WRITE
+    } else if action.eq_ignore_ascii_case("READ") || action.eq_ignore_ascii_case("NT_READ") {
+        Action::READ
+    } else if action.eq_ignore_ascii_case("COPY") {
+        Action::COPY
+    } else if action.eq_ignore_ascii_case("MOVE")
+        || action.eq_ignore_ascii_case("DELETE")
+        || action.eq_ignore_ascii_case("REPLACE")
+        || action.eq_ignore_ascii_case("SET_INFO")
+        || action.eq_ignore_ascii_case("NT_SET_INFO")
+    {
+        Action::DELETE
+    } else {
+        Action::READ
     }
 }
 
