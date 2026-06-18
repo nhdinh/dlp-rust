@@ -521,7 +521,9 @@ fn take_detour(fn_name: &str) -> Option<retour::RawDetour> {
 fn get_detour_trampoline(fn_name: &str) -> Option<*const ()> {
     let idx = stub_name_from_str(fn_name)?.index();
     let guard = DETOURS.lock();
-    guard[idx].as_ref().map(|d| d.trampoline() as *const ())
+    let ptr = guard[idx].as_ref().map(|d| d.trampoline() as *const ());
+    drop(guard);
+    ptr
 }
 
 /// Returns the original trampoline pointer for a patched stub.
