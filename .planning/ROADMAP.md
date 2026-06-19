@@ -67,6 +67,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 53: ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring** — turn hook-vs-ETW divergence into auditable BypassAlert events routed through SIEM and the alert router. (completed 2026-05-28)
 - [x] **Phase 54: Admin TUI Protected Paths + Bypass Alerts Screens** — operator UX for the two new server surfaces. (completed 2026-05-28)
 - [x] **Phase 55: Monitor-Only / Audit-Only Per-Policy Enforcement Mode** — safe-rollout mode every industry DLP requires before production deployment. (completed 2026-05-29)
+- [ ] **Phase 55.1: Close gap MODE-01 — read global_enforcement_mode in BypassCorrelator (INSERTED)** — urgent gap closure.
 - [x] **Phase 56: SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004)** — fold SEED-004 in: device enumeration, two new ABAC attributes, admin TUI extension. (completed 2026-06-06)
 - [x] **Phase 57: Operational Deployment Guide + AV/EDR Allowlist + UAT** — the milestone ship gate; per-vendor allowlist procedures, hash publishing, and real-Windows UAT (folds in former HARD-05). (completed 2026-06-10)
 - [ ] **Phase 58: Differentiators Bundle (cuttable to v0.10.1 if scope pressure hits)** — cuttable as a unit to v0.10.1 if scope pressure hits; otherwise materially improves deployability.
@@ -328,6 +329,17 @@ Plans:
 
 - [x] 55-07-PLAN.md — Integration tests: round-trip Audit/Block/AuditAndBlock through admin API
 
+### Phase 55.1: Close gap MODE-01 — read global_enforcement_mode in BypassCorrelator (INSERTED)
+
+**Goal:** [Urgent work - to be planned]
+**Requirements**: TBD
+**Depends on:** Phase 55
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 55.1 to break down)
+
 ### Phase 56: SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004)
 
 **Goal**: SD cards, optical (CD/DVD/Blu-ray), and virtual (Daemon Tools / VHD / VHDX / Explorer-mounted ISO) drives are first-class citizens in device enumeration and the ABAC engine, with policy expressible as `source_volume_class → destination_volume_class`.
@@ -586,6 +598,7 @@ Plans:
 | 53.1 | Close gap ETW-03 — add BypassAlert to IpcPayloadV1 and route in agent hook_ipc (INSERTED) | 4/4 | Complete   | 2026-06-17 |
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 6/6 | Complete    | 2026-05-28 |
 | 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 7/7 | Complete    | 2026-05-29 |
+| 55.1 | Close gap MODE-01 — read global_enforcement_mode in BypassCorrelator (INSERTED) | 0/0 | Not started | - |
 | 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 6/6 | Complete | 2026-06-06 |
 | 56.1 | Close gap DRIVE-03/04 — add volume class fields to HookRequest and ABAC path (INSERTED) | 3/3 | Complete    | 2026-06-18 |
 | 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 6/6 | Complete    | 2026-06-10 |

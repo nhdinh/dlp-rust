@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
-current_phase: 50.1
-current_phase_name: close-gap-fail-01-02-03-verify-isolated-resync-healthy-recovery-at-runtime
-status: verifying
+current_phase: 55.1
+current_phase_name: close-gap-mode-01-read-global-enforcement-mode-in-bypasscorr
+status: planning
 stopped_at: context exhaustion at 75% (2026-06-18)
-last_updated: "2026-06-18T18:07:04.357Z"
+last_updated: "2026-06-19T03:34:54.089Z"
 last_activity: 2026-06-18
 last_activity_desc: Phase 50.1 execution started
 progress:
-  total_phases: 41
+  total_phases: 42
   completed_phases: 33
   total_plans: 151
   completed_plans: 141
-  percent: 80
+  percent: 79
 ---
 
 # Project State
@@ -23,15 +23,15 @@ progress:
 
 **Project:** DLP-RUST — Enterprise DLP System (NTFS + Active Directory + ABAC)
 **Core Value:** Prevent data exfiltration via a layered enforcement stack (NTFS + ABAC + AD identity)
-**Current Focus:** Phase 50.1 — close-gap-fail-01-02-03-verify-isolated-resync-healthy-recovery-at-runtime
+**Current Focus:** Phase 55.1 — close-gap-mode-01-read-global-enforcement-mode-in-bypasscorr
 
 ---
 
 ## Current Position
 
-Phase: 50.1 (close-gap-fail-01-02-03-verify-isolated-resync-healthy-recovery-at-runtime) — EXECUTING
-Plan: 1 of 1
-Status: Phase complete — ready for verification
+Phase: 55.1 (close-gap-mode-01-read-global-enforcement-mode-in-bypasscorr) — PLANNING
+Plan: 0 of 0
+Status: Urgent insertion — ready to plan
 Last activity: 2026-06-18 — Phase 50.1 execution started
 
 ## Progress
@@ -72,6 +72,7 @@ v0.12.0 [Phases 65–70 planned] (planned — Scanner + Screenshot + Watermark +
 | 53.1 | Close gap ETW-03 — add BypassAlert to IpcPayloadV1 and route in agent hook_ipc (INSERTED) | ETW-03 |
 | 54 | Admin TUI Protected Paths + Bypass Alerts Screens | UX-01, UX-02 |
 | 55 | Monitor-Only / Audit-Only Per-Policy Enforcement Mode | MODE-01 |
+| 55.1 | Close gap MODE-01 — read global_enforcement_mode in BypassCorrelator (INSERTED) | TBD |
 | 56 | SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | DRIVE-01..04 |
 | 56.1 | Close gap DRIVE-03/04 — add volume class fields to HookRequest and ABAC path (INSERTED) | TBD |
 | 57 | Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | OPS-01..04 |
@@ -173,6 +174,7 @@ Resume file: .planning/phases/53.1-close-gap-etw-03-add-bypassalert-to-ipcpayloa
 - Phase 66.1 inserted after Phase 66: Close gap: WORKFLOW-04 — wire ApprovalCache into enforcement (URGENT)
 - Phase 68.1 inserted after Phase 68: Close gap: DEVICE-05/TAMPER-03/04 — wire tamper detection to SIEM and health (URGENT)
 - Phase 67.1 inserted after Phase 67: Print Watermarking — XPS Page Geometry + Text Metrics (URGENT)
+- Phase 55.1 inserted after Phase 55: Close gap MODE-01 — read global_enforcement_mode in BypassCorrelator (URGENT)
 
 ## Performance Metrics
 
