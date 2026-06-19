@@ -331,14 +331,15 @@ Plans:
 
 ### Phase 55.1: Close gap MODE-01 — read global_enforcement_mode in BypassCorrelator (INSERTED)
 
-**Goal:** [Urgent work - to be planned]
-**Requirements**: TBD
+**Goal:** Close gap MODE-01 — make the agent's BypassCorrelator read global_enforcement_mode so that Audit-mode bypass events do not trigger false-positive alerts.
+**Requirements**: MODE-01, ETW-01, ETW-02
 **Depends on:** Phase 55
-**Plans:** 0 plans
+**Plans:** 2/2 plans planned
 
-Plans:
+**Wave 1** *(no dependencies)*
 
-- [ ] TBD (run /gsd-plan-phase 55.1 to break down)
+- [ ] `55.1-01-PLAN.md` — CorrelatorConfig + service wiring: add `enforcement_mode` field, default to Block, pass `global_mode` from service.rs
+- [ ] `55.1-02-PLAN.md` — Audit-mode suppression + tests: guard handle_etw_event, submit_bypass_alert, emit_alert; add unit tests for Audit/Block/AuditAndBlock behavior
 
 ### Phase 56: SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004)
 
