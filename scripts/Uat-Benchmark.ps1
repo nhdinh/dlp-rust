@@ -168,17 +168,24 @@ function Test-RustAvailable {
 }
 
 function Measure-CargoBuild {
+    param(
+        # If true, runs cargo clean before the measured build.
+        [switch]$CleanFirst
+    )
+
     if (-not (Test-Path -LiteralPath $CargoTargetDir)) {
         New-Item -ItemType Directory -Path $CargoTargetDir -Force | Out-Null
     }
 
     Push-Location -LiteralPath $CargoProjectDir
     try {
-        # Clean only the dedicated benchmark target dir, never the locked
-        # target/ where dlp-agent/dlp-server are running.
-        $cleanOutput = & cargo clean --target-dir $CargoTargetDir 2>&1
-        if ($LASTEXITCODE -ne 0) {
-            throw "cargo clean failed (exit $LASTEXITCODE): $cleanOutput"
+        if ($CleanFirst) {
+            # Clean only the dedicated benchmark target dir, never the locked
+            # target/ where dlp-agent/dlp-server are running.
+            $cleanOutput = & cargo clean --target-dir $CargoTargetDir 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                throw "cargo clean failed (exit $LASTEXITCODE): $cleanOutput"
+            }
         }
 
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
@@ -193,6 +200,41 @@ function Measure-CargoBuild {
     }
     finally {
         Pop-Location
+    }
+}
+
+function Invoke-CargoBuildWarmup {
+    <#
+    .SYNOPSIS
+        Performs an unmeasured cargo build to populate the isolated target dir.
+
+    .DESCRIPTION
+        The DLP workspace contains dependencies (e.g. aws-lc-sys) whose C
+        compiler feature probes can fail on a cold target directory.  This
+        function builds once without timing, retries on transient failures,
+        and returns only after a successful build so measured runs start from
+        a warm, consistent state.
+    #>
+    param(
+        [int]$MaxAttempts = 3
+    )
+
+    Write-Host "`n[Warm-up build] Populating isolated target dir (not measured)..." -ForegroundColor Yellow
+
+    for ($attempt = 1; $attempt -le $MaxAttempts; $attempt++) {
+        try {
+            Write-Host "  Warm-up attempt $attempt/$MaxAttempts..." -ForegroundColor Cyan
+            $null = Measure-CargoBuild -CleanFirst
+            Write-Result "Warm-up build succeeded" 'INFO'
+            return
+        }
+        catch {
+            Write-Result "Warm-up build failed: $_" 'WARN'
+            if ($attempt -eq $MaxAttempts) {
+                throw "Cargo warm-up build failed after $MaxAttempts attempts. Cannot benchmark."
+            }
+            Start-Sleep -Seconds 5
+        }
     }
 }
 
@@ -455,14 +497,15 @@ $logFile = Join-Path $ResultsDir "uat-benchmark-${timestamp}.json"
 $baselineMeasurements = @{}
 $hookedMeasurements = @{}
 
-# ── Warm-up (discarded) ──────────────────────────────────────────────────────
-Write-Host "`n[Warm-up] Discarded warm-up runs..." -ForegroundColor Yellow
-foreach ($workload in $workloads) {
-    Write-Host "  Warm-up $workload..." -ForegroundColor Cyan
-    $null = switch ($workload) {
-        'cargo'  { Measure-CargoBuild }
-        'office' { Measure-OfficeLaunch }
-    }
+# ── Warm-up build (populate isolated target dir, discarded, with retries) ─────
+if ($workloads -contains 'cargo') {
+    Invoke-CargoBuildWarmup -MaxAttempts 3
+}
+
+# ── Office warm-up (discarded) ───────────────────────────────────────────────
+if ($workloads -contains 'office') {
+    Write-Host "`n[Warm-up] Discarded Office launch..." -ForegroundColor Yellow
+    $null = Measure-OfficeLaunch
 }
 
 # ── Baseline measurements (agent STOPPED or manual) ──────────────────────────
