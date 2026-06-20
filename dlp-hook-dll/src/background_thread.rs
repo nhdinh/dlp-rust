@@ -175,18 +175,26 @@ pub fn start_background_thread(
 pub fn shutdown_background_thread() {
     let mut guard = BACKGROUND_THREAD_STATE.lock().unwrap();
 
-    let handle = match &mut *guard {
+    let (event, handle) = match &mut *guard {
         BackgroundThreadState::Running(bt) => {
             // SAFETY: SetEvent on a valid event handle.
             unsafe {
                 use windows::Win32::System::Threading::SetEvent;
                 let _ = SetEvent(bt.shutdown_event);
             }
-            // Take ownership of the JoinHandle so we can join.
-            Some(std::mem::replace(
-                &mut bt.thread_handle,
-                std::thread::spawn(|| {}), // placeholder — never used
-            ))
+            // Take ownership of the entire BackgroundThread struct by
+            // replacing the mutex state with NotStarted. This avoids
+            // leaking a placeholder thread handle and keeps the struct
+            // consistent.
+            let bt = std::mem::replace(
+                bt,
+                BackgroundThread {
+                    shutdown_event: windows::Win32::Foundation::HANDLE(std::ptr::null_mut()),
+                    thread_handle: std::thread::spawn(|| {}),
+                },
+            );
+            *guard = BackgroundThreadState::NotStarted;
+            (bt.shutdown_event, bt.thread_handle)
         }
         BackgroundThreadState::NotStarted | BackgroundThreadState::Starting => {
             // Nothing to shut down.
@@ -197,28 +205,31 @@ pub fn shutdown_background_thread() {
     // Drop the lock before waiting so other operations can proceed.
     drop(guard);
 
-    if let Some(handle) = handle {
-        // Use WaitForSingleObject on the thread handle for precise timeout.
-        let thread_handle_raw = handle.as_raw_handle() as isize;
-        let wait_result = unsafe {
-            use windows::Win32::System::Threading::WaitForSingleObject;
-            WaitForSingleObject(
-                windows::Win32::Foundation::HANDLE(thread_handle_raw as *mut std::ffi::c_void),
-                5000, // 5 seconds
-            )
-        };
+    // Use WaitForSingleObject on the thread handle for precise timeout.
+    let thread_handle_raw = handle.as_raw_handle() as isize;
+    let wait_result = unsafe {
+        use windows::Win32::System::Threading::WaitForSingleObject;
+        WaitForSingleObject(
+            windows::Win32::Foundation::HANDLE(thread_handle_raw as *mut std::ffi::c_void),
+            5000, // 5 seconds
+        )
+    };
 
-        if wait_result == windows::Win32::Foundation::WAIT_OBJECT_0 {
-            // Thread exited cleanly — join to clean up resources.
-            let _ = handle.join();
-        } else {
-            // Timeout — log warning and detach (drop without join).
-            tracing::warn!(
-                "background_thread shutdown timed out after 5s; detaching thread"
-            );
-            // Dropping the JoinHandle without calling join() detaches the thread.
-            drop(handle);
-        }
+    if wait_result == windows::Win32::Foundation::WAIT_OBJECT_0 {
+        // Thread exited cleanly — join to clean up resources.
+        let _ = handle.join();
+    } else {
+        // Timeout — log warning and detach (drop without join).
+        tracing::warn!(
+            "background_thread shutdown timed out after 5s; detaching thread"
+        );
+        // Dropping the JoinHandle without calling join() detaches the thread.
+        drop(handle);
+    }
+
+    // Close the event handle to prevent handle leaks.
+    unsafe {
+        let _ = windows::Win32::Foundation::CloseHandle(event);
     }
 }
 
