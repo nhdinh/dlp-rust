@@ -274,42 +274,27 @@ fn classify_and_log_path(
                 decision
             }
             FailState::Resync => {
-                // RESYNC: flush LRU, reset counters, transition to Healthy, retry.
-                // In-flight decisions use old cache; new decisions use new cache.
-                // We flush LRU and reset counters, then treat as Healthy.
-                crate::classification_cache::lru::clear_all();
-                fail_state.reset_counters();
-                fail_state.set_state(FailState::Healthy);
-
-                // Retry from Healthy path.
-                if let Some(classification) = cache_classification {
-                    if let Some(deny) = cache_lookup.and_then(|c| c.decide(classification, op)) {
-                        return Some(deny);
-                    }
-                    return None;
+                // RESYNC: use decide_resync for cache-hit decisions, same as
+                // ISOLATED/HEALTHY. The LRU flush and counter reset are handled
+                // by the state machine transition logic, not per-decision.
+                let decision = crate::fail_mode::decide_resync(cache_classification, op);
+                let tier_str = cache_classification
+                    .map(|c| c.to_string())
+                    .unwrap_or_else(|| "unknown".to_string());
+                if decision.is_some() {
+                    let msg = format!(
+                        "[dlp-hook] DENY(resync) {} hash={:016x} tier={}\0",
+                        fn_name, path_hash, tier_str
+                    );
+                    crate::debug_log(&msg);
+                } else {
+                    let msg = format!(
+                        "[dlp-hook] ALLOW(resync) {} hash={:016x} tier={}\0",
+                        fn_name, path_hash, tier_str
+                    );
+                    crate::debug_log(&msg);
                 }
-
-                // Attempt pipe after RESYNC recovery.
-                match classify_path_with_volume_class(
-                    path,
-                    action,
-                    crate::DEFAULT_PIPE_NAME,
-                    source_volume_class,
-                    destination_volume_class,
-                ) {
-                    Ok(crate::Decision::ALLOW) | Ok(crate::Decision::AllowWithLog) => {
-                        fail_state.record_pipe_success(cache_version);
-                        None
-                    }
-                    Ok(crate::Decision::DENY) | Ok(crate::Decision::DenyWithAlert) => {
-                        fail_state.record_pipe_success(cache_version);
-                        Some(crate::fail_closed::DenyReturn::BoolFalse)
-                    }
-                    Err(_) => {
-                        fail_state.record_pipe_failure();
-                        Some(crate::fail_closed::DenyReturn::BoolFalse)
-                    }
-                }
+                decision
             }
         };
 

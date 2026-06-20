@@ -396,7 +396,6 @@ pub fn decide_degraded(classification: Option<Classification>, op: HookOp) -> Op
 }
 
 /// Make a decision when in RESYNC state.
-#[allow(dead_code)]
 ///
 /// During RESYNC, new decisions use the new cache immediately.
 /// In-flight decisions (started before RESYNC) use the old cache until
