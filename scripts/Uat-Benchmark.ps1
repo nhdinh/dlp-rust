@@ -6,8 +6,14 @@
 .DESCRIPTION
     Measures wall-clock overhead introduced by the DLP hook DLL on two
     representative workloads:
-      1. cargo build --workspace --release (dlp-rust workspace)
+      1. cargo build --release of a Rust project (default: ripgrep)
       2. Office app launch (Word or Excel to visible window)
+
+    The default Rust project is ripgrep, cloned automatically to a temporary
+    directory, because the DLP workspace's aws-lc-sys dependency fails to
+    build on some Windows toolchains from a cold target directory.  You can
+    override with -CargoProjectDir to benchmark any Rust project that builds
+    cleanly on the host.
 
     Protocol:
       - One unmeasured warm-up run per workload (discarded).
@@ -64,8 +70,17 @@ param(
     [Parameter()]
     [switch]$SkipPreconditionCheck,
 
+    # Directory of the Rust project to benchmark. If omitted, ripgrep is
+    # cloned automatically into a temp dir because the DLP workspace's
+    # aws-lc-sys dependency fails to build from a cold target dir on some hosts.
     [Parameter()]
     [string]$CargoProjectDir,
+
+    [Parameter()]
+    [string]$CargoBenchRepoUrl = 'https://github.com/BurntSushi/ripgrep.git',
+
+    [Parameter()]
+    [string]$CargoBenchRepoTag = '14.1.1',
 
     # Separate target directory so cargo clean does not touch the locked
     # target/ directory where dlp-agent/dlp-server are running.
@@ -84,12 +99,37 @@ Set-StrictMode -Version Latest
 $SCRIPT:AgentServiceName = 'dlp-agent'
 $SCRIPT:ServerUrl = 'http://127.0.0.1:9090'
 
-# Resolve cargo project dir: default to repo root (one level above scripts/)
-if (-not $CargoProjectDir) {
-    $CargoProjectDir = Split-Path -Path $PSScriptRoot -Parent
+function Get-DefaultBenchProjectDir {
+    <#
+    .SYNOPSIS
+        Returns the path to the default benchmark project, cloning it if needed.
+    #>
+    $baseDir = Join-Path $env:TEMP 'dlp-benchmark-projects'
+    $repoDir = Join-Path $baseDir "ripgrep-$CargoBenchRepoTag"
+
+    if (Test-Path (Join-Path $repoDir 'Cargo.toml')) {
+        return $repoDir
+    }
+
+    if (-not (Test-Path $baseDir)) {
+        New-Item -ItemType Directory -Path $baseDir -Force | Out-Null
+    }
+
+    Write-Host "`n[Setup] Cloning benchmark project: $CargoBenchRepoUrl (tag $CargoBenchRepoTag)..." -ForegroundColor Yellow
+    & git clone --depth 1 --branch $CargoBenchRepoTag $CargoBenchRepoUrl $repoDir 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        throw "git clone of $CargoBenchRepoUrl failed"
+    }
+
+    return $repoDir
 }
 
-# Default to a temp target dir under the repo root so it is on the same volume
+# Resolve cargo project dir: default to ripgrep clone if not provided.
+if (-not $CargoProjectDir) {
+    $CargoProjectDir = Get-DefaultBenchProjectDir
+}
+
+# Default to a temp target dir under the project root so it is on the same volume
 # as the source and avoids locking the running agent/server binaries.
 if (-not $CargoTargetDir) {
     $CargoTargetDir = Join-Path $CargoProjectDir "target-benchmark-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
