@@ -69,6 +69,10 @@ __pycache__/
 .venv/
 venv/
 vendor/
+.scannerwork/
+lcov.info
+cobertura.xml
+sonar-coverage.xml
 coverage/
 .cache/
 tmp/

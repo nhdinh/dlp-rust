@@ -57,7 +57,7 @@ pub struct Broadcaster {
 impl Broadcaster {
     /// Registers a new client transmitter.
     ///
-    /// Returns a client key that the caller must use in [`remove_client`]
+    /// Returns a client key that the caller must use in `remove_client`
     /// when the client disconnects.
     pub fn add_client(&self, tx: mpsc::Sender<Vec<u8>>) -> usize {
         let id = {

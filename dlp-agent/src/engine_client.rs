@@ -86,7 +86,7 @@ impl EngineClient {
     /// Evaluates a request against the Policy Engine.
     ///
     /// On transient failures (network, TLS, 5xx), retries with exponential
-    /// backoff up to [`MAX_RETRIES`] attempts.  On permanent failures (4xx),
+    /// backoff up to `MAX_RETRIES` attempts.  On permanent failures (4xx),
     /// returns immediately without retry.
     ///
     /// When all retries are exhausted, returns `EngineClientError::Unreachable`

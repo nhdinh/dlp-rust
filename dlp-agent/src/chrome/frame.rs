@@ -26,7 +26,7 @@ const MAX_PAYLOAD: usize = 4 * 1024 * 1024;
 /// # Errors
 ///
 /// Returns an error if the pipe is broken, the frame header cannot be
-/// read, the declared payload exceeds [`MAX_PAYLOAD`], or fewer bytes
+/// read, the declared payload exceeds `MAX_PAYLOAD`, or fewer bytes
 /// than declared are received.
 #[cfg(windows)]
 pub fn read_frame(pipe: HANDLE) -> Result<Vec<u8>> {

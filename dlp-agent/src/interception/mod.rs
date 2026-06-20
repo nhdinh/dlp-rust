@@ -1,7 +1,7 @@
 //! File interception engine (T-11).
 //!
 //! Monitors file system operations on the endpoint using the `notify` crate
-//! (see [`file_monitor`](file_monitor::file_monitor)).  Captures CreateFile,
+//! (see `file_monitor`).  Captures CreateFile,
 //! WriteFile, DeleteFile, and Rename/Move operations and forwards them
 //! as [`FileAction`] events through a Tokio channel to the event loop.
 //!

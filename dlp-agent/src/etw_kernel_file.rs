@@ -12,7 +12,7 @@
 //! - **T-53-01 (DoS)**: Callback only parses and pushes to channel; all correlation
 //!   work happens in the tokio task per D-15.
 //! - **T-53-03 (DoS / overflow)**: Bounded channel with overflow counter;
-//!   lost-event monitoring alerts operator via [`EventType::EtwConsumerLostEvents`].
+//!   lost-event monitoring alerts operator via `EventType::EtwConsumerLostEvents`.
 //! - **T-53-04 (Tampering)**: Agent restart recreates session; `etw_healthy` flag
 //!   exposes health; missing ETW events are detected by the correlator.
 
@@ -358,7 +358,7 @@ pub fn is_system32_or_winsxs(path: &str) -> bool {
 /// Returns `true` if any lost-event entries (Event ID 2) are detected since
 /// the last call. The caller is responsible for emitting:
 /// - `tracing::warn!` log line
-/// - [`EventType::EtwConsumerLostEvents`] audit event
+/// - `EventType::EtwConsumerLostEvents` audit event
 ///
 /// Addresses review concern IN-03: lost events wired to runtime alerting.
 #[must_use]

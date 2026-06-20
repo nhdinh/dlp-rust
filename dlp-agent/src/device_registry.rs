@@ -2,14 +2,14 @@
 //!
 //! Maintains an in-memory `RwLock<HashMap>` keyed by `(vid, pid, serial, owner_sid)` that
 //! maps to a [`UsbTrustTier`]. The cache is populated by polling
-//! `GET /admin/device-registry` every [`REGISTRY_POLL_INTERVAL`] seconds and
+//! `GET /admin/device-registry` every `REGISTRY_POLL_INTERVAL` seconds and
 //! on every USB device arrival event (D-08, D-09 from 24-CONTEXT.md).
 //!
 //! ## Per-user support (USB-06, Phase 38.4)
 //!
 //! The cache key includes an optional `owner_sid` field. Entries with
 //! `owner_sid = None` are machine-wide; entries with `owner_sid = Some(sid)`
-//! are per-user. The [`trust_tier_for_with_sid`] method queries both and
+//! are per-user. The `trust_tier_for_with_sid` method queries both and
 //! returns the most restrictive tier.
 //!
 //! ## Fail-safe behavior (D-10)
@@ -303,7 +303,7 @@ impl DeviceRegistryCache {
     }
 
     /// Spawns a background tokio task that refreshes the cache every
-    /// [`REGISTRY_POLL_INTERVAL`] seconds.
+    /// `REGISTRY_POLL_INTERVAL` seconds.
     ///
     /// The task performs an immediate refresh on startup, then polls on the
     /// fixed interval. It respects the `shutdown` channel: on signal it exits

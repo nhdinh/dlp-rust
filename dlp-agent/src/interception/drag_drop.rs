@@ -17,7 +17,7 @@
 //! 3. Resolve the source process identity via `GetForegroundWindow` (best-effort
 //!    heuristic — the source window may no longer be foreground at drop time).
 //! 4. Build an [`EvaluateRequest`] with `Action::DRAG_DROP`.
-//! 5. Evaluate via the shared [`OfflineManager`].
+//! 5. Evaluate via the shared `OfflineManager`.
 //! 6. On DENY: consume the message (do not call `CallNextHookEx`), emit audit
 //!    event, send UI alert.
 //! 7. On ALLOW: call `CallNextHookEx` and pass through.
@@ -634,7 +634,7 @@ fn count_files_in_hdrop(_hdrop: usize) -> u32 {
 /// Evaluates whether a drag-and-drop operation is permitted.
 ///
 /// Fast path: builds a minimal [`EvaluateRequest`] and evaluates it against
-/// the ABAC policy engine via the shared [`OfflineManager`].
+/// the ABAC policy engine via the shared `OfflineManager`.
 ///
 /// If evaluation fails or no policy matches, defaults to ALLOW to avoid
 /// breaking Explorer. This is the conservative choice for drag-and-drop:

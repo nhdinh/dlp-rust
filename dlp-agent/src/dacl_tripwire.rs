@@ -144,7 +144,7 @@ pub struct AccessControlMatrix {
 ///
 /// # Arguments
 ///
-/// * `denied_mask` — The access rights to deny (e.g., [`DENIED_MASK`]).
+/// * `denied_mask` — The access rights to deny (e.g., `DENIED_MASK`).
 ///
 /// # Returns
 ///

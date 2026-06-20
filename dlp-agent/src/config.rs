@@ -415,7 +415,7 @@ impl AgentConfig {
 
     /// Returns the config file path honoring the `DLP_CONFIG_PATH` env override.
     ///
-    /// Used by both [`load_default`] and the config poll loop's save path.
+    /// Used by both [`AgentConfig::load_default`] and the config poll loop's save path.
     pub fn effective_config_path() -> String {
         std::env::var("DLP_CONFIG_PATH")
             .ok()

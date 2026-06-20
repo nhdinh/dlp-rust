@@ -1,7 +1,7 @@
 //! BitLocker encryption verification (Phase 34, CRYPT-01 / CRYPT-02).
 //!
 //! Verifies BitLocker encryption status for every fixed disk enumerated by
-//! Phase 33's [`DiskEnumerator`]. Uses WMI's `Win32_EncryptableVolume` as the
+//! Phase 33's `DiskEnumerator`. Uses WMI's `Win32_EncryptableVolume` as the
 //! primary source and the Windows Registry (`HKLM\SYSTEM\CurrentControlSet\
 //! Control\BitLockerStatus\BootStatus`) as a fallback when the WMI namespace
 //! is unavailable (D-01a — fallback fires only on namespace-not-found errors,
@@ -11,16 +11,16 @@
 //!
 //! 1. `service.rs` constructs an `EncryptionChecker`, registers it via
 //!    [`set_encryption_checker`], and calls [`spawn_encryption_check_task`]
-//!    immediately after [`crate::detection::disk::spawn_disk_enumeration_task`].
-//! 2. The spawned task waits for [`crate::detection::disk::DiskEnumerator::is_ready`],
+//!    immediately after `crate::detection::disk::spawn_disk_enumeration_task`.
+//! 2. The spawned task waits for `crate::detection::disk::DiskEnumerator::is_ready`,
 //!    then runs the first verification across all disks.
 //! 3. If the FIRST verification fails for ALL disks, a single
-//!    [`EventType::Alert`] event is emitted (D-16). Subsequent periodic
+//!    `EventType::Alert` event is emitted (D-16). Subsequent periodic
 //!    failures do NOT emit Alerts — `Unknown` carries the signal.
 //! 4. The task then loops every `recheck_interval` (default 6 h, clamped
 //!    by [`crate::config::AgentConfig::resolved_recheck_interval`]). On each
 //!    poll, status changes versus the cached value emit a fresh
-//!    [`EventType::DiskDiscovery`] with `justification = "encryption status
+//!    `EventType::DiskDiscovery` with `justification = "encryption status
 //!    changed: ..."` (D-25). Unchanged statuses silently update only
 //!    `encryption_checked_at` (D-12).
 //!
@@ -190,7 +190,7 @@ impl EncryptionChecker {
     }
 
     /// `true` until the first verification has run (flipped by
-    /// [`mark_first_check_complete`]).
+    /// `mark_first_check_complete`).
     #[must_use]
     pub fn is_first_check(&self) -> bool {
         *self.is_first_check.read()
@@ -619,7 +619,7 @@ impl EncryptionBackend for WindowsEncryptionBackend {
 
 /// Spawn the BitLocker verification background task.
 ///
-/// Waits for [`DiskEnumerator::is_ready`], runs an initial verification across
+/// Waits for `DiskEnumerator::is_ready`, runs an initial verification across
 /// all enumerated disks, then loops on `recheck_interval`. Status changes are
 /// emitted as `DiskDiscovery` events; a total first-check failure emits one
 /// `Alert` (D-16). Subsequent failures are silent (Pitfall E).
@@ -627,7 +627,7 @@ impl EncryptionBackend for WindowsEncryptionBackend {
 /// # Arguments
 ///
 /// * `runtime_handle` — tokio runtime `Handle` for spawning the async task.
-/// * `audit_ctx` — [`EmitContext`] for audit event emission.
+/// * `audit_ctx` — `EmitContext` for audit event emission.
 /// * `recheck_interval` — how often to re-verify after the initial check (D-10/D-11).
 /// * `shutdown_rx` — shutdown signal; when `true`, the task exits cleanly.
 ///
@@ -659,7 +659,7 @@ pub fn spawn_encryption_check_task(
 /// # Arguments
 ///
 /// * `runtime_handle` — tokio runtime `Handle`.
-/// * `audit_ctx` — [`EmitContext`] for audit event emission.
+/// * `audit_ctx` — `EmitContext` for audit event emission.
 /// * `recheck_interval` — period between re-checks (D-10).
 /// * `backend` — the [`EncryptionBackend`] implementation to use (arc-shared
 ///   because the task may fan out concurrent `spawn_blocking` calls).

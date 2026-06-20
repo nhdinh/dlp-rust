@@ -418,7 +418,7 @@ pub fn compute_watermark_geometry(
 /// event. Used to emit the injected `Canvas`/`Glyphs` with matching namespace
 /// qualification.
 #[derive(Debug, Clone, PartialEq)]
-enum FixedPageNs {
+pub enum FixedPageNs {
     /// No namespace declaration on FixedPage.
     Unqualified,
     /// Default namespace: `xmlns="uri"`.

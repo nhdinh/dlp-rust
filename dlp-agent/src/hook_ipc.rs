@@ -170,7 +170,7 @@ pub fn hook_request_to_evaluate_request(req: &HookRequest) -> EvaluateRequest {
 
 /// Classification cache accessor for the hook IPC handler.
 ///
-/// This trait abstracts over [`ClassificationCache`] so that tests can inject
+/// This trait abstracts over `ClassificationCache` so that tests can inject
 /// a mock implementation without creating real shared-memory mappings.
 pub trait CacheAccessor: Send + Sync + 'static {
     /// Returns the current cache version (high 63 bits of version_word).
@@ -213,7 +213,7 @@ impl HookIpcServer {
 
     /// Creates a new hook IPC server with a bypass channel.
     ///
-    /// `bypass_tx` receives [`BypassAlert`] payloads from the hook DLL for
+    /// `bypass_tx` receives `BypassAlert` payloads from the hook DLL for
     /// routing to the bypass correlator. The channel should be unbounded
     /// (per REVIEW-M-01) to avoid blocking the pipe loop.
     pub fn with_bypass_channel(
@@ -312,7 +312,7 @@ impl HookIpcServer {
     /// Creates a new hook IPC server with cache and offline ABAC evaluation.
     ///
     /// The returned handler performs real ABAC evaluation via
-    /// [`OfflineManager::offline_decision`] (synchronous, no async bridging).
+    /// `OfflineManager::offline_decision` (synchronous, no async bridging).
     /// The hook handler calls `offline_decision` synchronously. No `block_on`,
     /// `spawn_blocking`, `block_in_place`, or new Tokio runtime is used in this
     /// code path.

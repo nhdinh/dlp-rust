@@ -259,7 +259,7 @@ pub fn handle_file_response_for_verify(request_id: &str, data: &str) -> Result<(
 /// Spawns a background thread that:
 /// 1. Tries to send PASSWORD_DIALOG to an already-connected UI.
 /// 2. If no UI is connected, spawns one in the active console session
-///    and waits up to [`UI_CONNECT_TIMEOUT_SECS`] for it to connect.
+///    and waits up to `UI_CONNECT_TIMEOUT_SECS` for it to connect.
 /// 3. Retries sending PASSWORD_DIALOG.
 /// 4. If still no UI, aborts the stop.
 ///

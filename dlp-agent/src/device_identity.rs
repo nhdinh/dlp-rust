@@ -366,7 +366,7 @@ pub fn collect_mac_addresses() -> Vec<String> {
 /// checks for adapters that are:
 /// - Up and running (`OperStatus == IfOperStatusUp`)
 /// - AND either have `IfType == IF_TYPE_TUNNEL` (131) OR their description
-///   contains a case-insensitive match against [`VPN_KEYWORDS`].
+///   contains a case-insensitive match against `VPN_KEYWORDS`.
 ///
 /// Returns `true` if any matching adapter is found.
 ///

@@ -1,6 +1,6 @@
 //! Fixed-disk enforcement layer (DISK-04, Phase 36).
 //!
-//! [`DiskEnforcer`] bridges the Phase 33-35 [`DiskEnumerator`] (frozen
+//! `DiskEnforcer` bridges the Phase 33-35 `DiskEnumerator` (frozen
 //! `instance_id_map` allowlist + live `drive_letter_map`) and the
 //! [`run_event_loop`](crate::interception::run_event_loop) write-path
 //! to enforce the disk allowlist at file I/O time.
@@ -10,7 +10,7 @@
 //! 1. Action filter: only `Created`, `Written`, `Moved` are intercepted (DISK-04).
 //!    `Read` and `Deleted` always return `None`.
 //! 2. Fail-closed: if [`get_disk_enumerator`] returns `None` or
-//!    [`DiskEnumerator::is_ready`] is false, ALL fixed-disk writes are blocked
+//!    `DiskEnumerator::is_ready` is false, ALL fixed-disk writes are blocked
 //!    with a placeholder identity (D-06).
 //! 3. Drive-letter resolution: extract the first ASCII alpha character of the
 //!    path; reject UNC paths and non-alpha leading characters.
@@ -57,7 +57,7 @@ pub struct DiskBlockResult {
 
 /// Enforces the disk allowlist at file I/O time (DISK-04, Phase 36).
 ///
-/// Wraps the global [`DiskEnumerator`] (Phase 33-35) internally via
+/// Wraps the global `DiskEnumerator` (Phase 33-35) internally via
 /// [`get_disk_enumerator`] -- the enumerator must be installed via
 /// `set_disk_enumerator` before [`DiskEnforcer::check`] is called.
 /// Held behind `Arc` so it can be shared between the event loop and other
@@ -69,7 +69,7 @@ pub struct DiskEnforcer {
 }
 
 impl DiskEnforcer {
-    /// Constructs a new [`DiskEnforcer`] with an empty cooldown map.
+    /// Constructs a new `DiskEnforcer` with an empty cooldown map.
     ///
     /// The enforcer wraps [`get_disk_enumerator`] internally; the global
     /// `DiskEnumerator` must be installed via `set_disk_enumerator`

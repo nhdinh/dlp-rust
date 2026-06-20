@@ -1,7 +1,7 @@
 //! DirectWrite font metrics for watermark text measurement (Phase 67.1).
 //!
 //! Provides [`DirectWriteFontMetrics`], a production implementation of the
-//! [`FontMetrics`](crate::print_watermark::FontMetrics) trait that uses
+//! [`FontMetrics`] trait that uses
 //! Windows DirectWrite COM APIs to measure text width and height in DIPs
 //! (device-independent pixels, 1/96 inch), which are identical to XPS units.
 //!

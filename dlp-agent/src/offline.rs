@@ -1,7 +1,7 @@
 //! Offline mode (T-18, F-AGT-11).
 //!
 //! Detects when the Policy Engine is unreachable and falls back to the local
-//! [`Cache`](crate::cache::Cache).  When the engine comes back online,
+//! `Cache`.  When the engine comes back online,
 //! reconnects automatically via a heartbeat loop.
 //!
 //! ## Fail-closed semantics
@@ -9,7 +9,7 @@
 //! - T3/T4 resources: DENY on cache miss (fail-closed).
 //! - T1/T2 resources: ALLOW on cache miss (default-allow for non-sensitive).
 //!
-//! The caller should consult [`offline_decision`] when `EngineClient::evaluate`
+//! The caller should consult `offline_decision` when `EngineClient::evaluate`
 //! fails with `EngineClientError::Unreachable`.
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};

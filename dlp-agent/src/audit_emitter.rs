@@ -318,7 +318,7 @@ pub fn emit(event: &mut AuditEvent) -> Result<(), AuditError> {
 /// User identity fields (`user_sid`, `user_name`) are only filled from `ctx`
 /// when the event does not already carry a resolved identity — this allows
 /// the interception pipeline to set the real interactive user via
-/// [`SessionIdentityMap`] before calling this function.
+/// `SessionIdentityMap` before calling this function.
 ///
 /// Errors are logged and silently dropped — audit emission failures must
 /// never interfere with DLP enforcement.

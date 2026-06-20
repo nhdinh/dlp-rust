@@ -106,7 +106,7 @@ pub fn init() -> Result<()> {
     Ok(())
 }
 
-/// Public wrapper around [`enumerate_active_sessions`] for use by other
+/// Public wrapper around `enumerate_active_sessions` for use by other
 /// modules (e.g., `session_identity`).
 ///
 /// # Returns

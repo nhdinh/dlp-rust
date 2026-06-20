@@ -204,7 +204,7 @@ pub fn count(conn: &Connection) -> Result<i64, rusqlite::Error> {
     })
 }
 
-/// Higher-level enqueue that serializes an [`AuditEvent`] to JSON before storing.
+/// Higher-level enqueue that serializes an `AuditEvent` to JSON before storing.
 ///
 /// On [`OfflineQueueError::AtCapacity`], the caller should emit a synthetic
 /// `queue_overflow` audit event (R-62-16).

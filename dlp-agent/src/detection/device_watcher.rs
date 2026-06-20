@@ -28,7 +28,7 @@
 //! (`REGISTRY_RUNTIME_HANDLE`, `REGISTRY_CACHE`, `REGISTRY_CLIENT`) provide
 //! the bridge for the USB-arrival registry refresh. The disk handler emits
 //! audit events synchronously via `emit_audit` (file append is fast and
-//! synchronous), reading [`AUDIT_CTX`] for the [`EmitContext`].
+//! synchronous), reading `AUDIT_CTX` for the `EmitContext`.
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -348,7 +348,7 @@ unsafe extern "system" fn device_watcher_wndproc(
 /// # Arguments
 ///
 /// * `audit_ctx` -- the [`EmitContext`] for the disk-arrival handler's
-///   `DiskDiscovery` audit emission. Stored in the [`AUDIT_CTX`] OnceLock.
+///   `DiskDiscovery` audit emission. Stored in the `AUDIT_CTX` OnceLock.
 ///
 /// # Returns
 ///

@@ -8,7 +8,7 @@
 //! 1. `service.rs` calls `set_disk_enumerator(Arc::new(DiskEnumerator::new()))`
 //!    during startup.
 //! 2. `spawn_disk_enumeration_task` is called with the tokio runtime handle and
-//!    an [`EmitContext`] for audit emission.
+//!    an `EmitContext` for audit emission.
 //! 3. The async task enumerates fixed disks with retry logic (3 attempts,
 //!    exponential backoff: 200 ms -> 1 s -> 4 s).
 //! 4. On success: the global `DiskEnumerator` is updated, boot disk is marked,
@@ -41,7 +41,7 @@ use tracing::{debug, error, info, warn};
 ///
 /// Updated by the async enumeration task and read by Phase 36 enforcement.
 /// All fields are `pub` so enforcement can read them without accessor methods
-/// (matches the [`VolumeDetector`] pattern).
+/// (matches the `VolumeDetector` pattern).
 #[derive(Debug)]
 pub struct DiskEnumerator {
     /// All discovered fixed disks from the last successful enumeration.
@@ -219,7 +219,7 @@ pub fn get_disk_enumerator() -> Option<Arc<DiskEnumerator>> {
 ///
 /// * `runtime_handle` -- tokio runtime `Handle` for spawning sub-tasks
 ///   from non-async contexts.
-/// * `audit_ctx` -- [`EmitContext`] for audit event emission.
+/// * `audit_ctx` -- `EmitContext` for audit event emission.
 /// * `agent_config` -- shared `Arc<parking_lot::RwLock<AgentConfig>>`
 ///   bound at service startup (D-04). Pre-load reads `disk_allowlist`;
 ///   persist writes `disk_allowlist` and calls `save(config_path)`.
@@ -547,7 +547,7 @@ fn emit_disk_enumeration_failed(ctx: &crate::audit_emitter::EmitContext, error: 
 /// * `device_path` -- the `dbcc_name` from the WM_DEVICECHANGE callback.
 ///   Used only for tracing context; the authoritative instance ID comes
 ///   from `enumerate_fixed_disks` per Pitfall 1.
-/// * `audit_ctx` -- [`EmitContext`] for the `DiskDiscovery` audit event.
+/// * `audit_ctx` -- `EmitContext` for the `DiskDiscovery` audit event.
 #[cfg(windows)]
 pub fn on_disk_arrival(device_path: &str, audit_ctx: &crate::audit_emitter::EmitContext) {
     let live_disks = match enumerate_fixed_disks() {
@@ -574,7 +574,7 @@ pub fn on_disk_arrival(device_path: &str, audit_ctx: &crate::audit_emitter::Emit
 ///
 /// * `device_path` -- the `dbcc_name` (used for tracing context only).
 /// * `live_disks` -- the current fixed disk list from `enumerate_fixed_disks`.
-/// * `audit_ctx` -- [`EmitContext`] for the `DiskDiscovery` audit event.
+/// * `audit_ctx` -- `EmitContext` for the `DiskDiscovery` audit event.
 #[cfg(windows)]
 fn on_disk_arrival_inner(
     device_path: &str,
@@ -748,7 +748,7 @@ pub fn on_disk_removal(device_path: &str) {
 ///
 /// * `letter` — The drive letter to remove (e.g. `'E'`).
 /// * `disk` — The live [`DiskIdentity`] of the unregistered disk.
-/// * `audit_ctx` — [`EmitContext`] for audit emission.
+/// * `audit_ctx` — `EmitContext` for audit emission.
 ///
 /// # Returns
 ///
@@ -899,7 +899,7 @@ fn emit_disk_mount_blocked(disk: &DiskIdentity, audit_ctx: &crate::audit_emitter
 /// * `letter` — the drive letter assigned to the disk.
 /// * `disk` — the live [`DiskIdentity`] of the unregistered disk.
 /// * `grace_seconds` — duration of the grace period (already validated <= 3600).
-/// * `audit_ctx` — [`EmitContext`] for audit emission.
+/// * `audit_ctx` — `EmitContext` for audit emission.
 /// * `enumerator` — the global [`DiskEnumerator`] (avoids re-locking OnceLock).
 #[cfg(windows)]
 fn start_grace_period(
@@ -976,7 +976,7 @@ fn start_grace_period(
 /// # Arguments
 ///
 /// * `instance_id` — the instance ID of the disk whose grace period expired.
-/// * `audit_ctx` — [`EmitContext`] for audit emission.
+/// * `audit_ctx` — `EmitContext` for audit emission.
 /// * `enumerator` — the global [`DiskEnumerator`].
 #[cfg(windows)]
 fn enforce_grace_period_expiry(

@@ -97,7 +97,7 @@ pub struct VolumeDetector {
     /// Keyed by uppercase drive letter. The tuple stores `(VolumeClass, Instant)`
     /// where `Instant` is the time the classification was last updated.
     ///
-    /// A 5-minute TTL is applied by [`get_volume_class_for_pipe_query`] to
+    /// A 5-minute TTL is applied by `get_volume_class_for_pipe_query` to
     /// prevent stale classifications when drive letters are reused (e.g., a
     /// USB drive is unplugged and a different device claims the same letter).
     ///
@@ -891,7 +891,7 @@ static REGISTRY_RUNTIME_HANDLE: std::sync::OnceLock<tokio::runtime::Handle> =
     std::sync::OnceLock::new();
 
 /// Global server client reference for registry refresh from `usb_wndproc`.
-/// Set alongside [`REGISTRY_CACHE`] and [`REGISTRY_RUNTIME_HANDLE`] in `service.rs`.
+/// Set alongside [`REGISTRY_CACHE`] and `REGISTRY_RUNTIME_HANDLE` in `service.rs`.
 #[cfg(windows)]
 static REGISTRY_CLIENT: std::sync::OnceLock<crate::server_client::ServerClient> =
     std::sync::OnceLock::new();
@@ -1675,7 +1675,7 @@ pub fn handle_volume_event_dispatch(event_type: u32) {
 /// USB-arrival handler, and fires an async registry-cache refresh.
 ///
 /// The refresh is fire-and-forget via the runtime handle stored in
-/// [`REGISTRY_RUNTIME_HANDLE`] — the message loop thread must not block.
+/// `REGISTRY_RUNTIME_HANDLE` — the message loop thread must not block.
 ///
 /// # Arguments
 ///

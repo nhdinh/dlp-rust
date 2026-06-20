@@ -81,7 +81,7 @@ impl ManagedOriginsCache {
     }
 
     /// Spawns a background tokio task that refreshes the cache every
-    /// [`ORIGINS_POLL_INTERVAL`] seconds.
+    /// `ORIGINS_POLL_INTERVAL` seconds.
     ///
     /// The task performs an immediate refresh on startup, then polls on the
     /// fixed interval.  It respects the `shutdown` channel: on signal it

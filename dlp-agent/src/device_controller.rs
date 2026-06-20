@@ -242,7 +242,7 @@ impl DeviceController {
 
     /// Enables a previously disabled USB device.
     ///
-    /// Uses the same instance ID resolution logic as [`disable_usb_device`],
+    /// Uses the same instance ID resolution logic as `disable_usb_device`,
     /// then calls `CM_Enable_DevNode` with `CM_ENABLE_ABSOLUTE`.
     ///
     /// # Arguments

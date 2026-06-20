@@ -1007,7 +1007,7 @@ pub struct ManagedOriginEntry {
 /// Buffers audit events and flushes them to the server periodically.
 ///
 /// Events are collected into an internal `Vec` and flushed when either
-/// [`FLUSH_THRESHOLD`] events have accumulated or [`FLUSH_INTERVAL`]
+/// `FLUSH_THRESHOLD` events have accumulated or `FLUSH_INTERVAL`
 /// has elapsed since the last flush.
 ///
 /// The buffer is designed to be shared via `Arc<AuditBuffer>` across
@@ -1036,7 +1036,7 @@ impl AuditBuffer {
     /// Enqueues an audit event for relay to the server.
     ///
     /// This call is non-blocking. If the buffer reaches
-    /// [`FLUSH_THRESHOLD`], the events are not flushed inline -- the
+    /// `FLUSH_THRESHOLD`, the events are not flushed inline -- the
     /// background task handles periodic draining.
     pub fn enqueue(&self, event: AuditEvent) {
         let mut buf = self.buffer.lock();
@@ -1106,7 +1106,7 @@ impl AuditBuffer {
     }
 
     /// Spawns a background tokio task that flushes the buffer at
-    /// [`FLUSH_INTERVAL`] intervals.
+    /// `FLUSH_INTERVAL` intervals.
     ///
     /// The task runs until the provided `shutdown` receiver signals.
     ///

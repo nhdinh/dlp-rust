@@ -5,7 +5,7 @@
 //!
 //! When a paste event is detected, the listener reads the clipboard text via
 //! `GetClipboardData(CF_UNICODETEXT)`, classifies it using
-//! [`ContentClassifier`](super::classifier::ContentClassifier), and emits
+//! [ContentClassifier], and emits
 //! the result to the interception pipeline.
 //!
 //! ## Thread model
@@ -366,7 +366,7 @@ impl ClipboardListener {
     /// is detected.  It reads the clipboard text, classifies it, sends the
     /// result over the channel, and emits an audit event to the local JSONL log.
     ///
-    /// The [`EmitContext`] is read from the global `CLIPBOARD_EMIT_CONTEXT`.
+    /// The `EmitContext` is read from the global `CLIPBOARD_EMIT_CONTEXT`.
     pub fn process_clipboard_text(&self, text: &str) {
         if text.is_empty() {
             return;

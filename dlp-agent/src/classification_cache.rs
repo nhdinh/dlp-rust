@@ -44,8 +44,8 @@ use parking_lot::RwLock;
 use thiserror::Error;
 use tracing::{info, warn};
 
-use dlp_common::Classification;
 use dlp_common::classification_cache::{CacheHeader, HashEntry, PrefixEntry};
+use dlp_common::Classification;
 
 // ---------------------------------------------------------------------------
 // Constants
