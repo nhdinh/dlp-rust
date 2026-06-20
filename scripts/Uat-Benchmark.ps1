@@ -207,6 +207,41 @@ function Test-RustAvailable {
     return $false
 }
 
+function Invoke-CargoBuildCommand {
+    <#
+    .SYNOPSIS
+        Runs a cargo command for benchmarking and returns the exit code plus output.
+
+    .DESCRIPTION
+        Cargo writes progress and informational messages to stderr. Because the
+        script sets $ErrorActionPreference = 'Stop', those stderr lines would be
+        treated as terminating errors before we can inspect $LASTEXITCODE. This
+        helper temporarily relaxes error handling, captures stdout and stderr,
+        and returns the exit code so callers can decide whether the command
+        actually failed.
+    #>
+    param(
+        [Parameter(Mandatory = $true)]
+        [string[]]$ArgumentList
+    )
+
+    $previousErrorAction = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+
+    try {
+        $output = & cargo @ArgumentList 2>&1
+        $exitCode = $LASTEXITCODE
+    }
+    finally {
+        $ErrorActionPreference = $previousErrorAction
+    }
+
+    return [PSCustomObject]@{
+        ExitCode = $exitCode
+        Output   = ($output | ForEach-Object { "$_" }) -join "`n"
+    }
+}
+
 function Measure-CargoBuild {
     param(
         # If true, runs cargo clean before the measured build.
@@ -222,18 +257,18 @@ function Measure-CargoBuild {
         if ($CleanFirst) {
             # Clean only the dedicated benchmark target dir, never the locked
             # target/ where dlp-agent/dlp-server are running.
-            $cleanOutput = & cargo clean --target-dir $CargoTargetDir 2>&1
-            if ($LASTEXITCODE -ne 0) {
-                throw "cargo clean failed (exit $LASTEXITCODE): $cleanOutput"
+            $cleanOutput = Invoke-CargoBuildCommand -ArgumentList @('clean', '--target-dir', $CargoTargetDir)
+            if ($cleanOutput.ExitCode -ne 0) {
+                throw "cargo clean failed (exit $($cleanOutput.ExitCode)): $($cleanOutput.Output)"
             }
         }
 
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $buildOutput = & cargo build --workspace --release --target-dir $CargoTargetDir 2>&1
+        $buildOutput = Invoke-CargoBuildCommand -ArgumentList @('build', '--workspace', '--release', '--target-dir', $CargoTargetDir)
         $sw.Stop()
 
-        if ($LASTEXITCODE -ne 0) {
-            throw "cargo build --release failed (exit $LASTEXITCODE): $buildOutput"
+        if ($buildOutput.ExitCode -ne 0) {
+            throw "cargo build --release failed (exit $($buildOutput.ExitCode)): $($buildOutput.Output)"
         }
 
         return [math]::Round($sw.Elapsed.TotalSeconds, 2)
