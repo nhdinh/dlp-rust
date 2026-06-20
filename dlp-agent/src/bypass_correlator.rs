@@ -23,7 +23,7 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, trace, warn};
 
 use crate::etw_kernel_file::{EtwFileEvent, FileOp};
 use crate::process_watcher::ProcessEvent;
@@ -351,6 +351,13 @@ impl BypassCorrelator {
     pub fn new(config: CorrelatorConfig) -> Self {
         let (qpc_freq, qpc_delta) = Self::calibrate_qpc();
 
+        if config.enforcement_mode.is_audit() {
+            debug!(
+                mode = ?config.enforcement_mode,
+                "BypassCorrelator starting in Audit mode — bypass alerts will be suppressed"
+            );
+        }
+
         let agent_id = std::env::var("DLP_AGENT_ID").unwrap_or_else(|_| {
             hostname::get()
                 .map(|h| h.to_string_lossy().into_owned())
@@ -582,6 +589,18 @@ impl BypassCorrelator {
     /// 6. Search journal entries within tolerance.
     /// 7. Emit alert if no match or op mismatch.
     async fn handle_etw_event(&self, event: EtwFileEvent) {
+        // Phase 55.1: Audit-mode short-circuit — skip all correlation work when
+        // the global mode is Audit. The hook DLL returns ALLOW in Audit mode,
+        // so the absence of a journal is expected behavior, not a bypass.
+        if self.config.enforcement_mode.is_audit() {
+            trace!(
+                pid = event.pid,
+                file_name = %event.file_name,
+                "skipping ETW correlation — global mode is Audit"
+            );
+            return;
+        }
+
         // WR-11: Skip events where NT path conversion failed.
         if !event.nt_path_converted {
             warn!(
@@ -735,6 +754,18 @@ impl BypassCorrelator {
     /// 4. Does NOT perform ETW correlation, journal lookup, or path-hash computation.
     ///    The existing batch flush task (running every 5s) will pick it up automatically.
     pub async fn submit_bypass_alert(&self, mut alert: BypassAlert) {
+        // Phase 55.1: Defense in depth — suppress hook-derived bypass alerts in
+        // Audit mode. Even if the caller bypasses handle_etw_event, no hook IPC
+        // alert is batched.
+        if self.config.enforcement_mode.is_audit() {
+            trace!(
+                pid = alert.pid,
+                reason = ?alert.reason,
+                "suppressing hook bypass alert — global mode is Audit"
+            );
+            return;
+        }
+
         // Enrich agent-side fields (per REVIEW-H-03).
         alert.agent_id = self.agent_id.clone();
         alert.severity = self.severity_for_alert(alert.reason, &alert.file_path);
@@ -748,6 +779,18 @@ impl BypassCorrelator {
 
     /// Emits a bypass alert for the given event and reason.
     async fn emit_alert(&self, event: EtwFileEvent, reason: BypassReason) {
+        // Phase 55.1: Final safety net — suppress all bypass alerts in Audit mode.
+        // If a future code path reaches emit_alert directly, this guard ensures no
+        // alert or audit event is emitted.
+        if self.config.enforcement_mode.is_audit() {
+            trace!(
+                pid = event.pid,
+                reason = ?reason,
+                "suppressing bypass alert — global mode is Audit"
+            );
+            return;
+        }
+
         let severity = self.severity_for_alert(reason, &event.file_name);
         let image_path = self.get_image_path_for_pid(event.pid).await;
         let image_sha256 = if !image_path.is_empty() {
@@ -1725,5 +1768,180 @@ mod tests {
         assert_eq!(batch.len(), 1);
         assert_eq!(batch[0].alert.pid, 1234);
         assert_eq!(batch[0].alert.reason, BypassReason::HookOverwritten);
+    }
+
+    // --- Audit-mode suppression tests (Phase 55.1) ---
+
+    #[tokio::test]
+    async fn test_audit_mode_suppresses_etw_bypass_alert() {
+        let config = CorrelatorConfig {
+            enforcement_mode: EnforcementMode::Audit,
+            ..Default::default()
+        };
+        let correlator =
+            BypassCorrelator::new(config).with_protected_paths(vec![r"C:\Data".to_string()]);
+
+        let event = EtwFileEvent {
+            pid: 1234,
+            file_name: r"C:\Data\secret.docx".to_string(),
+            file_object: 0,
+            timestamp: 0,
+            op: FileOp::Create,
+            nt_path_converted: true,
+        };
+
+        correlator.handle_etw_event(event).await;
+
+        // Batch should be empty — alert suppressed in Audit mode.
+        let batch = correlator.alert_batch.lock().await;
+        assert!(batch.is_empty(), "bypass alert must be suppressed in Audit mode");
+    }
+
+    #[tokio::test]
+    async fn test_audit_mode_suppresses_hook_bypass_alert() {
+        let config = CorrelatorConfig {
+            enforcement_mode: EnforcementMode::Audit,
+            ..Default::default()
+        };
+        let correlator = BypassCorrelator::new(config);
+
+        let alert = BypassAlert {
+            reason: BypassReason::HookOverwritten,
+            stub_name: "NtCreateFile".to_string(),
+            pid: 1234,
+            timestamp_secs: 1_700_000_000,
+            version: 2,
+            agent_id: "".to_string(),
+            image_path: "".to_string(),
+            image_sha256: None,
+            file_path: r"C:\Data\file.txt".to_string(),
+            operation: "Create".to_string(),
+            file_object: 0xDEADBEEF,
+            qpc_timestamp: 0,
+            severity: "".to_string(),
+            correlation_reason: "".to_string(),
+        };
+
+        correlator.submit_bypass_alert(alert).await;
+
+        // Batch should be empty — hook alert suppressed in Audit mode.
+        let batch = correlator.alert_batch.lock().await;
+        assert!(
+            batch.is_empty(),
+            "hook bypass alert must be suppressed in Audit mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_audit_mode_suppresses_emit_alert() {
+        let config = CorrelatorConfig {
+            enforcement_mode: EnforcementMode::Audit,
+            ..Default::default()
+        };
+        let correlator = BypassCorrelator::new(config);
+
+        let event = EtwFileEvent {
+            pid: 1234,
+            file_name: r"C:\Data\secret.docx".to_string(),
+            file_object: 0,
+            timestamp: 0,
+            op: FileOp::Create,
+            nt_path_converted: true,
+        };
+
+        correlator.emit_alert(event, BypassReason::NoHookJournal).await;
+
+        // Batch should be empty and no audit event emitted — safety net works.
+        let batch = correlator.alert_batch.lock().await;
+        assert!(
+            batch.is_empty(),
+            "emit_alert safety net must suppress in Audit mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_block_mode_allows_emit_alert() {
+        let config = CorrelatorConfig {
+            enforcement_mode: EnforcementMode::Block,
+            ..Default::default()
+        };
+        let correlator = BypassCorrelator::new(config);
+
+        let event = EtwFileEvent {
+            pid: 1234,
+            file_name: r"C:\Data\secret.docx".to_string(),
+            file_object: 0,
+            timestamp: 0,
+            op: FileOp::Create,
+            nt_path_converted: true,
+        };
+
+        correlator.emit_alert(event, BypassReason::NoHookJournal).await;
+
+        // Batch should have exactly 1 alert — Block mode allows bypass alerts.
+        let batch = correlator.alert_batch.lock().await;
+        assert_eq!(
+            batch.len(),
+            1,
+            "bypass alert must be emitted in Block mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_auditandblock_mode_allows_emit_alert() {
+        let config = CorrelatorConfig {
+            enforcement_mode: EnforcementMode::AuditAndBlock,
+            ..Default::default()
+        };
+        let correlator = BypassCorrelator::new(config);
+
+        let event = EtwFileEvent {
+            pid: 1234,
+            file_name: r"C:\Data\secret.docx".to_string(),
+            file_object: 0,
+            timestamp: 0,
+            op: FileOp::Create,
+            nt_path_converted: true,
+        };
+
+        correlator.emit_alert(event, BypassReason::NoHookJournal).await;
+
+        // Batch should have exactly 1 alert — AuditAndBlock mode allows bypass alerts.
+        let batch = correlator.alert_batch.lock().await;
+        assert_eq!(
+            batch.len(),
+            1,
+            "bypass alert must be emitted in AuditAndBlock mode"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_perpolicy_mode_allows_emit_alert() {
+        let config = CorrelatorConfig {
+            enforcement_mode: EnforcementMode::PerPolicy,
+            ..Default::default()
+        };
+        let correlator = BypassCorrelator::new(config);
+
+        let event = EtwFileEvent {
+            pid: 1234,
+            file_name: r"C:\Data\secret.docx".to_string(),
+            file_object: 0,
+            timestamp: 0,
+            op: FileOp::Create,
+            nt_path_converted: true,
+        };
+
+        correlator.emit_alert(event, BypassReason::NoHookJournal).await;
+
+        // Batch should have exactly 1 alert — PerPolicy mode allows bypass alerts.
+        // This is the most important regression-safety test because PerPolicy is the
+        // default production config (EnforcementConfig::default() returns PerPolicy).
+        let batch = correlator.alert_batch.lock().await;
+        assert_eq!(
+            batch.len(),
+            1,
+            "bypass alert must be emitted in PerPolicy mode (default production config)"
+        );
     }
 }
