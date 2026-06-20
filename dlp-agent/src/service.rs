@@ -1615,6 +1615,7 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
             let correlator = crate::bypass_correlator::BypassCorrelator::new(
                 crate::bypass_correlator::CorrelatorConfig {
                     reduced_mode,
+                    enforcement_mode: agent_config.enforcement.global_mode,
                     ..Default::default()
                 },
             )
