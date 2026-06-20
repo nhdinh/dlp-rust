@@ -35,7 +35,7 @@
 //! bypassed.
 
 use std::os::windows::io::AsRawHandle;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
 use crate::classification_cache::CacheHeader;
@@ -106,10 +106,15 @@ unsafe impl Sync for BackgroundThread {}
 /// * `verify_fn` - Optional callback for trampoline integrity verification.
 ///   Called every 300 ticks (30 seconds). Pass `None` if ntdll patching is
 ///   not enabled.
+/// * `mapping_valid` - Optional `Arc<AtomicBool>` that signals whether the
+///   shared-memory mapping is still valid. The background thread checks this
+///   before dereferencing `cache_header`. If `None`, the caller is responsible
+///   for ensuring the mapping outlives the thread.
 pub fn start_background_thread(
     cache_header: *const CacheHeader,
     fail_state: Arc<FailModeState>,
     verify_fn: Option<fn()>,
+    mapping_valid: Option<Arc<AtomicBool>>,
 ) {
     let mut guard = BACKGROUND_THREAD_STATE.lock().unwrap();
 
@@ -142,12 +147,13 @@ pub fn start_background_thread(
     // Store raw pointers as usize for Send safety across thread boundary.
     let header_addr = cache_header as usize;
     let event_addr = shutdown_event.0 as usize;
+    let mapping_valid_clone = mapping_valid.map(|mv| Arc::clone(&mv));
 
     let thread_handle = std::thread::spawn(move || {
         let header_ptr = header_addr as *const CacheHeader;
         let event_handle =
             windows::Win32::Foundation::HANDLE(event_addr as *mut std::ffi::c_void);
-        background_thread_loop(header_ptr, fail_state_clone, event_handle, verify_fn);
+        background_thread_loop(header_ptr, fail_state_clone, event_handle, verify_fn, mapping_valid_clone);
     });
 
     let bt = BackgroundThread {
@@ -238,11 +244,13 @@ pub fn reset_background_thread_for_test() {
 /// * `fail_state` - Shared fail-mode state machine.
 /// * `shutdown_event` - Windows event handle for clean shutdown.
 /// * `verify_fn` - Optional callback for trampoline integrity verification.
+/// * `mapping_valid` - Optional `Arc<AtomicBool>` signaling mapping validity.
 fn background_thread_loop(
     cache_header: *const CacheHeader,
     fail_state: Arc<FailModeState>,
     shutdown_event: windows::Win32::Foundation::HANDLE,
     verify_fn: Option<fn()>,
+    mapping_valid: Option<Arc<AtomicBool>>,
 ) {
     // Defensive: if no cache is available, just wait for shutdown.
     if cache_header.is_null() {
@@ -289,8 +297,14 @@ fn background_thread_loop(
             match current_state {
                 FailState::Isolated => {
                     // Check if cache has a fresher version.
+                    // Verify mapping is still valid before dereferencing.
                     if cache_header.is_null() {
                         continue;
+                    }
+                    if let Some(ref valid) = mapping_valid {
+                        if !valid.load(Ordering::Acquire) {
+                            continue;
+                        }
                     }
 
                     let version_word = (*cache_header).version_word.load(Ordering::Acquire);
@@ -340,7 +354,7 @@ mod tests {
     fn background_thread_stub_exists() {
         // Verify the module compiles and functions are callable.
         let state = Arc::new(FailModeState::new());
-        start_background_thread(std::ptr::null(), state, None);
+        start_background_thread(std::ptr::null(), state, None, None);
         shutdown_background_thread();
     }
 
@@ -376,10 +390,10 @@ mod tests {
         }
 
         // First start should succeed.
-        start_background_thread(std::ptr::null(), Arc::clone(&state), None);
+        start_background_thread(std::ptr::null(), Arc::clone(&state), None, None);
 
         // Second start should be a no-op.
-        start_background_thread(std::ptr::null(), state, None);
+        start_background_thread(std::ptr::null(), state, None, None);
 
         // Clean up.
         shutdown_background_thread();

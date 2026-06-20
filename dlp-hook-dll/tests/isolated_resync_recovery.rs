@@ -105,7 +105,7 @@ fn isolated_to_resync_via_background_thread() {
     let _lookup = lookup; // Keep alive for test lifetime.
 
     // Start background thread with the mapped header.
-    start_background_thread(header_ptr, Arc::clone(&fail_state), None);
+    start_background_thread(header_ptr, Arc::clone(&fail_state), None, None);
 
     // Act: Publish a new cache version via rebuild.
     let entries2 = vec![
@@ -213,7 +213,7 @@ fn full_cycle_end_to_end() {
             .expect("failed to create CacheLookup")
     };
     let _lookup = lookup;
-    start_background_thread(header_ptr, Arc::clone(&fail_state), None);
+    start_background_thread(header_ptr, Arc::clone(&fail_state), None, None);
 
     // Rebuild -> RESYNC.
     let entries2 = vec![(r"C:\Sensitive\".to_string(), Classification::T4, 3600)];
@@ -357,7 +357,7 @@ fn odd_version_during_rebuild_ignored() {
             .expect("failed to create CacheLookup")
     };
     let _lookup = lookup;
-    start_background_thread(header_ptr, Arc::clone(&fail_state), None);
+    start_background_thread(header_ptr, Arc::clone(&fail_state), None, None);
 
     // Set version_word to odd (simulating writer in progress).
     use std::sync::atomic::Ordering;
