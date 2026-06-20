@@ -124,10 +124,6 @@ pub fn start_background_thread(
         }
     }
 
-    // Drop the lock while creating the event and spawning the thread
-    // to avoid holding the mutex across slow operations.
-    drop(guard);
-
     // SAFETY: Windows API calls to create event.
     let shutdown_event = unsafe {
         use windows::Win32::System::Threading::CreateEventW;
@@ -136,7 +132,6 @@ pub fn start_background_thread(
             Ok(h) => h,
             Err(_) => {
                 // Revert to NotStarted so a future call can retry.
-                let mut guard = BACKGROUND_THREAD_STATE.lock().unwrap();
                 *guard = BackgroundThreadState::NotStarted;
                 return;
             }
@@ -161,8 +156,8 @@ pub fn start_background_thread(
     };
 
     // Store the running thread under the mutex.
-    let mut guard = BACKGROUND_THREAD_STATE.lock().unwrap();
     *guard = BackgroundThreadState::Running(bt);
+    // Lock released here after thread is fully registered.
 }
 
 /// Shutdown the background thread.
