@@ -334,7 +334,7 @@ Plans:
 **Goal:** Close gap MODE-01 — make the agent's BypassCorrelator read global_enforcement_mode so that Audit-mode bypass events do not trigger false-positive alerts.
 **Requirements**: MODE-01, ETW-01, ETW-02
 **Depends on:** Phase 55
-**Plans:** 1/2 plans executed
+**Plans:** 2/2 plans complete
 
 **Wave 1** *(no dependencies)*
 
@@ -359,7 +359,7 @@ Plans:
 Plans:
 
 - [x] 55.1-01-PLAN.md
-- [ ] 55.1-02-PLAN.md
+- [x] 55.1-02-PLAN.md
 
 **Wave 1** *(no dependencies)*
 
@@ -602,7 +602,7 @@ Plans:
 | 53.1 | Close gap ETW-03 — add BypassAlert to IpcPayloadV1 and route in agent hook_ipc (INSERTED) | 4/4 | Complete   | 2026-06-17 |
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 6/6 | Complete    | 2026-05-28 |
 | 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 7/7 | Complete    | 2026-05-29 |
-| 55.1 | Close gap MODE-01 — read global_enforcement_mode in BypassCorrelator (INSERTED) | 1/2 | In Progress|  |
+| 55.1 | Close gap MODE-01 — read global_enforcement_mode in BypassCorrelator (INSERTED) | 2/2 | Complete    | 2026-06-20 |
 | 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 6/6 | Complete | 2026-06-06 |
 | 56.1 | Close gap DRIVE-03/04 — add volume class fields to HookRequest and ABAC path (INSERTED) | 3/3 | Complete    | 2026-06-18 |
 | 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 6/6 | Complete    | 2026-06-10 |
