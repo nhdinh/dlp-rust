@@ -67,6 +67,11 @@ param(
     [Parameter()]
     [string]$CargoProjectDir,
 
+    # Separate target directory so cargo clean does not touch the locked
+    # target/ directory where dlp-agent/dlp-server are running.
+    [Parameter()]
+    [string]$CargoTargetDir,
+
     [Parameter()]
     [string]$ResultsDir = 'C:\ProgramData\DLP\logs'
 )
@@ -82,6 +87,12 @@ $SCRIPT:ServerUrl = 'http://127.0.0.1:9090'
 # Resolve cargo project dir: default to repo root (one level above scripts/)
 if (-not $CargoProjectDir) {
     $CargoProjectDir = Split-Path -Path $PSScriptRoot -Parent
+}
+
+# Default to a temp target dir under the repo root so it is on the same volume
+# as the source and avoids locking the running agent/server binaries.
+if (-not $CargoTargetDir) {
+    $CargoTargetDir = Join-Path $CargoProjectDir "target-benchmark-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
 }
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -140,6 +151,7 @@ function Test-Preconditions {
     }
     else {
         Write-Result "Cargo project: $CargoProjectDir" 'INFO'
+        Write-Result "Cargo target dir: $CargoTargetDir" 'INFO'
     }
 
     return $allOk
@@ -156,25 +168,47 @@ function Test-RustAvailable {
 }
 
 function Measure-CargoBuild {
+    if (-not (Test-Path -LiteralPath $CargoTargetDir)) {
+        New-Item -ItemType Directory -Path $CargoTargetDir -Force | Out-Null
+    }
+
     Push-Location -LiteralPath $CargoProjectDir
     try {
-        $cleanOutput = & cargo clean 2>&1
+        # Clean only the dedicated benchmark target dir, never the locked
+        # target/ where dlp-agent/dlp-server are running.
+        $cleanOutput = & cargo clean --target-dir $CargoTargetDir 2>&1
         if ($LASTEXITCODE -ne 0) {
-            throw "cargo clean failed: $cleanOutput"
+            throw "cargo clean failed (exit $LASTEXITCODE): $cleanOutput"
         }
 
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $buildOutput = & cargo build --workspace --release 2>&1
+        $buildOutput = & cargo build --workspace --release --target-dir $CargoTargetDir 2>&1
         $sw.Stop()
 
         if ($LASTEXITCODE -ne 0) {
-            throw "cargo build --release failed: $buildOutput"
+            throw "cargo build --release failed (exit $LASTEXITCODE): $buildOutput"
         }
 
         return [math]::Round($sw.Elapsed.TotalSeconds, 2)
     }
     finally {
         Pop-Location
+    }
+}
+
+function Remove-CargoTargetDir {
+    <#
+    .SYNOPSIS
+        Removes the dedicated benchmark target directory on exit.
+    #>
+    if (Test-Path -LiteralPath $CargoTargetDir) {
+        try {
+            Remove-Item -LiteralPath $CargoTargetDir -Recurse -Force -ErrorAction Stop
+            Write-Result "Removed benchmark target dir: $CargoTargetDir" 'INFO'
+        }
+        catch {
+            Write-Result "Could not remove benchmark target dir: $_" 'WARN'
+        }
     }
 }
 
@@ -514,6 +548,10 @@ foreach ($workload in $workloads) {
 Format-Results -Results $allResults
 
 # ── Save JSON ────────────────────────────────────────────────────────────────
+
+# Clean up the dedicated target dir after measurements are done.
+Remove-CargoTargetDir
+
 $jsonOutput = @{
     timestamp         = (Get-Date).ToUniversalTime().ToString('o')
     threshold_percent = $ThresholdPercent
