@@ -1,46 +1,56 @@
 #Requires -RunAsAdministrator
 <#
 .SYNOPSIS
-    CRIT-04 benchmark measurement for DLP v0.10.0.
+    CRIT-04 performance benchmark for DLP v0.10.0.
 
 .DESCRIPTION
     Measures wall-clock overhead introduced by the DLP hook DLL on two
     representative workloads:
-    1. cargo build  — clean build of the dlp-rust workspace
-    2. Office launch — launch of Microsoft Word or Excel to visible window
+      1. cargo build --workspace --release (dlp-rust workspace)
+      2. Office app launch (Word or Excel to visible window)
 
-    The gate is <= 25% overhead compared to the baseline (agent stopped).
+    Protocol:
+      - One unmeasured warm-up run per workload (discarded).
+      - Baseline: N measured runs with dlp-agent STOPPED.
+      - Hooked:   N measured runs with dlp-agent RUNNING.
+      - Overhead = ((hooked_median - baseline_median) / baseline_median) * 100
+      - Gate: overhead <= 25% for both workloads.
 
-    All baseline measurements are run first (agent STOPPED), then the
-    agent is started and all hooked measurements are run.  Medians are
-    computed per workload, and overhead is calculated as:
-        overhead = ((hooked_median - baseline_median) / baseline_median) * 100
+    Results are written to:
+      C:\ProgramData\DLP\logs\uat-benchmark-{timestamp}.json
 
-    Results are saved to C:\ProgramData\DLP\logs\uat-benchmark-{timestamp}.json.
-
-    Requires elevation because the DLP agent service control requires
-    administrator privileges.
+    The script never stops dlp-server; it only toggles dlp-agent.  Stopping
+    dlp-agent may trigger the admin password challenge UI.  When that happens,
+    the script pauses and tells the operator to confirm the challenge, then
+    resumes automatically once the service reaches Stopped.
 
 .EXAMPLE
     .\Uat-Benchmark.ps1
 
-    Runs the full benchmark suite with default settings (3 runs, 25% threshold).
+    Runs the full CRIT-04 suite with defaults (3 measured runs, 25% gate).
 
 .EXAMPLE
-    .\Uat-Benchmark.ps1 -Workloads @("cargo") -Runs 5 -ThresholdPercent 20.0
+    .\Uat-Benchmark.ps1 -Runs 5 -ThresholdPercent 20.0
 
-    Benchmarks only cargo build with 5 runs and a 20% threshold.
+    Five measured runs with a stricter 20% gate.
 
 .EXAMPLE
-    .\Uat-Benchmark.ps1 -SkipPreconditionCheck
+    .\Uat-Benchmark.ps1 -SkipOffice
 
-    Skips the system precondition checks.
-#
+    Runs only the cargo build benchmark.
+
+.EXAMPLE
+    .\Uat-Benchmark.ps1 -BaselineMode Manual
+
+    Prompts the operator to stop/start dlp-agent manually instead of using
+    the service control APIs.
+#>
 
 [CmdletBinding()]
 param(
     [Parameter()]
-    [string[]]$Workloads = @("cargo", "office"),
+    [ValidateSet('StopService', 'Manual', 'None')]
+    [string]$BaselineMode = 'StopService',
 
     [Parameter()]
     [int]$Runs = 3,
@@ -49,7 +59,16 @@ param(
     [double]$ThresholdPercent = 25.0,
 
     [Parameter()]
-    [switch]$SkipPreconditionCheck
+    [switch]$SkipOffice,
+
+    [Parameter()]
+    [switch]$SkipPreconditionCheck,
+
+    [Parameter()]
+    [string]$CargoProjectDir,
+
+    [Parameter()]
+    [string]$ResultsDir = 'C:\ProgramData\DLP\logs'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -58,16 +77,16 @@ Set-StrictMode -Version Latest
 # ─── Constants ───────────────────────────────────────────────────────────────
 
 $SCRIPT:AgentServiceName = 'dlp-agent'
-$SCRIPT:LogDir = 'C:\ProgramData\DLP\logs'
-$SCRIPT:CargoProjectDir = $PSScriptRoot  # Assumes script is in dlp-rust root
+$SCRIPT:ServerUrl = 'http://127.0.0.1:9090'
+
+# Resolve cargo project dir: default to repo root (one level above scripts/)
+if (-not $CargoProjectDir) {
+    $CargoProjectDir = Split-Path -Path $PSScriptRoot -Parent
+}
 
 # ─── Helpers ─────────────────────────────────────────────────────────────────
 
 function Write-Result {
-    <#
-    .SYNOPSIS
-        Emits a colour-coded result line.
-    #>
     param(
         [Parameter(Mandatory = $true)]
         [string]$Message,
@@ -85,123 +104,71 @@ function Write-Result {
 }
 
 function Test-Preconditions {
-    <#
-    .SYNOPSIS
-        Checks system preconditions before running benchmarks.
-
-    .DESCRIPTION
-        Verifies:
-        - Windows Update is not actively running
-        - No AV scan is in progress
-        - Free memory > 4 GB
-        - dlp-agent service is installed
-
-    .OUTPUTS
-        $true if all preconditions pass, $false otherwise.
-    #>
     $allOk = $true
 
-    # Check Windows Update
-    $wuService = Get-Service -Name 'wuauserv' -ErrorAction SilentlyContinue
-    if ($wuService -and $wuService.Status -eq 'Running') {
-        $wuJob = Get-WmiObject -Class Win32_Service -Filter "Name='wuauserv'" -ErrorAction SilentlyContinue
-        if ($wuJob -and $wuJob.State -eq 'Running') {
-            Write-Result "Windows Update service is running — may interfere with benchmarks" 'WARN'
-            $allOk = $false
-        }
-    }
-
-    # Check AV scan (Defender)
-    $mpCmdRun = Join-Path $env:ProgramFiles 'Windows Defender\MpCmdRun.exe'
-    if (Test-Path $mpCmdRun) {
-        try {
-            $avStatus = & $mpCmdRun -SignatureUpdateCheck 2>&1
-            # MpCmdRun doesn't directly report scan status; check WMI
-            $mpThreat = Get-WmiObject -Namespace "root\Microsoft\Windows\Defender" `
-                -Class MSFT_MpThreatDetection -ErrorAction SilentlyContinue
-            # No direct scan-in-progress WMI class; skip detailed check
-        }
-        catch {
-            # Ignore
-        }
-    }
-
-    # Check free memory
-    $os = Get-WmiObject -Class Win32_OperatingSystem
+    $os = Get-CimInstance -ClassName Win32_OperatingSystem
     $freeGB = [math]::Round($os.FreePhysicalMemory / 1MB, 1)
     if ($freeGB -lt 4) {
-        Write-Result "Free memory is ${freeGB}GB — recommend > 4GB for stable benchmarks" 'WARN'
+        Write-Result "Free memory is ${freeGB}GB -- recommend > 4GB" 'WARN'
         $allOk = $false
     }
     else {
         Write-Result "Free memory: ${freeGB}GB" 'INFO'
     }
 
-    # Check dlp-agent service exists
     $agentSvc = Get-Service -Name $SCRIPT:AgentServiceName -ErrorAction SilentlyContinue
     if (-not $agentSvc) {
-        Write-Result "dlp-agent service not found — is the agent installed?" 'FAIL'
+        Write-Result "dlp-agent service not found -- is the agent installed?" 'FAIL'
         $allOk = $false
     }
     else {
-        Write-Result "dlp-agent service found" 'INFO'
+        Write-Result "dlp-agent service found (current state: $($agentSvc.Status))" 'INFO'
+    }
+
+    try {
+        $null = Invoke-RestMethod -Uri "$($SCRIPT:ServerUrl)/health" -TimeoutSec 5 -ErrorAction Stop
+        Write-Result "dlp-server health check OK ($($SCRIPT:ServerUrl))" 'INFO'
+    }
+    catch {
+        Write-Result "dlp-server not reachable at $($SCRIPT:ServerUrl) -- start it before benchmarking" 'WARN'
+        $allOk = $false
+    }
+
+    if (-not (Test-Path (Join-Path $CargoProjectDir 'Cargo.toml'))) {
+        Write-Result "Cargo.toml not found in $CargoProjectDir" 'FAIL'
+        $allOk = $false
+    }
+    else {
+        Write-Result "Cargo project: $CargoProjectDir" 'INFO'
     }
 
     return $allOk
 }
 
 function Test-RustAvailable {
-    <#
-    .SYNOPSIS
-        Checks if cargo is available in PATH.
-
-    .OUTPUTS
-        $true if cargo is found, $false otherwise.
-    #>
     $cargo = Get-Command 'cargo' -ErrorAction SilentlyContinue
     if ($cargo) {
         Write-Result "cargo found: $($cargo.Source)" 'INFO'
         return $true
     }
-    else {
-        Write-Result "cargo not found in PATH — cargo build benchmark will be skipped" 'WARN'
-        return $false
-    }
+    Write-Result "cargo not found in PATH" 'WARN'
+    return $false
 }
 
 function Measure-CargoBuild {
-    <#
-    .SYNOPSIS
-        Measures the wall-clock time of cargo clean + cargo build.
-
-    .DESCRIPTION
-        Runs from the project root directory.  Returns the elapsed
-        time in seconds.
-
-    .OUTPUTS
-        Elapsed time in seconds (double).
-    #>
-    $projectDir = $SCRIPT:CargoProjectDir
-    if (-not (Test-Path (Join-Path $projectDir 'Cargo.toml'))) {
-        # Try one level up if script is in scripts/ subdirectory
-        $projectDir = Split-Path $projectDir -Parent
-    }
-
-    Push-Location $projectDir
+    Push-Location -LiteralPath $CargoProjectDir
     try {
-        # cargo clean
         $cleanOutput = & cargo clean 2>&1
         if ($LASTEXITCODE -ne 0) {
             throw "cargo clean failed: $cleanOutput"
         }
 
-        # cargo build
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $buildOutput = & cargo build --workspace 2>&1
+        $buildOutput = & cargo build --workspace --release 2>&1
         $sw.Stop()
 
         if ($LASTEXITCODE -ne 0) {
-            throw "cargo build failed: $buildOutput"
+            throw "cargo build --release failed: $buildOutput"
         }
 
         return [math]::Round($sw.Elapsed.TotalSeconds, 2)
@@ -211,20 +178,16 @@ function Measure-CargoBuild {
     }
 }
 
+# Compile the Win32 helper once; avoid Add-Type redefinition in a loop.
+$SCRIPT:WinApiType = $null
+function Get-OfficeWindowClass {
+    param([string]$AppName)
+    if ($AppName -eq 'WINWORD') { return 'OpusApp' }
+    if ($AppName -eq 'EXCEL')  { return 'XLMAIN' }
+    return $null
+}
+
 function Measure-OfficeLaunch {
-    <#
-    .SYNOPSIS
-        Measures the wall-clock time to launch an Office app to a visible window.
-
-    .DESCRIPTION
-        Launches winword.exe or excel.exe and measures the time until
-        MainWindowHandle is non-zero or FindWindow finds the window.
-        Does NOT use WaitForInputIdle (unreliable for modern Office).
-        The process is closed after measurement.
-
-    .OUTPUTS
-        Elapsed time in seconds (double), or -1 on failure.
-    #>
     $officeApps = @(
         @{ Path = Join-Path $env:ProgramFiles 'Microsoft Office\root\Office16\WINWORD.EXE'; Name = 'WINWORD' },
         @{ Path = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Office\root\Office16\WINWORD.EXE'; Name = 'WINWORD' },
@@ -235,7 +198,7 @@ function Measure-OfficeLaunch {
     $appPath = $null
     $appName = $null
     foreach ($app in $officeApps) {
-        if (Test-Path $app.Path) {
+        if (Test-Path -LiteralPath $app.Path) {
             $appPath = $app.Path
             $appName = $app.Name
             break
@@ -247,18 +210,30 @@ function Measure-OfficeLaunch {
         return -1
     }
 
+    if (-not $SCRIPT:WinApiType) {
+        Add-Type -TypeDefinition @"
+using System;
+using System.Runtime.InteropServices;
+public class WinApi {
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
+}
+"@ -ErrorAction Stop
+        $SCRIPT:WinApiType = [WinApi]
+    }
+
     $proc = $null
     try {
         $proc = Start-Process -FilePath $appPath -PassThru
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
 
-        # Wait for window to become visible (up to 30 seconds)
         $deadline = (Get-Date).AddSeconds(30)
         $visible = $false
+        $windowClass = Get-OfficeWindowClass -AppName $appName
+
         while ((Get-Date) -lt $deadline -and -not $visible) {
             Start-Sleep -Milliseconds 100
 
-            # Check MainWindowHandle
             try {
                 $proc.Refresh()
                 if ($proc.MainWindowHandle -ne 0) {
@@ -266,38 +241,14 @@ function Measure-OfficeLaunch {
                     break
                 }
             }
-            catch {
-                # Process may have exited
-            }
+            catch { }
 
-            # Fallback: FindWindow
-            $hwnd = 0
-            if ($appName -eq 'WINWORD') {
-                Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class WinApi {
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
-}
-"@ -ErrorAction SilentlyContinue
-                $hwnd = [WinApi]::FindWindow('OpusApp', $null)
-            }
-            else {
-                Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public class WinApi {
-    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
-    public static extern IntPtr FindWindow(string lpClassName, string lpWindowName);
-}
-"@ -ErrorAction SilentlyContinue
-                $hwnd = [WinApi]::FindWindow('XLMAIN', $null)
-            }
-
-            if ($hwnd -and $hwnd -ne 0) {
-                $visible = $true
-                break
+            if ($windowClass) {
+                $hwnd = $SCRIPT:WinApiType::FindWindow($windowClass, $null)
+                if ($hwnd -ne 0) {
+                    $visible = $true
+                    break
+                }
             }
         }
 
@@ -306,10 +257,8 @@ public class WinApi {
         if ($visible) {
             return [math]::Round($sw.Elapsed.TotalSeconds, 2)
         }
-        else {
-            Write-Result "Office window did not become visible within 30s" 'WARN'
-            return -1
-        }
+        Write-Result "Office window did not become visible within 30s" 'WARN'
+        return -1
     }
     catch {
         Write-Result "Office launch failed: $($_.Exception.Message)" 'WARN'
@@ -319,46 +268,108 @@ public class WinApi {
         if ($proc -and -not $proc.HasExited) {
             Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
         }
-        # Also kill any lingering Office processes started by us
         Get-Process -Name $appName -ErrorAction SilentlyContinue |
             Stop-Process -Force -ErrorAction SilentlyContinue
     }
 }
 
+function Get-Median {
+    param([array]$Values)
+
+    $sorted = $Values | Sort-Object
+    $count = $sorted.Count
+    if ($count -eq 0) { return 0.0 }
+    if ($count % 2 -eq 1) {
+        return [double]$sorted[[math]::Floor($count / 2)]
+    }
+    $mid = $count / 2
+    return ([double]$sorted[$mid - 1] + [double]$sorted[$mid]) / 2.0
+}
+
 function Calculate-Overhead {
-    <#
-    .SYNOPSIS
-        Calculates the percentage overhead of hooked vs baseline measurements.
-
-    .PARAMETER BaselineMedian
-        Baseline median time in seconds.
-
-    .PARAMETER HookedMedian
-        Hooked median time in seconds.
-
-    .OUTPUTS
-        Overhead percentage (double).
-    #>
     param(
         [Parameter(Mandatory = $true)][double]$BaselineMedian,
         [Parameter(Mandatory = $true)][double]$HookedMedian
     )
-
-    if ($BaselineMedian -eq 0) {
-        return 0.0
-    }
+    if ($BaselineMedian -eq 0) { return 0.0 }
     return [math]::Round((($HookedMedian - $BaselineMedian) / $BaselineMedian) * 100.0, 2)
 }
 
-function Format-Results {
-    <#
-    .SYNOPSIS
-        Formats and displays the benchmark results as a table.
+function Wait-ForServiceState {
+    param(
+        [string]$DesiredState,
+        [int]$TimeoutSeconds
+    )
+    $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        $svc = Get-Service -Name $SCRIPT:AgentServiceName -ErrorAction SilentlyContinue
+        if ($svc -and $svc.Status -eq $DesiredState) {
+            return $true
+        }
+        Start-Sleep -Seconds 1
+    }
+    return $false
+}
 
-    .PARAMETER Results
-        Array of result objects with Workload, BaselineMedian, HookedMedian,
-        OverheadPercent, and Passed properties.
-    #>
+function Stop-AgentForBaseline {
+    if ($BaselineMode -eq 'None') {
+        Write-Host "`n[Baseline] BaselineMode=None -- leaving dlp-agent in current state" -ForegroundColor Yellow
+        return
+    }
+
+    if ($BaselineMode -eq 'Manual') {
+        Write-Host "`n[Baseline] MANUAL MODE: stop dlp-agent now (confirm any password challenge), then press ENTER." -ForegroundColor Yellow
+        $null = Read-Host
+        return
+    }
+
+    # StopService mode
+    $svc = Get-Service -Name $SCRIPT:AgentServiceName -ErrorAction SilentlyContinue
+    if (-not $svc -or $svc.Status -eq 'Stopped') {
+        Write-Result "dlp-agent already stopped" 'INFO'
+        return
+    }
+
+    Write-Host "`n[Baseline] Stopping dlp-agent for baseline measurements..." -ForegroundColor Yellow
+    Write-Host "  NOTE: If a password challenge UI appears, confirm it so the service can stop." -ForegroundColor Yellow
+
+    Stop-Service -Name $SCRIPT:AgentServiceName -Force -ErrorAction Stop
+
+    if (Wait-ForServiceState -DesiredState 'Stopped' -TimeoutSeconds 120) {
+        Write-Result "dlp-agent stopped" 'INFO'
+    }
+    else {
+        throw "dlp-agent did not stop within 120 seconds. Aborting benchmark."
+    }
+}
+
+function Start-AgentForHooked {
+    if ($BaselineMode -eq 'None') {
+        Write-Host "`n[Hooked] BaselineMode=None -- leaving dlp-agent in current state" -ForegroundColor Yellow
+        return
+    }
+
+    $svc = Get-Service -Name $SCRIPT:AgentServiceName -ErrorAction SilentlyContinue
+    if ($svc -and $svc.Status -eq 'Running') {
+        Write-Result "dlp-agent already running" 'INFO'
+        return
+    }
+
+    Write-Host "`n[Hooked] Starting dlp-agent for hooked measurements..." -ForegroundColor Yellow
+    Start-Service -Name $SCRIPT:AgentServiceName -ErrorAction Stop
+
+    if (Wait-ForServiceState -DesiredState 'Running' -TimeoutSeconds 60) {
+        Write-Result "dlp-agent running" 'INFO'
+    }
+    else {
+        throw "dlp-agent did not start within 60 seconds. Aborting benchmark."
+    }
+
+    # Give hooks a moment to settle into newly-started processes.
+    Start-Sleep -Seconds 3
+}
+
+function Format-Results {
     param([array]$Results)
 
     Write-Host "`n=== Benchmark Results ===" -ForegroundColor Cyan
@@ -374,102 +385,57 @@ function Format-Results {
     }
 }
 
-function Get-Median {
-    <#
-    .SYNOPSIS
-        Computes the median of an array of doubles.
-
-    .PARAMETER Values
-        Array of numeric values.
-
-    .OUTPUTS
-        The median value (double).
-    #>
-    param([array]$Values)
-
-    $sorted = $Values | Sort-Object
-    $count = $sorted.Count
-    if ($count -eq 0) {
-        return 0.0
-    }
-    if ($count % 2 -eq 1) {
-        return $sorted[[math]::Floor($count / 2)]
-    }
-    else {
-        $mid = $count / 2
-        return ($sorted[$mid - 1] + $sorted[$mid]) / 2.0
-    }
-}
-
-function Stop-DlpAgentService {
-    <#
-    .SYNOPSIS
-        Stops the dlp-agent service if it is running.
-    #>
-    $svc = Get-Service -Name $SCRIPT:AgentServiceName -ErrorAction SilentlyContinue
-    if ($svc -and $svc.Status -eq 'Running') {
-        Stop-Service -Name $SCRIPT:AgentServiceName -Force -ErrorAction Stop
-        Start-Sleep -Seconds 2
-        Write-Result "dlp-agent service stopped for baseline measurements" 'INFO'
-    }
-}
-
-function Start-DlpAgentService {
-    <#
-    .SYNOPSIS
-        Starts the dlp-agent service if it is not running.
-    #>
-    $svc = Get-Service -Name $SCRIPT:AgentServiceName -ErrorAction SilentlyContinue
-    if ($svc -and $svc.Status -ne 'Running') {
-        Start-Service -Name $SCRIPT:AgentServiceName -ErrorAction Stop
-        Start-Sleep -Seconds 3
-        Write-Result "dlp-agent service started for hooked measurements" 'INFO'
-    }
-}
-
 # ─── Main ────────────────────────────────────────────────────────────────────
 
 Write-Host "=== DLP CRIT-04 Benchmark UAT ===" -ForegroundColor Cyan
 Write-Host "Threshold: ${ThresholdPercent}% overhead" -ForegroundColor Cyan
-Write-Host "Runs per workload: $Runs" -ForegroundColor Cyan
+Write-Host "Measured runs per workload: $Runs" -ForegroundColor Cyan
+Write-Host "Baseline mode: $BaselineMode" -ForegroundColor Cyan
+Write-Host "Cargo project: $CargoProjectDir" -ForegroundColor Cyan
 
-# Preconditions
+$workloads = @('cargo')
+if (-not $SkipOffice) {
+    $workloads += 'office'
+}
+
 if (-not $SkipPreconditionCheck) {
     Write-Host "`n[Preconditions] Checking system state..." -ForegroundColor Yellow
     $preconditionsOk = Test-Preconditions
     if (-not $preconditionsOk) {
-        Write-Result "One or more preconditions failed — continuing with caution" 'WARN'
+        Write-Result "One or more preconditions failed -- continuing with caution" 'WARN'
     }
 }
 
-# Check Rust availability
-$rustAvailable = Test-RustAvailable
-if ($Workloads -contains 'cargo' -and -not $rustAvailable) {
-    Write-Result "cargo not available — removing cargo from workloads" 'WARN'
-    $Workloads = $Workloads | Where-Object { $_ -ne 'cargo' }
+if (-not (Test-RustAvailable)) {
+    throw "cargo is required for the cargo build benchmark"
 }
 
-if ($Workloads.Count -eq 0) {
-    Write-Error "No workloads available to benchmark."
-    exit 1
-}
-
-# Ensure log directory exists
-if (-not (Test-Path $SCRIPT:LogDir)) {
-    New-Item -ItemType Directory -Path $SCRIPT:LogDir -Force | Out-Null
+if (-not (Test-Path $ResultsDir)) {
+    New-Item -ItemType Directory -Path $ResultsDir -Force | Out-Null
 }
 
 $allResults = @()
 $timestamp = Get-Date -Format 'yyyyMMdd-HHmmss'
-$logFile = Join-Path $SCRIPT:LogDir "uat-benchmark-${timestamp}.json"
-
-# ── Run ALL baseline measurements first (agent STOPPED) ──────────────────────
-Write-Host "`n[Baseline] Stopping dlp-agent for baseline measurements..." -ForegroundColor Yellow
-Stop-DlpAgentService
+$logFile = Join-Path $ResultsDir "uat-benchmark-${timestamp}.json"
 
 $baselineMeasurements = @{}
-foreach ($workload in $Workloads) {
-    Write-Host "`n[Baseline] $workload ($Runs runs)..." -ForegroundColor Yellow
+$hookedMeasurements = @{}
+
+# ── Warm-up (discarded) ──────────────────────────────────────────────────────
+Write-Host "`n[Warm-up] Discarded warm-up runs..." -ForegroundColor Yellow
+foreach ($workload in $workloads) {
+    Write-Host "  Warm-up $workload..." -ForegroundColor Cyan
+    $null = switch ($workload) {
+        'cargo'  { Measure-CargoBuild }
+        'office' { Measure-OfficeLaunch }
+    }
+}
+
+# ── Baseline measurements (agent STOPPED or manual) ──────────────────────────
+Stop-AgentForBaseline
+
+foreach ($workload in $workloads) {
+    Write-Host "`n[Baseline] $workload ($Runs measured runs)..." -ForegroundColor Yellow
     $times = @()
     for ($i = 1; $i -le $Runs; $i++) {
         Write-Host "  Run $i/$Runs..." -ForegroundColor Cyan
@@ -489,13 +455,11 @@ foreach ($workload in $Workloads) {
     $baselineMeasurements[$workload] = $times
 }
 
-# ── Start agent for hooked measurements ──────────────────────────────────────
-Write-Host "`n[Hooked] Starting dlp-agent for hooked measurements..." -ForegroundColor Yellow
-Start-DlpAgentService
+# ── Hooked measurements (agent RUNNING) ──────────────────────────────────────
+Start-AgentForHooked
 
-$hookedMeasurements = @{}
-foreach ($workload in $Workloads) {
-    Write-Host "`n[Hooked] $workload ($Runs runs)..." -ForegroundColor Yellow
+foreach ($workload in $workloads) {
+    Write-Host "`n[Hooked] $workload ($Runs measured runs)..." -ForegroundColor Yellow
     $times = @()
     for ($i = 1; $i -le $Runs; $i++) {
         Write-Host "  Run $i/$Runs..." -ForegroundColor Cyan
@@ -516,25 +480,25 @@ foreach ($workload in $Workloads) {
 }
 
 # ── Calculate results ────────────────────────────────────────────────────────
-foreach ($workload in $Workloads) {
+foreach ($workload in $workloads) {
     $baselineTimes = $baselineMeasurements[$workload]
     $hookedTimes = $hookedMeasurements[$workload]
 
     if ($baselineTimes.Count -eq 0 -or $hookedTimes.Count -eq 0) {
-        Write-Result "$workload`: insufficient data to calculate overhead" 'WARN'
+        Write-Result "$workload`: insufficient data" 'WARN'
         $allResults += [PSCustomObject]@{
-            Workload       = $workload
-            BaselineMedian = 0.0
-            HookedMedian   = 0.0
+            Workload        = $workload
+            BaselineMedian  = 0.0
+            HookedMedian    = 0.0
             OverheadPercent = 0.0
-            Passed         = $false
+            Passed          = $false
         }
         continue
     }
 
-    $baselineMedian = Get-Median $baselineTimes
-    $hookedMedian = Get-Median $hookedTimes
-    $overhead = Calculate-Overhead $baselineMedian $hookedMedian
+    $baselineMedian = Get-Median -Values $baselineTimes
+    $hookedMedian = Get-Median -Values $hookedTimes
+    $overhead = Calculate-Overhead -BaselineMedian $baselineMedian -HookedMedian $hookedMedian
     $passed = $overhead -le $ThresholdPercent
 
     $allResults += [PSCustomObject]@{
@@ -547,17 +511,18 @@ foreach ($workload in $Workloads) {
 }
 
 # ── Display results ──────────────────────────────────────────────────────────
-Format-Results $allResults
+Format-Results -Results $allResults
 
-# ── Save to JSON ─────────────────────────────────────────────────────────────
+# ── Save JSON ────────────────────────────────────────────────────────────────
 $jsonOutput = @{
-    timestamp      = (Get-Date).ToUniversalTime().ToString('o')
+    timestamp         = (Get-Date).ToUniversalTime().ToString('o')
     threshold_percent = $ThresholdPercent
-    runs           = $Runs
-    workloads      = $Workloads
-    baseline       = $baselineMeasurements
-    hooked         = $hookedMeasurements
-    results        = $allResults
+    runs              = $Runs
+    baseline_mode     = $BaselineMode
+    workloads         = $workloads
+    baseline          = $baselineMeasurements
+    hooked            = $hookedMeasurements
+    results           = $allResults
 } | ConvertTo-Json -Depth 10
 
 [System.IO.File]::WriteAllText($logFile, $jsonOutput)
@@ -567,7 +532,7 @@ Write-Result "Results saved to $logFile" 'INFO'
 $totalPass = ($allResults | Where-Object { $_.Passed }).Count
 $totalFail = ($allResults | Where-Object { -not $_.Passed }).Count
 
-Write-Host "`n=== Results ===" -ForegroundColor Cyan
+Write-Host "`n=== Summary ===" -ForegroundColor Cyan
 Write-Result "Total PASS: $totalPass" 'PASS'
 Write-Result "Total FAIL: $totalFail" 'FAIL'
 
