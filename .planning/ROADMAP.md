@@ -668,14 +668,15 @@ Standard patterns (likely skip phase research): Phases 48, 49, 50, 52, 54, 55, 5
 **Goal:** Deliver foundational XPS page geometry and text-metric modules for print watermarking.
 **Requirements**: WATERMARK-01 (foundational), WATERMARK-02 (foundational)
 **Depends on:** Phase 67
-**Plans:** 1/2 plans complete
+**Plans:** 2/6 plans complete (Plans 01-02 implemented; Plans 03-06 are gap closure for UAT)
 Plans:
 
-- [x] 56.1-01-PLAN.md
-- [x] 56.1-02-PLAN.md
-- [x] 56.1-03-PLAN.md
-
-- [x] TBD (run /gsd-plan-phase 67.1 to break down) (completed 2026-06-12)
+- [x] `67.1-01-PLAN.md` — XPS Page Geometry + Text Metrics: WatermarkGeometry, FontMetrics trait, TestFontMetrics, DirectWriteFontMetrics with ComGuard RAII
+- [x] `67.1-02-PLAN.md` — XPS ZIP Watermark Injection: streaming XML reader-writer, namespace propagation, ZIP archive rewrite with compression preservation
+- [ ] `67.1-03-PLAN.md` — Gap closure: cargo fmt import order in classification_cache.rs + rustdoc fixes in print_watermark.rs and print_watermark_directwrite.rs
+- [ ] `67.1-04-PLAN.md` — Gap closure: rustdoc fixes in detection/, device_, dacl_tripwire.rs, and chrome/cache.rs
+- [ ] `67.1-05-PLAN.md` — Gap closure: rustdoc fixes in chrome/frame.rs, offline.rs, audit_, clipboard, server_client, disk_enforcer, and etw_kernel_file.rs
+- [ ] `67.1-06-PLAN.md` — Gap closure: rustdoc fixes in config.rs, ui_spawner.rs, ipc/pipe2.rs, hook_ipc.rs, password_stop.rs + full quality gates including sonar-scanner
 
 **Cross-cutting constraints:**
 
