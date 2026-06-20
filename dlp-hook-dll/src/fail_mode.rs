@@ -323,6 +323,48 @@ impl FailModeState {
     pub fn set_state(&self, new_state: FailState) {
         self.state.store(new_state as u8, Ordering::Relaxed);
     }
+
+    /// Transition to ISOLATED if the cache is stale.
+    ///
+    /// Called by the pipe client or background thread when cache staleness is
+    /// detected. This is the "cache stale" guard for the DEGRADED -> ISOLATED
+    /// transition documented in the state machine table.
+    ///
+    /// # Arguments
+    ///
+    /// * `cache_version` - The last known good cache version.
+    /// * `header_version` - The current version from the cache header.
+    /// * `header_created_at` - When the cache buffer was built (Unix epoch).
+    /// * `now_secs` - Current wall-clock seconds (Unix epoch).
+    /// * `classification` - The classification tier for staleness budget lookup.
+    ///
+    /// # Returns
+    ///
+    /// The new state after transition (may be same as before).
+    pub fn transition_if_cache_stale(
+        &self,
+        cache_version: u64,
+        header_version: u64,
+        header_created_at: u64,
+        now_secs: u64,
+        classification: Classification,
+    ) -> FailState {
+        let old_state = self.current_state();
+        if old_state != FailState::Degraded && old_state != FailState::Healthy {
+            // Only Healthy and Degraded can transition on staleness.
+            return old_state;
+        }
+
+        if is_cache_stale(cache_version, header_version, header_created_at, now_secs, classification) {
+            // Cache is stale: force transition to ISOLATED regardless of failure count.
+            self.consecutive_failures.store(0, Ordering::Relaxed);
+            self.consecutive_successes.store(0, Ordering::Relaxed);
+            self.state.store(FailState::Isolated as u8, Ordering::Relaxed);
+            FailState::Isolated
+        } else {
+            old_state
+        }
+    }
 }
 
 impl Default for FailModeState {
