@@ -320,6 +320,7 @@ impl FailModeState {
     /// # Safety
     ///
     /// This should only be called after verifying all entry guards.
+    #[cfg(any(test, feature = "test-helpers"))]
     pub fn set_state(&self, new_state: FailState) {
         self.state.store(new_state as u8, Ordering::Relaxed);
     }
