@@ -18,6 +18,7 @@
 use crossbeam_channel::Receiver;
 use dashmap::DashMap;
 use dlp_common::hook_ipc::{BypassAlert, BypassReason};
+use dlp_common::abac::EnforcementMode;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -90,6 +91,9 @@ pub struct CorrelatorConfig {
     pub image_sha_failure_ttl_secs: u64,
     /// Whether to operate in reduced mode (severity capped to warn).
     pub reduced_mode: bool,
+    /// Phase 55.1: Global enforcement mode to suppress bypass alerts in Audit mode.
+    /// Only Audit suppresses; PerPolicy, Block, and AuditAndBlock continue emitting alerts.
+    pub enforcement_mode: EnforcementMode,
 }
 
 impl Default for CorrelatorConfig {
@@ -104,6 +108,7 @@ impl Default for CorrelatorConfig {
             image_sha_ttl_secs: DEFAULT_IMAGE_SHA_TTL_SECS,
             image_sha_failure_ttl_secs: DEFAULT_IMAGE_SHA_FAILURE_TTL_SECS,
             reduced_mode: false,
+            enforcement_mode: EnforcementMode::default(),
         }
     }
 }
@@ -1017,6 +1022,14 @@ mod tests {
         // Delta should be a reasonable value (not necessarily 0).
         // On non-Windows it's 0; on Windows it's the actual offset.
         let _ = correlator.qpc_delta;
+    }
+
+    // --- CorrelatorConfig default mode test (Phase 55.1) ---
+
+    #[test]
+    fn test_correlator_config_default_mode_is_block() {
+        let config = CorrelatorConfig::default();
+        assert_eq!(config.enforcement_mode, EnforcementMode::Block);
     }
 
     // --- Allowlist tests (WR-01) ---
