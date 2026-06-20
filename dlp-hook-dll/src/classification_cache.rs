@@ -562,6 +562,11 @@ impl LruCache {
                 }
                 // Version mismatch — invalidate by clearing the entry.
                 self.entries[i].0.clear();
+                self.entries[i].1 = Classification::T1;
+                self.entries[i].2 = 0;
+                if self.count > 0 {
+                    self.count -= 1;
+                }
                 return None;
             }
         }
