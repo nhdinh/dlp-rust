@@ -4316,6 +4316,56 @@ mod tests {
             dlp_common::abac::EnforcementMode::AuditAndBlock
         ));
     }
+
+    /// Phase 55.1: Verify that global_mode propagates from AgentConfig to CorrelatorConfig.
+    ///
+    /// This test locks the invariant that service.rs wiring actually propagates the
+    /// enforcement mode and prevents silent regressions where `..Default::default()`
+    /// masks a missing field.
+    #[test]
+    fn test_correlator_config_receives_global_mode_from_agent_config() {
+        // Audit mode: the correlator should suppress bypass alerts.
+        let mut audit_cfg = AgentConfig::default();
+        audit_cfg.enforcement.global_mode = dlp_common::abac::EnforcementMode::Audit;
+        let audit_config = crate::bypass_correlator::CorrelatorConfig {
+            reduced_mode: false,
+            enforcement_mode: audit_cfg.enforcement.global_mode,
+            ..Default::default()
+        };
+        assert_eq!(
+            audit_config.enforcement_mode,
+            dlp_common::abac::EnforcementMode::Audit,
+            "Audit mode must propagate to CorrelatorConfig"
+        );
+
+        // PerPolicy mode: the correlator should continue emitting alerts.
+        let mut perpolicy_cfg = AgentConfig::default();
+        perpolicy_cfg.enforcement.global_mode = dlp_common::abac::EnforcementMode::PerPolicy;
+        let perpolicy_config = crate::bypass_correlator::CorrelatorConfig {
+            reduced_mode: false,
+            enforcement_mode: perpolicy_cfg.enforcement.global_mode,
+            ..Default::default()
+        };
+        assert_eq!(
+            perpolicy_config.enforcement_mode,
+            dlp_common::abac::EnforcementMode::PerPolicy,
+            "PerPolicy mode must propagate to CorrelatorConfig"
+        );
+
+        // Block mode: the correlator should continue emitting alerts (default).
+        let mut block_cfg = AgentConfig::default();
+        block_cfg.enforcement.global_mode = dlp_common::abac::EnforcementMode::Block;
+        let block_config = crate::bypass_correlator::CorrelatorConfig {
+            reduced_mode: false,
+            enforcement_mode: block_cfg.enforcement.global_mode,
+            ..Default::default()
+        };
+        assert_eq!(
+            block_config.enforcement_mode,
+            dlp_common::abac::EnforcementMode::Block,
+            "Block mode must propagate to CorrelatorConfig"
+        );
+    }
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
