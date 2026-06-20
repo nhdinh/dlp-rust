@@ -67,7 +67,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 53: ETW Kernel-File Consumer + Bypass Correlator + Hook Journal Ring** — turn hook-vs-ETW divergence into auditable BypassAlert events routed through SIEM and the alert router. (completed 2026-05-28)
 - [x] **Phase 54: Admin TUI Protected Paths + Bypass Alerts Screens** — operator UX for the two new server surfaces. (completed 2026-05-28)
 - [x] **Phase 55: Monitor-Only / Audit-Only Per-Policy Enforcement Mode** — safe-rollout mode every industry DLP requires before production deployment. (completed 2026-05-29)
-- [ ] **Phase 55.1: Close gap MODE-01 — read global_enforcement_mode in BypassCorrelator (INSERTED)** — urgent gap closure.
+- [x] **Phase 55.1: Close gap MODE-01 — read global_enforcement_mode in BypassCorrelator (INSERTED)** — urgent gap closure. (completed 2026-06-20)
 - [x] **Phase 56: SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004)** — fold SEED-004 in: device enumeration, two new ABAC attributes, admin TUI extension. (completed 2026-06-06)
 - [x] **Phase 57: Operational Deployment Guide + AV/EDR Allowlist + UAT** — the milestone ship gate; per-vendor allowlist procedures, hash publishing, and real-Windows UAT (folds in former HARD-05). (completed 2026-06-10)
 - [ ] **Phase 58: Differentiators Bundle (cuttable to v0.10.1 if scope pressure hits)** — cuttable as a unit to v0.10.1 if scope pressure hits; otherwise materially improves deployability.

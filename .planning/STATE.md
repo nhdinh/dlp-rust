@@ -5,15 +5,15 @@ milestone_name: Real-Time File Access Prevention
 current_phase: 55.1
 current_phase_name: close-gap-mode-01-read-global-enforcement-mode-in-bypasscorr
 status: executing
-stopped_at: context exhaustion at 75% (2026-06-19)
-last_updated: "2026-06-20T14:20:55.793Z"
+stopped_at: Plan 02 complete (2026-06-20)
+last_updated: "2026-06-20T14:50:00.000Z"
 last_activity: 2026-06-20
-last_activity_desc: Phase 55.1 execution started
+last_activity_desc: Phase 55.1 Plan 02 complete — Audit-mode suppression guards + 6 tests
 progress:
   total_phases: 42
   completed_phases: 33
   total_plans: 157
-  completed_plans: 146
+  completed_plans: 147
   percent: 79
 ---
 
@@ -141,11 +141,11 @@ None.
 
 ## Next Action
 
-### Immediate: Phase 53.1 verification
+### Immediate: Phase 55.1 verification
 
-All 4 plans in Phase 53.1 are complete. Ready for verification (/gsd:verify-phase or /gsd:verify-work).
+Both plans in Phase 55.1 are complete. Ready for verification (`/gsd-verify-phase` or `/gsd-verify-work`).
 
-**Scope:** Verify all 4 plans in Phase 53.1: Plan 00 (Wave 0 test stubs), Plan 01 (IpcPayloadV1 BypassAlert variant), Plan 02 (Agent IPC routing), Plan 03 (Hook DLL emit_bypass_alert).
+**Scope:** Verify Plan 01 (CorrelatorConfig.enforcement_mode field + service.rs wiring) and Plan 02 (Audit-mode suppression guards + 6 tests).
 
 ---
 
@@ -155,9 +155,9 @@ All 4 plans in Phase 53.1 are complete. Ready for verification (/gsd:verify-phas
 
 ## Session Continuity
 
-Last session: 2026-06-20T14:19:09.811Z
-Stopped at: context exhaustion at 75% (2026-06-19)
-Resume file: .planning/phases/53.1-close-gap-etw-03-add-bypassalert-to-ipcpayloadv1-and-route-i/53.1-01-SUMMARY.md
+Last session: 2026-06-20T14:50:00.000Z
+Stopped at: Phase 55.1 Plan 02 complete — Audit-mode suppression guards + 6 tests
+Resume file: .planning/phases/55.1-close-gap-mode-01-read-global-enforcement-mode-in-bypasscorr/55.1-02-SUMMARY.md
 
 ## Operator Next Steps
 
@@ -184,9 +184,12 @@ Resume file: .planning/phases/53.1-close-gap-etw-03-add-bypassalert-to-ipcpayloa
 | Phase 53.1 P01 | 8m | 2 tasks | 3 files |
 | Phase 66.1 P04 | 28m | - tasks | - files |
 | Phase 55.1 P01 | 12m | 3 tasks | 2 files |
+| Phase 55.1 P02 | 18m | 2 tasks | 1 file |
 
 ## Decisions
 
+- [Phase 55.1]: Three-layer defense-in-depth guard pattern for Audit-mode suppression: efficiency at handle_etw_event entry, defense at submit_bypass_alert IPC boundary, safety net at emit_alert emission boundary
+- [Phase 55.1]: PerPolicy mode explicitly tested as regression safety — it is the default production config and must NOT suppress bypass alerts
 - [Phase ?]: Extracted compute_override_decision() as pure testable function from run_event_loop
 - [Phase ?]: Added approver_sid and approval_expiry to AuditEvent in dlp-common for cross-crate sharing
 - [Phase ?]: Hook DLL path approval override DEFERRED to follow-up phase — structural wiring only
