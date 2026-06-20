@@ -712,3 +712,15 @@ Plans:
 - Synthetic events are appended to relay/syslog lists after persistence (relay failure does not roll back audit log)
 - TUI screen follows the BypassAlertList pattern (list + detail popup + filter + pagination)
 - SystemMenu item count updated from 14 to 15 with test coverage
+
+---
+
+## Backlog
+
+### Phase 999.28: Follow-up — Phase 28 incomplete plans (BACKLOG)
+
+**Goal:** Resolve plans that ran without producing summaries during Phase 28 execution
+**Source phase:** 28
+**Deferred at:** 2026-06-20 during /gsd-progress --next advancement to Phase 55.1
+**Plans:**
+- [ ] 28-05: admin-tui-screens (ran, no SUMMARY.md)
