@@ -91,8 +91,9 @@ pub struct CorrelatorConfig {
     pub image_sha_failure_ttl_secs: u64,
     /// Whether to operate in reduced mode (severity capped to warn).
     pub reduced_mode: bool,
-    /// Phase 55.1: Global enforcement mode to suppress bypass alerts in Audit mode.
-    /// Only Audit suppresses; PerPolicy, Block, and AuditAndBlock continue emitting alerts.
+    /// Phase 55.1: Global enforcement mode used to suppress bypass alerts in Audit mode.
+    /// When the mode is `Audit`, the hook DLL returns ALLOW for all operations, so the
+    /// absence of a journal entry is expected behavior and bypass alerts are suppressed.
     pub enforcement_mode: EnforcementMode,
 }
 
@@ -852,7 +853,20 @@ impl BypassCorrelator {
     ///
     /// Uses the local audit emitter to write to the JSONL log.
     /// Errors are logged but not propagated (best-effort).
+    ///
+    /// Phase 55.1: Defense in depth — this function also checks the global mode.
+    /// If the correlator is in Audit mode, no audit event is emitted because the
+    /// absence of a hook journal is expected behavior, not a bypass.
     async fn emit_audit_event(&self, _reason: BypassReason, event: &EtwFileEvent) {
+        if self.config.enforcement_mode.is_audit() {
+            trace!(
+                pid = event.pid,
+                file_name = %event.file_name,
+                "suppressing bypass audit event — global mode is Audit"
+            );
+            return;
+        }
+
         let event_type = dlp_common::audit::EventType::BypassAlertDetected;
         let agent_id = self.agent_id.clone();
 
@@ -1834,6 +1848,8 @@ mod tests {
 
     #[tokio::test]
     async fn test_audit_mode_suppresses_emit_alert() {
+        crate::audit_emitter::enable_test_capture();
+
         let config = CorrelatorConfig {
             enforcement_mode: EnforcementMode::Audit,
             ..Default::default()
@@ -1856,6 +1872,12 @@ mod tests {
         assert!(
             batch.is_empty(),
             "emit_alert safety net must suppress in Audit mode"
+        );
+
+        let audit_events = crate::audit_emitter::drain_test_events();
+        assert!(
+            audit_events.is_empty(),
+            "emit_audit_event must be suppressed in Audit mode"
         );
     }
 
