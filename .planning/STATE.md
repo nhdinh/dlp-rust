@@ -191,6 +191,7 @@ Resume file: .planning/phases/55.1-close-gap-mode-01-read-global-enforcement-mod
 | Date | Slug | Description | Status |
 | ---- | ---- | ----------- | ------ |
 | 2026-06-21 | fix-uat-benchmark-warmup | Fixed `scripts/Uat-Benchmark.ps1` cargo warm-up build failure caused by `$ErrorActionPreference = 'Stop'` treating cargo stderr as terminating error. Added `Invoke-CargoBuildCommand` helper. | complete |
+| 2026-06-21 | verify-dlp-user-ui-not-spawned | Checked whether dlp-agent still spawns dlp-user-ui. Finding: it still spawns at startup and on session changes via ui_spawner::init() and session_monitor. | complete |
 
 ## Decisions
 
