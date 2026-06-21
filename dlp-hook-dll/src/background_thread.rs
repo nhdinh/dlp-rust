@@ -161,9 +161,14 @@ pub fn start_background_thread(
 
     let thread_handle = std::thread::spawn(move || {
         let header_ptr = header_addr as *const CacheHeader;
-        let event_handle =
-            windows::Win32::Foundation::HANDLE(event_addr as *mut std::ffi::c_void);
-        background_thread_loop(header_ptr, fail_state_clone, event_handle, verify_fn, mapping_valid_clone);
+        let event_handle = windows::Win32::Foundation::HANDLE(event_addr as *mut std::ffi::c_void);
+        background_thread_loop(
+            header_ptr,
+            fail_state_clone,
+            event_handle,
+            verify_fn,
+            mapping_valid_clone,
+        );
     });
 
     let bt = BackgroundThread {
@@ -226,9 +231,7 @@ pub fn shutdown_background_thread() {
             let _ = handle.join();
         } else {
             // Timeout — log warning and detach (drop without join).
-            tracing::warn!(
-                "background_thread shutdown timed out after 5s; detaching thread"
-            );
+            tracing::warn!("background_thread shutdown timed out after 5s; detaching thread");
             // Dropping the JoinHandle without calling join() detaches the thread.
             drop(handle);
         }

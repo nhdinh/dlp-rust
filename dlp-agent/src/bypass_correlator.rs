@@ -17,8 +17,8 @@
 
 use crossbeam_channel::Receiver;
 use dashmap::DashMap;
-use dlp_common::hook_ipc::{BypassAlert, BypassReason};
 use dlp_common::abac::EnforcementMode;
+use dlp_common::hook_ipc::{BypassAlert, BypassReason};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -1808,7 +1808,10 @@ mod tests {
 
         // Batch should be empty — alert suppressed in Audit mode.
         let batch = correlator.alert_batch.lock().await;
-        assert!(batch.is_empty(), "bypass alert must be suppressed in Audit mode");
+        assert!(
+            batch.is_empty(),
+            "bypass alert must be suppressed in Audit mode"
+        );
     }
 
     #[tokio::test]
@@ -1865,7 +1868,9 @@ mod tests {
             nt_path_converted: true,
         };
 
-        correlator.emit_alert(event, BypassReason::NoHookJournal).await;
+        correlator
+            .emit_alert(event, BypassReason::NoHookJournal)
+            .await;
 
         // Batch should be empty and no audit event emitted — safety net works.
         let batch = correlator.alert_batch.lock().await;
@@ -1898,15 +1903,13 @@ mod tests {
             nt_path_converted: true,
         };
 
-        correlator.emit_alert(event, BypassReason::NoHookJournal).await;
+        correlator
+            .emit_alert(event, BypassReason::NoHookJournal)
+            .await;
 
         // Batch should have exactly 1 alert — Block mode allows bypass alerts.
         let batch = correlator.alert_batch.lock().await;
-        assert_eq!(
-            batch.len(),
-            1,
-            "bypass alert must be emitted in Block mode"
-        );
+        assert_eq!(batch.len(), 1, "bypass alert must be emitted in Block mode");
     }
 
     #[tokio::test]
@@ -1926,7 +1929,9 @@ mod tests {
             nt_path_converted: true,
         };
 
-        correlator.emit_alert(event, BypassReason::NoHookJournal).await;
+        correlator
+            .emit_alert(event, BypassReason::NoHookJournal)
+            .await;
 
         // Batch should have exactly 1 alert — AuditAndBlock mode allows bypass alerts.
         let batch = correlator.alert_batch.lock().await;
@@ -1954,7 +1959,9 @@ mod tests {
             nt_path_converted: true,
         };
 
-        correlator.emit_alert(event, BypassReason::NoHookJournal).await;
+        correlator
+            .emit_alert(event, BypassReason::NoHookJournal)
+            .await;
 
         // Batch should have exactly 1 alert — PerPolicy mode allows bypass alerts.
         // This is the most important regression-safety test because PerPolicy is the

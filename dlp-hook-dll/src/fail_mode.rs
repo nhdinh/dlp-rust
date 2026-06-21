@@ -356,11 +356,18 @@ impl FailModeState {
             return old_state;
         }
 
-        if is_cache_stale(cache_version, header_version, header_created_at, now_secs, classification) {
+        if is_cache_stale(
+            cache_version,
+            header_version,
+            header_created_at,
+            now_secs,
+            classification,
+        ) {
             // Cache is stale: force transition to ISOLATED regardless of failure count.
             self.consecutive_failures.store(0, Ordering::Relaxed);
             self.consecutive_successes.store(0, Ordering::Relaxed);
-            self.state.store(FailState::Isolated as u8, Ordering::Relaxed);
+            self.state
+                .store(FailState::Isolated as u8, Ordering::Relaxed);
             FailState::Isolated
         } else {
             old_state
@@ -1136,7 +1143,13 @@ mod tests {
         // staleness before calling record_pipe_failure.
         let now_secs = 2000;
         let created_at = 1000; // 1000s old, exceeds T4=30s
-        assert!(is_cache_stale(5, 6, created_at, now_secs, Classification::T4));
+        assert!(is_cache_stale(
+            5,
+            6,
+            created_at,
+            now_secs,
+            Classification::T4
+        ));
     }
 
     #[test]
