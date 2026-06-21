@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
-current_phase: 49
-current_phase_name: Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback
+current_phase: 50.1
+current_phase_name: Close gap FAIL-01/02/03 — verify ISOLATED->RESYNC->HEALTHY recovery at runtime
 status: executing
 stopped_at: context exhaustion at 75% (2026-06-21)
-last_updated: "2026-06-21T06:13:05.534Z"
+last_updated: "2026-06-21T06:49:43.591Z"
 last_activity: 2026-06-21
-last_activity_desc: Phase 48 complete, transitioned to Phase 49
+last_activity_desc: Phase 50 complete, transitioned to Phase 50.1
 progress:
   total_phases: 42
   completed_phases: 35
@@ -29,10 +29,10 @@ progress:
 
 ## Current Position
 
-Phase: 49 — Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback
+Phase: 50.1 — Close gap FAIL-01/02/03 — verify ISOLATED->RESYNC->HEALTHY recovery at runtime
 Plan: Not started
 Status: Ready to execute
-Last activity: 2026-06-21 — Phase 48 complete, transitioned to Phase 49
+Last activity: 2026-06-21 — Phase 50 complete, transitioned to Phase 50.1
 
 ## Progress
 
