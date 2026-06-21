@@ -590,7 +590,7 @@ Plans:
 | 25. App Identity Capture in DLP-User-UI | 4/4 | Reopened for review | - |
 | 26. ABAC Enforcement Convergence | 5/5 | Reopened for review | - |
 | 27. USB Toast Notification | 2/2 | Reopened for review | - |
-| 28. Admin TUI Screens | 5/5 | Complete   | 2026-06-21 |
+| 28. Admin TUI Screens | 5/5 | Complete    | 2026-06-21 |
 | 47. Secrets Encryption at Rest (prerequisite) | 1/1 | Reopened for review | - |
 | 48. Hook DLL Surface Expansion + Crash Hardening + Build Harness | 5/5 | Complete    | 2026-05-16 |
 | 49. Universal Injection — ETW Process Watcher + Allowlist + AppInit Fallback | 5/5 | Complete    | 2026-05-19 |
