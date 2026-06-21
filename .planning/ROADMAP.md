@@ -53,7 +53,7 @@ Phase 47 (Secrets Encryption at Rest, HARD-01) shipped 2026-05-11 under the aban
 
 | Phase | Goal | Requirements | Status |
 |-------|------|--------------|--------|
-| 47 | Encrypt secrets at rest in operator SQLite (PBKDF2 + DPAPI machine-bound KEK; AES-256-GCM versioned envelope; admin-CLI rotation) | HARD-01 | Reopened for review (was Validated 2026-05-11; commits `7846671`, `5a0619f`, `e6e4aa4`, `68f5e0c`) |
+| 47 | 1/1 | Complete    | 2026-06-21 |
 
 The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is folded into v0.10.0 **Phase 52** (DACL-05) as `docs/operations/dpapi-recovery.md`.
 
