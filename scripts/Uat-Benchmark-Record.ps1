@@ -73,8 +73,8 @@ $timestamp = $data.timestamp
 
 $rows = $data.results | ForEach-Object { Format-WorkloadRow -WorkloadResult $_ }
 
-$passCount = ($data.results | Where-Object { $_.Passed }).Count
-$failCount = ($data.results | Where-Object { -not $_.Passed }).Count
+$passCount = @($data.results | Where-Object { $_.Passed }).Count
+$failCount = @($data.results | Where-Object { -not $_.Passed }).Count
 $overall   = if ($failCount -eq 0) { 'PASS' } else { 'FAIL' }
 
 $newSection = @"
@@ -126,15 +126,17 @@ and `scripts/Uat-Benchmark-Record.ps1`.
 
 # ── Replace or insert Group 8 section ────────────────────────────────────────
 
-$pattern = '### Group 8: CRIT-04 Benchmark.*?(?=\n## |\n### Group |\Z)'
-if ($uatContent -match $pattern) {
-    $uatContent = [regex]::Replace($uatContent, $pattern, $newSection, [System.Text.RegularExpressions.RegexOptions]::Singleline)
+$pattern = '### Group 8: CRIT-04 Benchmark.*?(?=\r?\n## |\r?\n### Group |\Z)'
+$singleLine = [System.Text.RegularExpressions.RegexOptions]::Singleline
+if ([regex]::Match($uatContent, $pattern, $singleLine).Success) {
+    $uatContent = [regex]::Replace($uatContent, $pattern, $newSection, $singleLine)
     Write-Host "Updated existing Group 8 section in $UatPath" -ForegroundColor Green
 }
 else {
     # Append before the first "## " that is not the title, or at the end.
-    if ($uatContent -match '\n## [^#]') {
-        $uatContent = [regex]::Replace($uatContent, '\n## [^#]', "`n$newSection`n`$0", [System.Text.RegularExpressions.RegexOptions]::Singleline)
+    $insertPattern = '\r?\n## [^#]'
+    if ([regex]::Match($uatContent, $insertPattern, $singleLine).Success) {
+        $uatContent = [regex]::Replace($uatContent, $insertPattern, "`n$newSection`n`$0", $singleLine)
     }
     else {
         $uatContent += "`n$newSection`n"

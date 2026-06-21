@@ -35,7 +35,7 @@ param(
 
     [Parameter()]
     # [string]$BinaryPath = "$env:ProgramFiles\DLP\dlp-agent.exe",
-    [string]$BinaryPath = "$PSScriptRoot\..\target\debug\dlp-agent.exe",
+    [string]$BinaryPath = "$PSScriptRoot\..\target\release\dlp-agent.exe",
 
     [Parameter()]
     [string]$ServiceName = 'dlp-agent',
@@ -302,7 +302,8 @@ function Stop-DlpAgentService {
             $svc = Get-CurrentService
             if ($svc) {
                 Write-Status "Service did not stop within ${maxWaitSeconds}s -- current state: $($svc.Status)" -Level FAIL
-            } else {
+            }
+            else {
                 Write-Status "Service did not stop within ${maxWaitSeconds}s -- service no longer found." -Level FAIL
             }
             Write-Status "The service may be stuck in StopPending. Escalation options:" -Level INFO
