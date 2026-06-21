@@ -434,6 +434,12 @@ fn accept_loop(
 ) -> Result<()> {
     let mut pipe = first_pipe;
     loop {
+        if crate::service::shutdown_requested() {
+            let _ = unsafe { CloseHandle(pipe) };
+            info!(pipe = %pipe_name, "shutdown requested — exiting Hook IPC accept loop");
+            return Ok(());
+        }
+
         // Wait for a client. ERROR_PIPE_CONNECTED (535) means a client
         // already connected between CreateNamedPipeW and ConnectNamedPipe.
         if let Err(e) = unsafe { ConnectNamedPipe(pipe, None) } {
@@ -1131,6 +1137,30 @@ mod tests {
         }
     }
 
+    /// Builds a deterministic [`BypassAlert`] for tests.
+    fn test_bypass_alert(
+        pid: u32,
+        stub_name: &str,
+        agent_id: &str,
+    ) -> dlp_common::hook_ipc::BypassAlert {
+        dlp_common::hook_ipc::BypassAlert {
+            reason: dlp_common::hook_ipc::BypassReason::HookOverwritten,
+            stub_name: stub_name.to_string(),
+            pid,
+            timestamp_secs: 1_700_000_000,
+            version: 1,
+            agent_id: agent_id.to_string(),
+            image_path: r"C:\test.exe".to_string(),
+            image_sha256: None,
+            file_path: r"C:\secret.txt".to_string(),
+            operation: "Create".to_string(),
+            file_object: 0xDEADBEEF,
+            qpc_timestamp: 9999,
+            severity: "crit".to_string(),
+            correlation_reason: "HookSelfReported".to_string(),
+        }
+    }
+
     #[test]
     fn cache_version_handling_stale_detected() {
         let inner: HookHandler = Arc::new(|_req: HookRequest| HookResponse {
@@ -1261,22 +1291,7 @@ mod tests {
             cache_version: 0,
         });
 
-        let alert = dlp_common::hook_ipc::BypassAlert {
-            reason: dlp_common::hook_ipc::BypassReason::HookOverwritten,
-            stub_name: "NtCreateFile".to_string(),
-            pid: 1234,
-            timestamp_secs: 1_700_000_000,
-            version: 1,
-            agent_id: "test-agent".to_string(),
-            image_path: r"C:\test.exe".to_string(),
-            image_sha256: None,
-            file_path: r"C:\secret.txt".to_string(),
-            operation: "Create".to_string(),
-            file_object: 0xDEADBEEF,
-            qpc_timestamp: 9999,
-            severity: "crit".to_string(),
-            correlation_reason: "HookSelfReported".to_string(),
-        };
+        let alert = test_bypass_alert(1234, "NtCreateFile", "test-agent");
         let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
             payload: dlp_common::hook_ipc::IpcPayloadV1::BypassAlert(alert.clone()),
         });
@@ -1489,6 +1504,88 @@ mod tests {
         // The server should be constructible; we can't easily test the handler
         // without a real pipe connection, but we verify the struct is built.
         assert_eq!(server.pipe_name, r"\\.\pipe\DlpHookPipeTestApproval");
+    }
+
+    #[test]
+    fn test_with_cache_offline_and_bypass_constructor() {
+        let (bypass_tx, _bypass_rx) =
+            crossbeam_channel::unbounded::<dlp_common::hook_ipc::BypassAlert>();
+
+        let cache: Arc<dyn CacheAccessor> = Arc::new(MockCache { version: 7 });
+        let offline = Arc::new(crate::offline::OfflineManager::new(
+            crate::engine_client::EngineClient::new(
+                crate::engine_client::DEFAULT_ENGINE_URL,
+                false,
+            )
+            .expect("engine client must be constructable"),
+            Arc::new(crate::cache::Cache::new()),
+            None,
+        ));
+
+        let server = HookIpcServer::with_cache_offline_and_bypass(
+            r"\\.\pipe\DlpHookPipeTestOfflineBypass",
+            cache,
+            offline,
+            bypass_tx,
+        );
+
+        assert_eq!(server.pipe_name, r"\\.\pipe\DlpHookPipeTestOfflineBypass");
+        assert!(server.bypass_tx.is_some());
+    }
+
+    #[test]
+    fn test_bypass_alert_routes_through_server_to_receiver() {
+        // End-to-end data-flow test: a BypassAlert envelope sent by a hook DLL
+        // client over the named pipe is received on the bypass_rx channel.
+        let pipe_name = r"\\.\pipe\DlpHookPipeTestBypassRoute";
+        let (bypass_tx, bypass_rx) =
+            crossbeam_channel::bounded::<dlp_common::hook_ipc::BypassAlert>(1);
+
+        let handler: HookHandler = Arc::new(|_req: HookRequest| HookResponse {
+            decision: Decision::ALLOW,
+            reason: "ok".to_string(),
+            cache_hint: None,
+            cache_version: 0,
+        });
+
+        let server = HookIpcServer::with_bypass_channel(pipe_name, handler, bypass_tx);
+        let _server_handle = std::thread::spawn(move || {
+            let _ = server.run();
+        });
+
+        // Wait for the pipe to be created and the server to enter ConnectNamedPipe.
+        std::thread::sleep(Duration::from_millis(50));
+
+        let client = connect_client(pipe_name).expect("client connect");
+
+        let alert = test_bypass_alert(5678, "NtCreateFile", "route-test-agent");
+        let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+            payload: dlp_common::hook_ipc::IpcPayloadV1::BypassAlert(alert.clone()),
+        });
+        let envelope_bytes = bincode::serialize(&envelope).unwrap();
+
+        // The server sends back an ACK response; read it so the client doesn't deadlock.
+        let ack_bytes = send_raw(client, &envelope_bytes).expect("send bypass alert");
+        let ack_envelope: dlp_common::hook_ipc::IpcEnvelope =
+            bincode::deserialize(&ack_bytes).expect("deserialize ack");
+        match ack_envelope {
+            dlp_common::hook_ipc::IpcEnvelope::V1(msg) => match msg.payload {
+                dlp_common::hook_ipc::IpcPayloadV1::Response(resp) => {
+                    assert_eq!(resp.decision, Decision::ALLOW);
+                }
+                _ => panic!("expected BypassAlert ack response"),
+            },
+        }
+
+        let received = bypass_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("receive bypass alert from server");
+        assert_eq!(received.pid, alert.pid);
+        assert_eq!(received.stub_name, alert.stub_name);
+        assert_eq!(received.reason, alert.reason);
+
+        close_pipe(client);
+        // The server thread blocks on the next ConnectNamedPipe; leave it.
     }
 
     #[test]

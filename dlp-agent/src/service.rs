@@ -27,7 +27,9 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
+use crate::hook_ipc::{HookIpcServer, DEFAULT_PIPE_NAME};
 use anyhow::{Context, Result};
+use dlp_common::hook_ipc::BypassAlert;
 use dlp_common::usb::{
     DEFAULT_USB_BLOCKED_FAILURE_MODE, DEFAULT_USB_NONE_SERIAL_POLICY,
     DEFAULT_USB_STARTUP_RESOLUTION_MODE,
@@ -185,6 +187,8 @@ struct BlockingThreads {
     ipc: Vec<std::thread::JoinHandle<()>>,
     chrome: Option<std::thread::JoinHandle<()>>,
     session: Option<std::thread::JoinHandle<()>>,
+    /// Phase 53: Hook DLL IPC server thread (real-time classification + bypass alerts).
+    hook_ipc: Option<std::thread::JoinHandle<()>>,
 }
 
 impl BlockingThreads {
@@ -194,6 +198,7 @@ impl BlockingThreads {
             ipc: Vec::new(),
             chrome: None,
             session: None,
+            hook_ipc: None,
         }
     }
 
@@ -242,6 +247,7 @@ impl BlockingThreads {
         for (i, h) in self.ipc.into_iter().enumerate() {
             join_with_log(&format!("ipc-pipe-{i}"), Some(h));
         }
+        join_with_log("hook-ipc", self.hook_ipc);
         join_with_log("chrome", self.chrome);
         join_with_log("session", self.session);
 
@@ -397,7 +403,7 @@ pub fn run_service() -> Result<()> {
     // so that usb_wndproc can schedule async refreshes on the live tokio runtime via
     // a stored Handle. run_loop also owns USB cleanup on shutdown.
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_loop(&status_handle, machine_name))?;
+    rt.block_on(run_loop(&status_handle, machine_name, &mut threads))?;
 
     // Shut down the tokio runtime immediately.  Background tasks (IPC pipe
     // servers, session monitor) use blocking ReadFile calls that never
@@ -1089,13 +1095,14 @@ struct RunLoopContext {
 async fn run_loop(
     status_handle: &Arc<Mutex<windows_service::service_control_handler::ServiceStatusHandle>>,
     machine_name: Option<String>,
+    blocking_threads: &mut BlockingThreads,
 ) -> Result<()> {
     // ── Open the audit log ────────────────────────────────────────────────
     let _log_path = crate::audit_emitter::log_path();
     info!(audit_log = %_log_path.display(), "audit subsystem initialised");
 
     // Initialise all subsystems and collect handles into a single context.
-    let ctx = run_loop_init(machine_name).await;
+    let ctx = run_loop_init(machine_name, blocking_threads).await;
 
     // ── Service control loop ─────────────────────────────────────────────
     let poll_interval = Duration::from_millis(500);
@@ -1174,12 +1181,57 @@ fn emit_ntdll_patching_enabled_event() {
     crate::audit_emitter::emit(&mut event).ok();
 }
 
+/// Spawns the hook DLL IPC server on a dedicated `std::thread`.
+///
+/// The server listens on [`DEFAULT_PIPE_NAME`], performs synchronous ABAC
+/// evaluation via [`OfflineManager::offline_decision`], and forwards
+/// `BypassAlert` payloads from the hook DLL to the bypass correlator through
+/// `bypass_tx`.
+///
+/// # Arguments
+///
+/// * `cache` — shared-memory classification cache accessor for cache-version
+///   metadata in hook responses.
+/// * `offline` — offline policy engine used for synchronous ABAC evaluation.
+/// * `bypass_tx` — unbounded sender for `BypassAlert` payloads.
+///
+/// # Returns
+///
+/// `Some(JoinHandle<()>)` when the thread spawns successfully, or `None` on
+/// failure. The handle is stored in [`BlockingThreads::hook_ipc`] and joined
+/// during service shutdown.
+fn spawn_hook_ipc_server(
+    cache: Arc<dyn crate::hook_ipc::CacheAccessor>,
+    offline: Arc<crate::offline::OfflineManager>,
+    bypass_tx: crossbeam_channel::Sender<BypassAlert>,
+) -> Option<std::thread::JoinHandle<()>> {
+    let server =
+        HookIpcServer::with_cache_offline_and_bypass(DEFAULT_PIPE_NAME, cache, offline, bypass_tx);
+
+    match std::thread::Builder::new()
+        .name("hook-ipc-server".to_string())
+        .spawn(move || {
+            if let Err(e) = server.run() {
+                warn!(error = %e, "Hook IPC server exited with error");
+            }
+        }) {
+        Ok(handle) => Some(handle),
+        Err(e) => {
+            error!(error = %e, "failed to spawn hook IPC server thread");
+            None
+        }
+    }
+}
+
 /// Initialises all enforcement subsystems and returns a [`RunLoopContext`]
 /// containing every handle and sender needed for graceful shutdown.
 ///
 /// Extracted from [`run_loop`] to reduce cognitive complexity.  Each subsystem
 /// block is kept in source order so comments remain valid.
-async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
+async fn run_loop_init(
+    machine_name: Option<String>,
+    blocking_threads: &mut BlockingThreads,
+) -> RunLoopContext {
     // ── Initialise the agent's local SQLite DB (offline audit queue) ───────
     if let Err(e) = init_agent_db() {
         warn!(error = %e, "agent DB init failed — offline audit queue unavailable");
@@ -1264,21 +1316,8 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
     let (approval_shutdown_tx, approval_poll_handle) =
         spawn_approval_poll_task(server_client.clone(), Arc::clone(&approval_cache));
 
-    // TODO(56.1-03): Construct HookIpcServer with with_cache_and_offline for real
-    // ABAC evaluation via OfflineManager::offline_decision (sync-only).
-    // Pass offline.clone() and classification_cache (already available in run_loop).
-    // Spawn on a dedicated std::thread (not tokio::spawn) because the accept
-    // loop is blocking.
-    //
-    // Example:
-    //   let hook_ipc_server = HookIpcServer::with_cache_and_offline(
-    //       DEFAULT_PIPE_NAME,
-    //       classification_cache.clone(),
-    //       offline.clone(),
-    //   );
-    //   let hook_ipc_handle = std::thread::spawn(move || {
-    //       let _ = hook_ipc_server.run();
-    //   });
+    // ── Hook DLL IPC server (Phase 53/56.1) ────────────────────────────────
+    // Spawns below after the offline manager and bypass channel are ready.
 
     // ── Store server client for on-demand auth hash fetching ─────────────
     if let Some(ref sc) = server_client {
@@ -1325,6 +1364,22 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
 
     // ── Offline manager ────────────────────────────────────────────────────
     let offline = init_offline_manager(engine_client, cache, &server_client, machine_name.clone());
+
+    // ── Hook DLL IPC server (Phase 53/56.1) ────────────────────────────────
+    // Unbounded channel shared between HookIpcServer (sender) and the bypass
+    // correlator (receiver). Hook DLL BypassAlert frames received over the
+    // named pipe are forwarded to the correlator for enrichment and routing to
+    // SIEM.
+    let (bypass_tx, bypass_rx) = crossbeam_channel::unbounded::<BypassAlert>();
+
+    let classification_cache_dyn: Arc<dyn crate::hook_ipc::CacheAccessor> =
+        classification_cache.clone();
+    let hook_ipc_handle =
+        spawn_hook_ipc_server(classification_cache_dyn, Arc::clone(&offline), bypass_tx);
+    if let Some(ref h) = hook_ipc_handle {
+        info!(thread_id = ?h.thread().id(), "Hook IPC server started");
+    }
+    blocking_threads.hook_ipc = hook_ipc_handle;
 
     // ── Wrap agent_config in Arc<Mutex<>> for shared access ──────────────
     let config_arc = Arc::new(parking_lot::Mutex::new(agent_config.clone()));
@@ -1625,11 +1680,8 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
             let process_rx = process_watcher.receiver().clone();
             let sc = sc.clone();
 
-            // Create unbounded bypass channel for hook DLL IPC alerts (per REVIEW-M-01).
-            // The sender will be passed to HookIpcServer when it is constructed
-            // for production (TODO at line 1267 / WORKFLOW-04-followup).
-            let (_bypass_tx, bypass_rx) =
-                crossbeam_channel::unbounded::<dlp_common::hook_ipc::BypassAlert>();
+            // bypass_rx was created alongside bypass_tx when HookIpcServer was
+            // constructed; the correlator consumes hook DLL BypassAlert frames.
 
             let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
             let handle = tokio::spawn(async move {
@@ -4514,10 +4566,39 @@ fn test_blocking_threads_empty_shutdown() {
 /// Test that BlockingThreads shutdown_and_join signals a running thread.
 #[test]
 fn test_blocking_threads_joins_running_thread() {
-    use std::sync::atomic::AtomicUsize;
-
     let _guard = SHUTDOWN_TEST_MUTEX.lock().unwrap();
     reset_shutdown_signal();
+
+    let (counter, handle) = spawn_shutdown_observing_thread();
+
+    let mut threads = BlockingThreads::new();
+    threads.health = Some(handle);
+
+    assert_shutdown_joins_thread(threads, counter, "thread");
+}
+
+/// Test that BlockingThreads joins the hook IPC thread during shutdown.
+#[test]
+fn test_blocking_threads_joins_hook_ipc_thread() {
+    let _guard = SHUTDOWN_TEST_MUTEX.lock().unwrap();
+    reset_shutdown_signal();
+
+    let (counter, handle) = spawn_shutdown_observing_thread();
+
+    let mut threads = BlockingThreads::new();
+    threads.hook_ipc = Some(handle);
+
+    assert_shutdown_joins_thread(threads, counter, "hook IPC thread");
+}
+
+/// Spawns a thread that increments `counter` once shutdown is requested.
+#[cfg(test)]
+fn spawn_shutdown_observing_thread() -> (
+    std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    std::thread::JoinHandle<()>,
+) {
+    use std::sync::atomic::AtomicUsize;
+
     let counter = std::sync::Arc::new(AtomicUsize::new(0));
     let counter_clone = counter.clone();
 
@@ -4528,9 +4609,16 @@ fn test_blocking_threads_joins_running_thread() {
         counter_clone.fetch_add(1, Ordering::SeqCst);
     });
 
-    let mut threads = BlockingThreads::new();
-    threads.health = Some(handle);
+    (counter, handle)
+}
 
+/// Signals shutdown on `threads`, joins all threads, and asserts the counter reached 1.
+#[cfg(test)]
+fn assert_shutdown_joins_thread(
+    threads: BlockingThreads,
+    counter: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    description: &str,
+) {
     // Give the thread time to start
     std::thread::sleep(Duration::from_millis(50));
 
@@ -4539,8 +4627,58 @@ fn test_blocking_threads_joins_running_thread() {
     assert_eq!(
         counter.load(Ordering::SeqCst),
         1,
-        "thread should have exited cleanly"
+        "{description} should have exited cleanly"
     );
+}
+
+/// Mock cache accessor for service-level hook IPC tests.
+#[cfg(test)]
+struct MockCache {
+    version: u64,
+}
+
+#[cfg(test)]
+impl crate::hook_ipc::CacheAccessor for MockCache {
+    fn current_version(&self) -> u64 {
+        self.version
+    }
+}
+
+/// Builds a minimal offline manager for hook IPC tests.
+#[cfg(test)]
+fn test_offline_manager() -> Arc<crate::offline::OfflineManager> {
+    let engine_client =
+        crate::engine_client::EngineClient::new(crate::engine_client::DEFAULT_ENGINE_URL, false)
+            .expect("engine client must be constructable");
+    let cache = Arc::new(crate::cache::Cache::new());
+    Arc::new(crate::offline::OfflineManager::new(
+        engine_client,
+        cache,
+        None,
+    ))
+}
+
+/// Test that `spawn_hook_ipc_server` spawns a named thread and returns a
+/// handle that can be joined after shutdown is requested.
+#[test]
+fn test_spawn_hook_ipc_server_starts_named_thread() {
+    let _guard = SHUTDOWN_TEST_MUTEX.lock().unwrap();
+    reset_shutdown_signal();
+
+    let cache: Arc<dyn crate::hook_ipc::CacheAccessor> = Arc::new(MockCache { version: 1 });
+    let offline = test_offline_manager();
+    let (bypass_tx, _bypass_rx) = crossbeam_channel::unbounded::<BypassAlert>();
+
+    let handle = spawn_hook_ipc_server(cache, offline, bypass_tx)
+        .expect("hook IPC server thread should spawn");
+
+    assert_eq!(handle.thread().name(), Some("hook-ipc-server"));
+
+    // Signal shutdown so the accept loop exits cleanly.
+    request_shutdown();
+    handle
+        .join()
+        .expect("hook IPC server thread should join cleanly");
 }
 
 /// Test that `emit_ntdll_patching_enabled_event` emits a `NtdllPatchingEnabled`

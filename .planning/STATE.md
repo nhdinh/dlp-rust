@@ -6,7 +6,7 @@ current_phase: 50.1
 current_phase_name: Close gap FAIL-01/02/03 — verify ISOLATED->RESYNC->HEALTHY recovery at runtime
 status: executing
 stopped_at: context exhaustion at 75% (2026-06-21)
-last_updated: "2026-06-21T06:49:43.591Z"
+last_updated: "2026-06-21T15:51:57.400Z"
 last_activity: 2026-06-21
 last_activity_desc: Phase 50 complete, transitioned to Phase 50.1
 progress:
@@ -156,7 +156,7 @@ Both plans in Phase 55.1 are complete. Ready for verification (`/gsd-verify-phas
 
 ## Session Continuity
 
-Last session: 2026-06-21T05:38:17.507Z
+Last session: 2026-06-21T15:51:57.389Z
 Stopped at: context exhaustion at 75% (2026-06-21)
 Resume file: .planning/phases/55.1-close-gap-mode-01-read-global-enforcement-mode-in-bypasscorr/55.1-02-SUMMARY.md
 
@@ -192,6 +192,7 @@ Resume file: .planning/phases/55.1-close-gap-mode-01-read-global-enforcement-mod
 
 | Date | Slug | Description | Status |
 | ---- | ---- | ----------- | ------ |
+| 2026-06-21 | construct-hook-ipc-server-wire-bypass | Wired `HookIpcServer` construction and `bypass_tx` into `dlp-agent/src/service.rs`; added shutdown-aware accept loop and unit tests. | complete |
 | 2026-06-21 | fix-uat-benchmark-warmup | Fixed `scripts/Uat-Benchmark.ps1` cargo warm-up build failure caused by `$ErrorActionPreference = 'Stop'` treating cargo stderr as terminating error. Added `Invoke-CargoBuildCommand` helper. | complete |
 | 2026-06-21 | verify-dlp-user-ui-not-spawned | Checked whether dlp-agent still spawns dlp-user-ui. Finding: it still spawns at startup and on session changes via ui_spawner::init() and session_monitor. | complete |
 

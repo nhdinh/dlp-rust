@@ -73,6 +73,12 @@ vendor/
 lcov.info
 cobertura.xml
 sonar-coverage.xml
+# Per-crate generated coverage artifacts from cargo llvm-cov
+dlp-agent-lcov.info
+dlp-agent.lcov
+dlp-agent-cobertura.xml
+dlp-agent-generic-coverage.xml
+sonar_metrics*.json
 coverage/
 .cache/
 tmp/
