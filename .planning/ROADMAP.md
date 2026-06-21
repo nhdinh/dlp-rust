@@ -580,7 +580,7 @@ Plans:
 | 15. Policy Edit/Delete | 1/1 | Reopened for review | - |
 | 16. Policy List/Simulate | 4/3 | Complete    | 2026-06-16 |
 | 17. Import/Export | 2/2 | Complete    | 2026-06-17 |
-| 18. Boolean Mode Engine + Wire Format | 2/2 | Reopened for review | - |
+| 18. Boolean Mode Engine + Wire Format | 2/1 | Complete    | 2026-06-21 |
 | 19. Boolean Mode TUI Import/Export | 2/2 | Reopened for review | - |
 | 20. Operator Expansion | 2/2 | Reopened for review | - |
 | 21. In-Place Condition Editing | 1/1 | Reopened for review | - |
