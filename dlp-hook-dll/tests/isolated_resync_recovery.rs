@@ -62,7 +62,7 @@ fn create_test_cache(
         .rebuild(entries)
         .expect("failed to rebuild test cache");
 
-    let header_ptr = cache.header_for_test() as *const CacheHeader;
+    let header_ptr = cache.header_for_test();
     let handle = cache.mapping_handle_for_test();
 
     (cache, header_ptr, handle)
