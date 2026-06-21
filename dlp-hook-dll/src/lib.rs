@@ -28,6 +28,7 @@
 //! | `HookNtWriteFile` | Trampoline for `NtWriteFile` |
 //! | `HookNtSetInformationFile` | Trampoline for `NtSetInformationFile` |
 
+use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use windows::core::{w, PCWSTR};
@@ -318,7 +319,6 @@ static mut IAT_NT_SET_INFORMATION_FILE: Option<*mut usize> = None;
 /// The `detour` handle is intentionally NOT stored here because
 /// `retour::RawDetour` is neither `Copy` nor `Clone`. Detour handles live in
 /// the [`NtdllPatcher`] struct's per-stub state machine instead.
-#[derive(Clone, Copy)]
 struct HookDescriptor {
     /// Human-readable function name (e.g., "WriteFile").
     fn_name: &'static str,
@@ -340,17 +340,30 @@ struct HookDescriptor {
     ///
     /// Phase 51: Set by `ntdll_patcher` when patching the stub.
     #[allow(dead_code)]
-    ntdll_stub_addr: *mut u8,
+    ntdll_stub_addr: UnsafeCell<*mut u8>,
     /// Original 5 bytes of the ntdll stub (saved before patching).
     ///
     /// Phase 51: Saved before `retour` patches the stub; used for integrity
     /// verification in the background re-verification thread.
     #[allow(dead_code)]
-    original_ntdll_bytes: [u8; 5],
+    original_ntdll_bytes: UnsafeCell<[u8; 5]>,
 }
 
+// SAFETY: HookDescriptor contains raw pointers and `UnsafeCell` fields, but the
+// table is initialized at compile time and the mutable fields are only written
+// during `ntdll_patcher` initialization while access is serialized by the
+// `NTDLL_PATCHER` Mutex. After initialization the fields are read-only from
+// trampolines and background threads, so sharing the table across threads is
+// safe.
+unsafe impl Sync for HookDescriptor {}
+
 /// The canonical hook table — 12 entries covering the full file-I/O surface.
-const HOOKS: &[HookDescriptor] = &[
+///
+/// The two `UnsafeCell` fields are mutated only during `ntdll_patcher`
+/// initialization; all other fields are constant. Access to the mutable fields
+/// is serialized by the `NTDLL_PATCHER` Mutex and `init()` / `UnhookAll()` run
+/// once per process lifetime.
+static HOOKS: [HookDescriptor; 12] = [
     HookDescriptor {
         fn_name: "CreateFileW",
         dll_name: "kernel32.dll",
@@ -358,8 +371,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_CREATE_FILE_W as *mut usize,
         trampoline_ptr: trampolines::HookCreateFileW as *const (),
         deny_return: DenyReturn::InvalidHandleValue,
-        ntdll_stub_addr: std::ptr::null_mut(),
-        original_ntdll_bytes: [0u8; 5],
+        ntdll_stub_addr: UnsafeCell::new(std::ptr::null_mut()),
+        original_ntdll_bytes: UnsafeCell::new([0u8; 5]),
     },
     HookDescriptor {
         fn_name: "NtCreateFile",
@@ -368,8 +381,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_NT_CREATE_FILE as *mut usize,
         trampoline_ptr: trampolines::HookNtCreateFile as *const (),
         deny_return: DenyReturn::StatusAccessDenied,
-        ntdll_stub_addr: std::ptr::null_mut(),
-        original_ntdll_bytes: [0u8; 5],
+        ntdll_stub_addr: UnsafeCell::new(std::ptr::null_mut()),
+        original_ntdll_bytes: UnsafeCell::new([0u8; 5]),
     },
     HookDescriptor {
         fn_name: "WriteFile",
@@ -378,8 +391,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_WRITE_FILE as *mut usize,
         trampoline_ptr: trampolines::HookWriteFile as *const (),
         deny_return: DenyReturn::BoolFalse,
-        ntdll_stub_addr: std::ptr::null_mut(),
-        original_ntdll_bytes: [0u8; 5],
+        ntdll_stub_addr: UnsafeCell::new(std::ptr::null_mut()),
+        original_ntdll_bytes: UnsafeCell::new([0u8; 5]),
     },
     HookDescriptor {
         fn_name: "WriteFileEx",
@@ -388,8 +401,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_WRITE_FILE_EX as *mut usize,
         trampoline_ptr: trampolines::HookWriteFileEx as *const (),
         deny_return: DenyReturn::BoolFalse,
-        ntdll_stub_addr: std::ptr::null_mut(),
-        original_ntdll_bytes: [0u8; 5],
+        ntdll_stub_addr: UnsafeCell::new(std::ptr::null_mut()),
+        original_ntdll_bytes: UnsafeCell::new([0u8; 5]),
     },
     HookDescriptor {
         fn_name: "MoveFileExW",
@@ -398,8 +411,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_MOVE_FILE_EX_W as *mut usize,
         trampoline_ptr: trampolines::HookMoveFileExW as *const (),
         deny_return: DenyReturn::BoolFalse,
-        ntdll_stub_addr: std::ptr::null_mut(),
-        original_ntdll_bytes: [0u8; 5],
+        ntdll_stub_addr: UnsafeCell::new(std::ptr::null_mut()),
+        original_ntdll_bytes: UnsafeCell::new([0u8; 5]),
     },
     HookDescriptor {
         fn_name: "CopyFileExW",
@@ -408,8 +421,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_COPY_FILE_EX_W as *mut usize,
         trampoline_ptr: trampolines::HookCopyFileExW as *const (),
         deny_return: DenyReturn::BoolFalse,
-        ntdll_stub_addr: std::ptr::null_mut(),
-        original_ntdll_bytes: [0u8; 5],
+        ntdll_stub_addr: UnsafeCell::new(std::ptr::null_mut()),
+        original_ntdll_bytes: UnsafeCell::new([0u8; 5]),
     },
     HookDescriptor {
         fn_name: "DeleteFileW",
@@ -418,8 +431,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_DELETE_FILE_W as *mut usize,
         trampoline_ptr: trampolines::HookDeleteFileW as *const (),
         deny_return: DenyReturn::BoolFalse,
-        ntdll_stub_addr: std::ptr::null_mut(),
-        original_ntdll_bytes: [0u8; 5],
+        ntdll_stub_addr: UnsafeCell::new(std::ptr::null_mut()),
+        original_ntdll_bytes: UnsafeCell::new([0u8; 5]),
     },
     HookDescriptor {
         fn_name: "ReplaceFileW",
@@ -428,8 +441,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_REPLACE_FILE_W as *mut usize,
         trampoline_ptr: trampolines::HookReplaceFileW as *const (),
         deny_return: DenyReturn::BoolFalse,
-        ntdll_stub_addr: std::ptr::null_mut(),
-        original_ntdll_bytes: [0u8; 5],
+        ntdll_stub_addr: UnsafeCell::new(std::ptr::null_mut()),
+        original_ntdll_bytes: UnsafeCell::new([0u8; 5]),
     },
     HookDescriptor {
         fn_name: "SetFileInformationByHandle",
@@ -438,8 +451,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_SET_FILE_INFORMATION_BY_HANDLE as *mut usize,
         trampoline_ptr: trampolines::HookSetFileInformationByHandle as *const (),
         deny_return: DenyReturn::BoolFalse,
-        ntdll_stub_addr: std::ptr::null_mut(),
-        original_ntdll_bytes: [0u8; 5],
+        ntdll_stub_addr: UnsafeCell::new(std::ptr::null_mut()),
+        original_ntdll_bytes: UnsafeCell::new([0u8; 5]),
     },
     HookDescriptor {
         fn_name: "NtOpenFile",
@@ -448,8 +461,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_NT_OPEN_FILE as *mut usize,
         trampoline_ptr: trampolines::HookNtOpenFile as *const (),
         deny_return: DenyReturn::StatusAccessDenied,
-        ntdll_stub_addr: std::ptr::null_mut(),
-        original_ntdll_bytes: [0u8; 5],
+        ntdll_stub_addr: UnsafeCell::new(std::ptr::null_mut()),
+        original_ntdll_bytes: UnsafeCell::new([0u8; 5]),
     },
     HookDescriptor {
         fn_name: "NtWriteFile",
@@ -458,8 +471,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_NT_WRITE_FILE as *mut usize,
         trampoline_ptr: trampolines::HookNtWriteFile as *const (),
         deny_return: DenyReturn::StatusAccessDenied,
-        ntdll_stub_addr: std::ptr::null_mut(),
-        original_ntdll_bytes: [0u8; 5],
+        ntdll_stub_addr: UnsafeCell::new(std::ptr::null_mut()),
+        original_ntdll_bytes: UnsafeCell::new([0u8; 5]),
     },
     HookDescriptor {
         fn_name: "NtSetInformationFile",
@@ -468,8 +481,8 @@ const HOOKS: &[HookDescriptor] = &[
         iat_ptr: &raw mut IAT_NT_SET_INFORMATION_FILE as *mut usize,
         trampoline_ptr: trampolines::HookNtSetInformationFile as *const (),
         deny_return: DenyReturn::StatusAccessDenied,
-        ntdll_stub_addr: std::ptr::null_mut(),
-        original_ntdll_bytes: [0u8; 5],
+        ntdll_stub_addr: UnsafeCell::new(std::ptr::null_mut()),
+        original_ntdll_bytes: UnsafeCell::new([0u8; 5]),
     },
 ];
 
@@ -562,7 +575,7 @@ fn init() {
         }
         let host_ptr = host.0 as *mut u8;
 
-        for hook in HOOKS {
+        for hook in HOOKS.iter() {
             let original_proc = resolve_proc(hook.dll_name, hook.fn_name);
             if original_proc.is_null() {
                 let msg = format!("[dlp-hook] init: could not resolve {}\0", hook.fn_name);
@@ -668,7 +681,7 @@ pub(crate) unsafe fn resolve_nt_create_file() -> Option<NtCreateFileFn> {
 pub extern "system" fn UnhookAll() {
     debug_log("[dlp-hook] UnhookAll called — restoring IAT\0");
     unsafe {
-        for hook in HOOKS {
+        for hook in HOOKS.iter() {
             let iat_opt = *(hook.iat_ptr as *const Option<*mut usize>);
             let orig_opt = *(hook.original_ptr as *const Option<usize>);
             if let (Some(iat), Some(orig)) = (iat_opt, orig_opt) {
@@ -993,7 +1006,7 @@ mod tests {
 
     #[test]
     fn hook_descriptors_are_valid() {
-        for hook in HOOKS {
+        for hook in HOOKS.iter() {
             assert!(!hook.fn_name.is_empty());
             assert!(!hook.dll_name.is_empty());
             assert!(hook.trampoline_ptr as usize != 0);
@@ -1041,7 +1054,7 @@ mod tests {
 
             UnhookAll();
             // After UnhookAll, all IAT entries should be restored
-            for hook in HOOKS {
+            for hook in HOOKS.iter() {
                 let iat_opt = *(hook.iat_ptr as *const Option<*mut usize>);
                 assert!(
                     iat_opt.is_none() || {

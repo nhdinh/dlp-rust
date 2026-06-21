@@ -309,8 +309,8 @@ impl NtdllPatcher {
             // Store in the corresponding HookDescriptor.
             if let Some(hook) = unsafe { find_hook_descriptor(fn_name) } {
                 unsafe {
-                    (*hook).ntdll_stub_addr = stub_addr;
-                    (*hook).original_ntdll_bytes = bytes;
+                    *(*hook).ntdll_stub_addr.get() = stub_addr;
+                    *(*hook).original_ntdll_bytes.get() = bytes;
                 }
             }
 
@@ -404,7 +404,7 @@ impl NtdllPatcher {
 
         // Find the HookDescriptor to get the stub address.
         let stub_addr = match unsafe { find_hook_descriptor(fn_name) } {
-            Some(hook) => unsafe { (*hook).ntdll_stub_addr },
+            Some(hook) => unsafe { *(*hook).ntdll_stub_addr.get() },
             None => return StubIntegrity::Unknown,
         };
 
@@ -563,11 +563,11 @@ fn stub_name_from_str(s: &str) -> Option<StubName> {
 ///
 /// # Safety
 ///
-/// Returns a mutable pointer to the descriptor in the `HOOKS` table.
+/// Returns a mutable pointer to the descriptor in the `HOOKS` array.
 /// The returned pointer is valid only for the lifetime of the `HOOKS` array.
 /// The caller must not dereference after `HOOKS` is dropped or modified.
 unsafe fn find_hook_descriptor(fn_name: &str) -> Option<*mut crate::HookDescriptor> {
-    for hook in crate::HOOKS {
+    for hook in crate::HOOKS.iter() {
         if hook.fn_name == fn_name && hook.dll_name == "ntdll.dll" {
             return Some(hook as *const _ as *mut _);
         }
