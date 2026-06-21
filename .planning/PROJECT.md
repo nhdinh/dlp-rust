@@ -152,6 +152,7 @@ If NTFS ALLOW and ABAC DENY → FINAL RESULT = DENY. ABAC always tightens, never
 - ✓ **Cloud & print exfiltration prevention** (v0.9.0) — user-mode IAT hook + WFP for cloud sync, FindFirstPrinterChangeNotification + XPS extraction for print, share link detection, admin CLI Cloud/Print screens
 - ✓ **Secrets Encryption at Rest** (v0.10.0 Phase 47, shipped 2026-05-11 as HARD-01) — PBKDF2 + DPAPI machine-bound KEK for SMTP, SIEM, JWT, LDAP bind credentials; cleartext columns dropped; KEK rotation via admin CLI; full migration + log-scan + rotation integration tests
 - ✓ **SD / Optical / Virtual Drive Enumeration + Volume-Class ABAC** (v0.10.0 Phases 56–56.1, completed 2026-06-18) — device enumeration with `source_volume_class` and `destination_volume_class` ABAC attributes; hook DLL populates volume class; agent hook IPC evaluates volume-class policies synchronously via `OfflineManager::offline_decision` (DRIVE-01..04)
+- ✓ **Hook DLL Surface Expansion + Crash Hardening + Build Harness** (v0.10.0 Phase 48, completed 2026-06-21) — unified dual-arch hook DLL with 12 file-I/O trampolines, catch_unwind + SEH wrappers, zero-allocation pipe buffers, x86 sibling DLL, CI matrix, and Authenticode release signing pipeline (BLOCK-01..04, BLOCK-10)
 
 ### Active (v0.10.0 — Real-Time File Access Prevention)
 
@@ -295,4 +296,4 @@ The earlier `.planning.legacy/` (phase-numbered GSD format) and `.gsd.legacy/` (
 
 ---
 
-*Last updated: 2026-05-12 — milestone pivot from v1.0.0 Enterprise Hardening to v0.10.0 Real-Time File Access Prevention.*
+*Last updated: 2026-06-21 — Phase 48 complete, transitioning to Phase 49.*
