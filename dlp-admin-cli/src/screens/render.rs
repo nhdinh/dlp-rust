@@ -9,17 +9,14 @@ use ratatui::widgets::{
 use ratatui::Frame;
 
 use crate::app::{
-    App, ApprovalFilter, AuditIntegrityFilter, BypassAlertSeverityFilter, ConditionAttribute,
-    ImportState, LabelFilter, LabelFormMode, Screen, SimulateFormState, SimulateOutcome,
-    StatusKind, UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES, OBJECT_TYPE_OPTIONS,
-    SIMULATE_ACCESS_CONTEXT_OPTIONS, SIMULATE_ACTION_OPTIONS, SIMULATE_CLASSIFICATION_OPTIONS,
-    SIMULATE_DEVICE_TRUST_OPTIONS, SIMULATE_NETWORK_LOCATION_OPTIONS, TIER_OPTIONS,
+    App, ApprovalFilter, BypassAlertSeverityFilter, ConditionAttribute, ImportState, LabelFilter,
+    LabelFormMode, Screen, SimulateFormState, SimulateOutcome, StatusKind, UsbScanEntry,
+    ACTION_OPTIONS, ATTRIBUTES, OBJECT_TYPE_OPTIONS, SIMULATE_ACCESS_CONTEXT_OPTIONS,
+    SIMULATE_ACTION_OPTIONS, SIMULATE_CLASSIFICATION_OPTIONS, SIMULATE_DEVICE_TRUST_OPTIONS,
+    SIMULATE_NETWORK_LOCATION_OPTIONS, TIER_OPTIONS,
 };
 use crate::screens::approvals::{
     APPROVAL_GRANT_HINTS, APPROVAL_LIST_EMPTY, APPROVAL_LIST_HINTS, EXPIRY_OPTIONS,
-};
-use crate::screens::audit_integrity::{
-    AUDIT_INTEGRITY_DETAIL_HINTS, AUDIT_INTEGRITY_LIST_EMPTY, AUDIT_INTEGRITY_LIST_HINTS,
 };
 use crate::screens::bypass_alerts::{
     BYPASS_ALERT_DETAIL_HINTS, BYPASS_ALERT_LIST_EMPTY, BYPASS_ALERT_LIST_HINTS,

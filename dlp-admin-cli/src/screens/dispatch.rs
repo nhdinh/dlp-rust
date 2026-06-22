@@ -3,11 +3,11 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
 use crate::app::{
-    App, ApprovalFilter, AuditIntegrityFilter, BypassAlertSeverityFilter, CallerScreen,
-    ConditionAttribute, ConfirmPurpose, ImportCaller, ImportState, InputPurpose, LabelFilter,
-    LabelFormMode, PasswordPurpose, PolicyFormState, Screen, SimulateCaller, SimulateFormState,
-    SimulateOutcome, StatusKind, TierPickerCaller, UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES,
-    LDAP_BACK_ROW, LDAP_ROW_COUNT, LDAP_SAVE_ROW, OBJECT_TYPE_OPTIONS, TIER_OPTIONS,
+    App, ApprovalFilter, BypassAlertSeverityFilter, CallerScreen, ConditionAttribute,
+    ConfirmPurpose, ImportCaller, ImportState, InputPurpose, LabelFilter, LabelFormMode,
+    PasswordPurpose, PolicyFormState, Screen, SimulateCaller, SimulateFormState, SimulateOutcome,
+    StatusKind, TierPickerCaller, UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES, LDAP_BACK_ROW,
+    LDAP_ROW_COUNT, LDAP_SAVE_ROW, OBJECT_TYPE_OPTIONS, TIER_OPTIONS,
 };
 use crate::event::AppEvent;
 use crate::screens::approvals::EXPIRY_OPTIONS;
@@ -8687,7 +8687,10 @@ mod protected_path_tests {
     #[test]
     fn operators_for_source_app_publisher_has_eq_ne_contains() {
         use dlp_common::abac::AppField;
-        let ops = operators_for(ConditionAttribute::SourceApplication, Some(AppField::Publisher));
+        let ops = operators_for(
+            ConditionAttribute::SourceApplication,
+            Some(AppField::Publisher),
+        );
         assert_eq!(ops.len(), 3);
         let wire: Vec<_> = ops.iter().map(|(w, _)| *w).collect();
         assert!(wire.contains(&"eq"));
@@ -8698,7 +8701,10 @@ mod protected_path_tests {
     #[test]
     fn operators_for_source_app_trust_tier_has_eq_ne() {
         use dlp_common::abac::AppField;
-        let ops = operators_for(ConditionAttribute::SourceApplication, Some(AppField::TrustTier));
+        let ops = operators_for(
+            ConditionAttribute::SourceApplication,
+            Some(AppField::TrustTier),
+        );
         assert_eq!(ops.len(), 2);
         let wire: Vec<_> = ops.iter().map(|(w, _)| *w).collect();
         assert!(wire.contains(&"eq"));
@@ -8709,7 +8715,10 @@ mod protected_path_tests {
     #[test]
     fn operators_for_dest_app_imagepath_has_eq_ne_contains() {
         use dlp_common::abac::AppField;
-        let ops = operators_for(ConditionAttribute::DestinationApplication, Some(AppField::ImagePath));
+        let ops = operators_for(
+            ConditionAttribute::DestinationApplication,
+            Some(AppField::ImagePath),
+        );
         assert_eq!(ops.len(), 3);
         let wire: Vec<_> = ops.iter().map(|(w, _)| *w).collect();
         assert!(wire.contains(&"eq"));
@@ -8730,7 +8739,10 @@ mod protected_path_tests {
     fn value_count_for_source_app_trust_tier_is_3() {
         use dlp_common::abac::AppField;
         assert_eq!(
-            value_count_for(ConditionAttribute::SourceApplication, Some(AppField::TrustTier)),
+            value_count_for(
+                ConditionAttribute::SourceApplication,
+                Some(AppField::TrustTier)
+            ),
             3
         );
     }
@@ -8739,7 +8751,10 @@ mod protected_path_tests {
     fn value_count_for_source_app_publisher_is_0() {
         use dlp_common::abac::AppField;
         assert_eq!(
-            value_count_for(ConditionAttribute::SourceApplication, Some(AppField::Publisher)),
+            value_count_for(
+                ConditionAttribute::SourceApplication,
+                Some(AppField::Publisher)
+            ),
             0
         );
     }
@@ -8802,13 +8817,7 @@ mod protected_path_tests {
     #[test]
     fn build_condition_source_app_none_field_returns_none() {
         // T-28-02-01: fail-closed when AppField is not resolved.
-        let cond = build_condition(
-            ConditionAttribute::SourceApplication,
-            "eq",
-            0,
-            "",
-            None,
-        );
+        let cond = build_condition(ConditionAttribute::SourceApplication, "eq", 0, "", None);
         assert!(cond.is_none());
     }
 
