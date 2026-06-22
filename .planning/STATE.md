@@ -5,16 +5,14 @@ milestone_name: Real-Time File Access Prevention
 current_phase: 50.1
 current_phase_name: Close gap FAIL-01/02/03 — verify ISOLATED->RESYNC->HEALTHY recovery at runtime
 status: executing
-stopped_at: context exhaustion at 75% (2026-06-21)
-last_updated: "2026-06-21T15:51:57.400Z"
-last_activity: 2026-06-21
-last_activity_desc: Phase 50 complete, transitioned to Phase 50.1
+last_updated: "2026-06-02T21:45:00.000Z"
+last_activity: 2026-06-02 -- Phase 58 execution complete (all 6 plans)
 progress:
-  total_phases: 42
-  completed_phases: 35
-  total_plans: 157
-  completed_plans: 149
-  percent: 83
+  total_phases: 32
+  completed_phases: 25
+  total_plans: 127
+  completed_plans: 113
+  percent: 78
 ---
 
 # Project State
@@ -23,16 +21,19 @@ progress:
 
 **Project:** DLP-RUST — Enterprise DLP System (NTFS + Active Directory + ABAC)
 **Core Value:** Prevent data exfiltration via a layered enforcement stack (NTFS + ABAC + AD identity)
-**Current Focus:** Phase 55.1 — close-gap-mode-01-read-global-enforcement-mode-in-bypasscorr
+**Current Focus:** Phase 57 — operational-deployment-guide-av-edr-allowlist-uat
 
 ---
 
 ## Current Position
 
-Phase: 50.1 — Close gap FAIL-01/02/03 — verify ISOLATED->RESYNC->HEALTHY recovery at runtime
-Plan: Not started
-Status: Ready to execute
-Last activity: 2026-06-21 — Phase 50 complete, transitioned to Phase 50.1
+Phase: 58 (differentiators-bundle-override-diagnostic-hash-evidence-sel) — COMPLETE
+Plan: 6 of 6
+Status: All plans executed, tests passing
+Last activity: 2026-06-02 -- Phase 58 execution complete (all 6 plans)
+
+Phase: 57 (operational-deployment-guide-av-edr-allowlist-uat) — IN PROGRESS
+Plan: 4 of 6 complete (UAT execution pending manual verification)
 
 ## Progress
 
@@ -100,49 +101,66 @@ Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlatio
 
 ## Recent Decisions
 
-1. **2026-06-21: Phase 18 Plan 01 complete.** Verification-only plan: 21 Phase 18 tests pass (15 evaluator mode + 1 legacy parity + 4 wire format + 1 migration), full workspace build clean, clippy -D warnings clean, 2,392 lib tests pass across 7 crates. POLICY-12 requirement satisfied. No code changes required.
-2. **2026-06-18: Phase 53.1 Plan 02 complete.** Added `submit_bypass_alert` to `BypassCorrelator` with agent-side enrichment (agent_id, severity, correlation_reason, image_path). Updated `handle_connection` in `dlp-agent/src/hook_ipc.rs` to deserialize `IpcEnvelope` first, then fall back to legacy `HookRequest`. Routes `BypassAlert` to bypass correlator via `crossbeam_channel::Sender`. Added `HookIpcServer::with_bypass_channel()` and `with_approval_cache_and_bypass()` constructors. Wired `BypassCorrelator::run()` to consume `bypass_rx` with 4th spawned task in `spawn_blocking`. Updated `service.rs` to create unbounded bypass channel pair. 11 new tests (3 submit_bypass_alert + 6 hook_ipc envelope + 2 bypass channel). cargo check clean, cargo clippy -D warnings clean, cargo fmt clean. Commits `3a6ccde`, `ad1fa38`, `b6503bc`, `e5c7ecb`. ETW-03 requirement satisfied. Plan 02 of 4 complete in Phase 53.1.
-3. **2026-06-17: Phase 53.1 Plan 01 complete.** Added `BypassAlert(BypassAlert)` as 5th variant to `IpcPayloadV1` in `dlp-common/src/hook_ipc.rs`; bincode round-trip test passes; cross-crate references in dlp-agent and dlp-hook-dll compile cleanly. 309 dlp-common tests pass, clippy clean (-D warnings), cargo fmt clean. Commits `46f601b` (feat) and `83566be` (style). ETW-03 requirement satisfied. Plan 01 of 4 complete in Phase 53.1.
-4. **2026-06-17: Phase 53.1 planned.** Gap closure for ETW-03 / INT-BLOCK-01: 4 plans created (Wave 0 test stubs + 3 implementation waves). Scope: add `BypassAlert(BypassAlert)` variant to `IpcPayloadV1` in `dlp-common`, route agent `handle_connection` to `BypassCorrelator::submit_bypass_alert`, and wrap hook DLL `emit_bypass_alert` in `IpcEnvelope::V1`. Verification passed. Ready for `/gsd-execute-phase 53.1`.
-5. **2026-06-17: Phase 18 execution verified complete.** `PolicyMode` enum (ALL/ANY/NONE), `Policy.mode` field, DB `mode` column with idempotent migration, wire format round-trip, mode-aware evaluator, and full test coverage were all found already implemented. Verification: `cargo test --workspace` passes (no failures), `cargo clippy -- -D warnings` clean, `cargo fmt --check` clean. SonarQube scanner could not reach localhost:9000 (server unavailable). Phase 18 marked complete in STATE.md.
-6. Milestone pivot 2026-05-12: v1.0.0 Enterprise Hardening dropped; v0.10.0 Real-Time File Access Prevention is the new active milestone.
-7. Architecture stays user-mode: no kernel minifilter, no kernel driver, no EV cert. Real-blocking achieved via hybrid Option C (IAT hooks + DACL tripwire + ETW bypass detection).
-8. v0.10.0 generalizes the v0.9.0 cloud-sync hook DLL pattern to all user-mode processes via agent-driven `CreateRemoteThread` (primary) and AppInit_DLLs (tertiary fallback on non-Secure-Boot endpoints only).
-9. Direct-syscall bypass closed by in-memory `retour`-based Detours-style 5-byte JMP trampoline on ntdll syscall stubs; gated behind `enable_ntdll_patching` policy flag (default off; per-customer rollout).
-10. Asymmetric fail semantics: fail-closed for T3/T4 on agent-unreachable, fail-open for T1/T2. Hook DLL holds a shared-memory `Global\DlpClassificationCache` to make decisions without a live pipe.
-11. DACL tripwire is defense-in-depth on T3/T4 root paths only (not blanket); repair watcher uses `ReadDirectoryChangesW(FILE_NOTIFY_CHANGE_SECURITY)` + 60-s polling backstop with two-phase staged updates to suppress operator-initiated removal false-positives.
-12. ETW Kernel-File consumer (via `ferrisetw` 1.2.0) surfaces suspected syscall-bypass events through the existing SIEM relay + alert router and a new admin TUI Bypass Alerts screen.
-13. SEED-004 (SD / optical / virtual drive monitoring) folded into v0.10.0 Phase 56; I/O coverage comes for free via the universal hook, plus admin TUI policy UX and two new ABAC attributes (`source_volume_class`, `destination_volume_class`).
-14. HARD-01 Phase 47 artifacts retained at `.planning/phases/47-secrets-encryption-at-rest/`. The DPAPI-recovery handoff originally slated for v1.0.0 Phase 52 now folds into v0.10.0 Phase 52 as DACL-05 (`docs/operations/dpapi-recovery.md`).
-15. AV/EDR allowlist for global DLL injection is an operational landmine — v0.10.0 ships a deployment guide phase (Phase 57) rather than running through smoke testing without it. Vendor outreach starts at Phase 48 so reference customers exist by Phase 57.
-16. Roadmap continuous-numbering: Phase 47 last shipped → v0.10.0 starts at Phase 48 with no gaps (per project convention). 11 active phases total.
-17. Monitor-only / audit-only per-policy mode (Phase 55) is a hard requirement for safe production rollout — every industry DLP comparable ships this; not shipping it would make v0.10.0 unable to deploy to production.
-18. **2026-05-12: Target architecture documents (`new_docs/`) merged into planning surface.** 47 gap items identified across 10 document areas. Gaps mapped to new requirements (LABEL-, WORKFLOW-, SYSLOG-, HASH-, DEVICE-, SCANNER-, SCREENSHOT-, WATERMARK-, EMAIL-, RDP-, BT-, BCK-). `new_docs/` deleted after merge to maintain single source of truth in `.planning/`.
-19. **Pilot-first path selected:** v0.11.0 focuses on Label Service + Data Owner Queue + Approval Workflow (manual labels, no scanner yet). v0.12.0 adds Scanner + remaining endpoint controls. This prioritizes pilot readiness over building a complete scanner first.
-20. **2026-05-12 (updated): Explicit minifilter ban reinforced.** Target architecture updated to forbid Windows Minifilter drivers and kernel-mode filesystem interception entirely. The existing user-mode architecture (IAT hooks + DACL tripwire + ETW + WFP + NTFS ACLs) already satisfies this constraint. New requirements ARCH-01..04 and pilot test TC-017 verify compliance. No code changes required — the constraint is architectural documentation and build-audit verification.
-21. **2026-05-21: Phase 59 Plan 01 complete.** ResolvedTier enum added to dlp-server with strictness-aware folder inheritance. Tier::strictness_rank() and is_stricter_than() added to dlp-common. LabelCache upgraded to store full CacheEntry metadata. resolve_tier now returns ResolvedTier (not Result<Tier>) and implements D-07b strictest-tier-wins semantics. 18 new tests, 659 total passing, clippy clean.
-22. **2026-05-22: Phase 51 Plans 01-04 complete.** EDR detection (edr_detector.rs), thread suspend protocol (thread_suspender.rs), ntdll patcher core with retour (ntdll_patcher.rs), ntdll trampoline bodies (trampolines.rs), and background re-verification thread (background_thread.rs) all shipped. 253 dlp-hook-dll tests pass, clippy clean. BLOCK-08 and BLOCK-09 requirements satisfied.
-23. **2026-05-22: Phase 51 Plans 05-06 complete.** BypassAlert IPC types (dlp-common), enable_ntdll_patching config flag (dlp-agent), service startup SIEM emission, OnceLock lazy init integration in lib.rs, and chaos test fixture (1000 threads + 100 patch cycles) all shipped. 253 dlp-hook-dll tests pass, clippy clean. BLOCK-08 and BLOCK-09 requirements satisfied. Phase 51 COMPLETE.
-24. **2026-05-27: Phase 52 Plan 06 complete.** Admin API CRUD for protected paths with Windows API validation (GetFullPathNameW), agent config payload extension, and AppState wiring. 520 dlp-server tests pass, all dlp-agent tests pass, clippy clean. DACL-03 requirement satisfied.
-25. **2026-05-27: Phase 52 Plan 05 complete.** DPAPI recovery runbook (`docs/operations/dpapi-recovery.md`) with re-init-from-env-vars and restore-from-backup flows, PowerShell verification snippets, UAT checklist (7 positive + 6 negative cases). Audit wiring verified: `DaclTamperDetected` routes to SIEM with `triggers_alert=true`, `DaclTripwireTooLarge` routes with `triggers_alert=false`. Full workspace test suite passes (520 lib tests), clippy clean (-D warnings), cargo build --workspace passes. Beads issue `dlp-rust-aq4` closed. DACL-05 requirement satisfied. Phase 52 COMPLETE (all 7 plans).
-26. **2026-05-28: Phase 53 Plan 04 complete.** Bypass correlator matching ETW Kernel-File events against hook DLL journal entries. Extended BypassReason with NoHookJournal/OpMismatch; extended BypassAlert with 10 v2 fields and #[serde(default)] backward compat. QPC calibration pair at startup (CR-01), on-demand journal discovery with exponential backoff capped at 30s (CR-02), exact filename allowlist (WR-01), severity mapping with reduced mode capping crit->warn (WR-03), image SHA cache with 1h/5min TTL (WR-06), PID reuse detection (WR-07), alert batching with UUID batch_id and max 3 retries with new batch_id per retry (WR-08, WR-10, IN-02), explicit file_object wiring from ETW event (CR-08). 28 unit tests, 689 dlp-agent tests pass, 252 dlp-common tests pass, clippy clean (-D warnings). ETW-03 requirement satisfied.
-27. **2026-05-28: Phase 53 Plan 05 complete.** Server-side bypass alert storage: `bypass_alerts` SQLite table with CHECK constraints, 5 indexes (including pid per WR-05), composite unique constraint for dedup (WR-08). `BypassAlertsRepository` with list_by_filters, insert, insert_batch, ack_by_id, get_by_id — 15 unit tests. Three HTTP routes: POST /audit/bypass (agent JWT, max 100 alerts, v1+v2 deserialization), GET /admin/bypass-alerts (admin JWT, paginated filtered), POST /admin/bypass-alerts/{id}/ack (admin JWT, idempotent). 14 integration tests. SIEM relay for all alerts; alert router for crit severity. 542+ dlp-server lib tests pass, 14 integration tests pass, clippy clean (-D warnings), cargo build --workspace passes. ETW-04 requirement satisfied.
-28. **2026-05-28: Phase 53 Plan 06 complete.** SIEM + alert router wiring verification: 3 unit tests in `siem_connector.rs` (`test_relay_bypass_alert_detected`, `test_relay_etw_consumer_gated_off`, `test_relay_skips_non_siem_events`), 1 unit test in `alert_router.rs` (`test_send_alert_crit_severity`), 6 integration tests in `bypass_alerts_integration.rs` (file_object preservation CR-08, mixed severity DB state, SIEM payload structure, crit/warn routing predicates, EtwConsumerGatedOff semantics CR-09). 20 total integration tests pass. Full workspace lib tests pass. Clippy clean on workspace libs. ETW-05 requirement satisfied. Phase 53 COMPLETE (all 6 plans).
-29. **2026-05-28: Phase 54 Plan 04 complete.** BypassAlertList TUI screen: dispatch handler with optimistic ack (stable ID rollback, pending_ack_ids double-ack prevention), severity filter cycling (f), hide-acknowledged toggle (h), pagination (PgUp/PgDn), detail popup (Enter). Render function with severity badges (crit=Red+BOLD, warn=Yellow, info=Blue), relative time formatting, path truncation, human-friendly correlation reasons, acknowledged row dimming. 12 new unit tests (6 dispatch + 6 render). 184 dlp-admin-cli tests pass. Clippy clean (-D warnings). UX-02 requirement satisfied.
-30. **2026-05-28: Phase 54 Plan 06 complete.** Integration verification: full workspace build with zero warnings, all 39 test suites pass (lib + tests), clippy clean (-D warnings) across workspace, cargo fmt clean. Fixed SystemMenu consistency between dispatch.rs and render.rs (added missing "Syslog Config" item). Added `system_menu_item_count_and_order` test verifying 14 items and correct cycling. Fixed cross-crate BypassAlert struct compatibility in dlp-hook-dll (added v2 field defaults). Fixed v1 backward compat integration test (added required DB fields for CHECK constraints). 188 dlp-admin-cli tests pass. Phase 54 COMPLETE (all 6 plans).
-31. **2026-06-05: Phase 57 complete.** Operational Deployment Guide + AV/EDR Allowlist + UAT ship gate. Deliverables: `docs/operations/deployment-guide.md` (master deployment guide with pre-flight checks, 6-vendor EDR allowlist procedures, hash verification, WDSI submission), `docs/RELEASE_NOTES.md` (SHA-256/SHA-512 hash generation commands, Authenticode verification, WDSI steps), 6 UAT PowerShell scripts (`Uat-CloudSync.ps1`, `Uat-PrintBlock.ps1`, `Uat-HookDll.ps1`, `Uat-DaclTripwire.ps1`, `Uat-EtwNtdll.ps1`, `Uat-Benchmark.ps1`), `.planning/milestones/v0.10.0-UAT.md` (test matrix with 8 groups, 30+ test cases, CRIT-04 benchmark gate). OPS-01..04 requirements satisfied. Phase 57 COMPLETE (all 6 plans).
-32. **2026-06-07: Phase 64 Plan 01 complete.** Core data types for expanded device identity: `DeviceHealthStatus` enum (4 variants with Ord ordering), `EndpointIdentity` struct (5 fields with serde default), `PolicyCondition::DeviceHealth` variant (op + value pattern), `Subject.device_health` field. 13 new unit tests (9 in endpoint.rs, 4 in abac.rs). 299 total tests pass. Clippy clean. cargo fmt clean. DEVICE-01, DEVICE-02, DEVICE-05 requirements satisfied.
-33. **2026-06-13: Phase 68.1 Plan 01 complete.** Server-side `IngestEventsResponse` with `tamper_detected_for_agent` and `chain_break_count`. Synthetic `ChainBreakDetected` events routed to SIEM relay and syslog queue. Agent-side `IngestResponse` with `#[serde(default)]` backward compat. `AuditBuffer::flush` checks tamper flag and calls `report_tamper_detected()`. 13 dlp-server tests pass, 829 dlp-agent tests pass, clippy clean, fmt clean.
-34. **2026-06-16: Phase 16 Plan 01a complete.** Verified PolicyList TUI implementation matches 5-column spec (Priority/Name/Action/Enabled/Mode) with global_mode parameter, render_global_override_banner call, Char('n') branch to PolicyCreate, client-side sort with priority ascending + name tiebreak, malformed priority sinking via u32::MAX. Build passes, 210 tests pass. POLICY-01 requirement satisfied.
-35. **2026-06-13: Phase 68.1 Plan 03 complete.** Admin TUI Audit Integrity screen: `audit_integrity.rs` constants module, `Screen::AuditIntegrityList` and `Screen::AuditIntegrityDetail` variants, `AuditIntegrityFilter` enum, `EngineClient::list_audit_integrity` client method, `handle_audit_integrity_list`/`handle_audit_integrity_detail`/`action_load_audit_integrity` dispatch handlers, `draw_audit_integrity_list`/`draw_audit_integrity_detail` render functions with OK/BROKEN banner and chain break detail. SystemMenu expanded to 15 items. 14 new unit tests (3 audit_integrity + 3 dispatch + 2 client + 4 render + 2 updated). 210 dlp-admin-cli tests pass, clippy clean (-D warnings), fmt clean. TAMPER-04 requirement satisfied. Phase 68.1 COMPLETE (all 3 plans).
+1. Phase 60 completed 2026-05-12: Added SIEM audit events on confirm/reject, Data Owner scoping via JWT SID claims, scanner_confidence column, department filtering, and ABAC cache invalidation. All tests pass (1576 passed, 9 ignored). Clippy clean.
+2. Milestone pivot 2026-05-12: v1.0.0 Enterprise Hardening dropped; v0.10.0 Real-Time File Access Prevention is the new active milestone.
+2. Architecture stays user-mode: no kernel minifilter, no kernel driver, no EV cert. Real-blocking achieved via hybrid Option C (IAT hooks + DACL tripwire + ETW bypass detection).
+3. v0.10.0 generalizes the v0.9.0 cloud-sync hook DLL pattern to all user-mode processes via agent-driven `CreateRemoteThread` (primary) and AppInit_DLLs (tertiary fallback on non-Secure-Boot endpoints only).
+4. Direct-syscall bypass closed by in-memory `retour`-based Detours-style 5-byte JMP trampoline on ntdll syscall stubs; gated behind `enable_ntdll_patching` policy flag (default off; per-customer rollout).
+5. Asymmetric fail semantics: fail-closed for T3/T4 on agent-unreachable, fail-open for T1/T2. Hook DLL holds a shared-memory `Global\DlpClassificationCache` to make decisions without a live pipe.
+6. DACL tripwire is defense-in-depth on T3/T4 root paths only (not blanket); repair watcher uses `ReadDirectoryChangesW(FILE_NOTIFY_CHANGE_SECURITY)` + 60-s polling backstop with two-phase staged updates to suppress operator-initiated removal false-positives.
+7. ETW Kernel-File consumer (via `ferrisetw` 1.2.0) surfaces suspected syscall-bypass events through the existing SIEM relay + alert router and a new admin TUI Bypass Alerts screen.
+8. SEED-004 (SD / optical / virtual drive monitoring) folded into v0.10.0 Phase 56; I/O coverage comes for free via the universal hook, plus admin TUI policy UX and two new ABAC attributes (`source_volume_class`, `destination_volume_class`).
+9. HARD-01 Phase 47 artifacts retained at `.planning/phases/47-secrets-encryption-at-rest/`. The DPAPI-recovery handoff originally slated for v1.0.0 Phase 52 now folds into v0.10.0 Phase 52 as DACL-05 (`docs/operations/dpapi-recovery.md`).
+10. AV/EDR allowlist for global DLL injection is an operational landmine — v0.10.0 ships a deployment guide phase (Phase 57) rather than running through smoke testing without it. Vendor outreach starts at Phase 48 so reference customers exist by Phase 57.
+11. Roadmap continuous-numbering: Phase 47 last shipped → v0.10.0 starts at Phase 48 with no gaps (per project convention). 11 active phases total.
+12. Monitor-only / audit-only per-policy mode (Phase 55) is a hard requirement for safe production rollout — every industry DLP comparable ships this; not shipping it would make v0.10.0 unable to deploy to production.
+13. **2026-05-12: Target architecture documents (`new_docs/`) merged into planning surface.** 47 gap items identified across 10 document areas. Gaps mapped to new requirements (LABEL-, WORKFLOW-, SYSLOG-, HASH-, DEVICE-, SCANNER-, SCREENSHOT-, WATERMARK-, EMAIL-, RDP-, BT-, BCK-). `new_docs/` deleted after merge to maintain single source of truth in `.planning/`.
+14. **Pilot-first path selected:** v0.11.0 focuses on Label Service + Data Owner Queue + Approval Workflow (manual labels, no scanner yet). v0.12.0 adds Scanner + remaining endpoint controls. This prioritizes pilot readiness over building a complete scanner first.
+15. **2026-05-12 (updated): Explicit minifilter ban reinforced.** Target architecture updated to forbid Windows Minifilter drivers and kernel-mode filesystem interception entirely. The existing user-mode architecture (IAT hooks + DACL tripwire + ETW + WFP + NTFS ACLs) already satisfies this constraint. New requirements ARCH-01..04 and pilot test TC-017 verify compliance. No code changes required — the constraint is architectural documentation and build-audit verification.
+16. **2026-05-21: Phase 59 Plan 01 complete.** ResolvedTier enum added to dlp-server with strictness-aware folder inheritance. Tier::strictness_rank() and is_stricter_than() added to dlp-common. LabelCache upgraded to store full CacheEntry metadata. resolve_tier now returns ResolvedTier (not Result<Tier>) and implements D-07b strictest-tier-wins semantics. 18 new tests, 659 total passing, clippy clean.
+17. **2026-05-22: Phase 51 Plans 01-04 complete.** EDR detection (edr_detector.rs), thread suspend protocol (thread_suspender.rs), ntdll patcher core with retour (ntdll_patcher.rs), ntdll trampoline bodies (trampolines.rs), and background re-verification thread (background_thread.rs) all shipped. 253 dlp-hook-dll tests pass, clippy clean. BLOCK-08 and BLOCK-09 requirements satisfied.
+18. **2026-05-22: Phase 51 Plans 05-06 complete.** BypassAlert IPC types (dlp-common), enable_ntdll_patching config flag (dlp-agent), service startup SIEM emission, OnceLock lazy init integration in lib.rs, and chaos test fixture (1000 threads + 100 patch cycles) all shipped. 253 dlp-hook-dll tests pass, clippy clean. BLOCK-08 and BLOCK-09 requirements satisfied. Phase 51 COMPLETE.
+19. **2026-05-27: Phase 52 Plan 06 complete.** Admin API CRUD for protected paths with Windows API validation (GetFullPathNameW), agent config payload extension, and AppState wiring. 520 dlp-server tests pass, all dlp-agent tests pass, clippy clean. DACL-03 requirement satisfied.
+20. **2026-05-27: Phase 52 Plan 05 complete.** DPAPI recovery runbook (`docs/operations/dpapi-recovery.md`) with re-init-from-env-vars and restore-from-backup flows, PowerShell verification snippets, UAT checklist (7 positive + 6 negative cases). Audit wiring verified: `DaclTamperDetected` routes to SIEM with `triggers_alert=true`, `DaclTripwireTooLarge` routes with `triggers_alert=false`. Full workspace test suite passes (520 lib tests), clippy clean (-D warnings), cargo build clean. Beads issue `dlp-rust-aq4` closed. DACL-05 requirement satisfied. Phase 52 COMPLETE (all 7 plans).
+21. **2026-05-28: Phase 53 Plan 04 complete.** Bypass correlator matching ETW Kernel-File events against hook DLL journal entries. Extended BypassReason with NoHookJournal/OpMismatch; extended BypassAlert with 10 v2 fields and #[serde(default)] backward compat. QPC calibration pair at startup (CR-01), on-demand journal discovery with exponential backoff capped at 30s (CR-02), exact filename allowlist (WR-01), severity mapping with reduced mode capping crit->warn (WR-03), image SHA cache with 1h/5min TTL (WR-06), PID reuse detection (WR-07), alert batching with UUID batch_id and max 3 retries with new batch_id per retry (WR-08, WR-10, IN-02), explicit file_object wiring from ETW event (CR-08). 28 unit tests, 689 dlp-agent tests pass, 252 dlp-common tests pass, clippy clean (-D warnings). ETW-03 requirement satisfied.
+22. **2026-05-28: Phase 53 Plan 05 complete.** Server-side bypass alert storage: `bypass_alerts` SQLite table with CHECK constraints, 5 indexes (including pid per WR-05), composite unique constraint for dedup (WR-08). `BypassAlertsRepository` with list_by_filters, insert, insert_batch, ack_by_id, get_by_id — 15 unit tests. Three HTTP routes: POST /audit/bypass (agent JWT, max 100 alerts, v1+v2 deserialization), GET /admin/bypass-alerts (admin JWT, paginated filtered), POST /admin/bypass-alerts/{id}/ack (admin JWT, idempotent). 14 integration tests. SIEM relay for all alerts; alert router for crit severity. 542+ dlp-server lib tests pass, 14 integration tests pass, clippy clean (-D warnings), cargo build --workspace passes. ETW-04 requirement satisfied.
+23. **2026-05-28: Phase 53 Plan 06 complete.** SIEM + alert router wiring verification: 3 unit tests in `siem_connector.rs` (`test_relay_bypass_alert_detected`, `test_relay_etw_consumer_gated_off`, `test_relay_skips_non_siem_events`), 1 unit test in `alert_router.rs` (`test_send_alert_crit_severity`), 6 integration tests in `bypass_alerts_integration.rs` (file_object preservation CR-08, mixed severity DB state, SIEM payload structure, crit/warn routing predicates, EtwConsumerGatedOff semantics CR-09). 20 total integration tests pass. Full workspace lib tests pass. Clippy clean on workspace libs. ETW-05 requirement satisfied. Phase 53 COMPLETE (all 6 plans).
+24. **2026-05-28: Phase 54 Plan 04 complete.** BypassAlertList TUI screen: dispatch handler with optimistic ack (stable ID rollback, pending_ack_ids double-ack prevention), severity filter cycling (f), hide-acknowledged toggle (h), pagination (PgUp/PgDn), detail popup (Enter). Render function with severity badges (crit=Red+BOLD, warn=Yellow, info=Blue), relative time formatting, path truncation, human-friendly correlation reasons, acknowledged row dimming. 12 new unit tests (6 dispatch + 6 render). 184 dlp-admin-cli tests pass. Clippy clean (-D warnings). UX-02 requirement satisfied.
+25. **2026-05-28: Phase 54 Plan 06 complete.** Integration verification: full workspace build with zero warnings, all 39 test suites pass (lib + tests), clippy clean (-D warnings) across workspace, cargo fmt clean. Fixed SystemMenu consistency between dispatch.rs and render.rs (added missing "Syslog Config" item). Added `system_menu_item_count_and_order` test verifying 14 items and correct cycling. Fixed cross-crate BypassAlert struct compatibility in dlp-hook-dll (added v2 field defaults). Fixed v1 backward compat integration test (added required DB fields for CHECK constraints). 188 dlp-admin-cli tests pass. Phase 54 COMPLETE (all 6 plans).
+26. **2026-05-29: Phase 56 complete (all 6 plans).** Volume-class ABAC end-to-end integration tests: 5 passing mock-based tests + 1 hardware-dependent `#[ignore]` test in `dlp-server/tests/volume_class_integration.rs`. Added `inject_volume_class_for_test` helper to `VolumeDetector`. Fixed bincode compatibility by removing `skip_serializing_if` from volume class fields (caused `UnexpectedEof` on deserialize). Fixed all cross-crate `HookRequest` test initializers. Full workspace compiles, clippy clean, fmt clean. DRIVE-01..04 requirements satisfied. Phase 56 COMPLETE.
+27. **2026-05-30: Phase 57 Plans 01-04 complete.** Deployment guide (`docs/operations/deployment-guide.md`) with per-vendor AV/EDR allowlist procedures for 6 vendors (Defender, CrowdStrike, SentinelOne, Carbon Black, Sophos, Trend Micro). RELEASE_NOTES.md with SHA-256/SHA-512 hash tables, artifact provenance, signing certificate info, WDSI submission flow, and signtool verification commands. v0.10.0 UAT test plan (`.planning/milestones/v0.10.0-UAT.md`) with 36 scenarios across 10 categories. Deployment reality documentation (57-04) covering Secure Boot, PPL coverage gaps, DACL tripwire backstop, privilege preservation, and reboot requirements. OPS-01, OPS-02, OPS-03 requirements satisfied. OPS-04 (UAT execution) PENDING manual execution on physical Windows 11 host.
+28. **2026-05-30: Phase 57 Plans 05-06 complete.** Final integration verification: standardized DLL naming convention (`dlp_hook_dll.dll` with underscore, not hyphen) across all documentation. Added code block language tags to deployment guide for syntax highlighting. Phase 57 status: IN PROGRESS (4 of 6 plans complete). Ship/no-ship decision PENDING UAT results. See `57-VERIFICATION.md` for detailed status.
+29. **2026-06-02: Phase 58 complete (all 6 plans).** Differentiators Bundle — override flow, diagnostics, health, hash evidence, admin TUI screens. Key deliverables: IpcPayloadV2 versioned envelope, DiagnosticSnapshot with 18 fields, content_hasher with 100MB/1GB boundaries, diagnostic_ring (1000-entry lock-free buffer), DecisionContext in all 12 trampolines, injected_pids/patched_modules counters, DiagnosticAggregator with 5-min history scanning, connected_pipes registry, concurrent pipe polling with JoinSet, server CachedDiagnostics with rate limiting, GET /admin/diagnostics + /admin/health endpoints, AuditEvent INSERT to SQLite, admin TUI Diagnostic List + Self-Health Dashboard screens, HookResponse.approval_override with TTL enforcement, 30s deduplication with strengthened key. Full workspace: 2158+ tests pass, clippy clean (-D warnings), cargo fmt clean. DIFF-01..04 requirements satisfied. Phase 58 COMPLETE.
 
 ## Blockers
 
-None.
+**Phase 57 — UAT Execution Required (Manual)**
+
+- OPS-04 requirement (UAT execution on physical Windows 11 host) is pending manual execution.
+- UAT must be run by operator on physical hardware with real cloud clients, real printers, and real USB/SD/optical/virtual drives.
+- CRIT-04 benchmark gate (<= 25% wall-clock overhead) must be verified during UAT.
+- See `.planning/phases/57-operational-deployment-guide-av-edr-allowlist-uat/57-VERIFICATION.md` for full status.
 
 ## Next Action
 
-### Immediate: Phase 55.1 verification
+### Immediate: Complete Phase 57 UAT
+
+Phase 57 is IN PROGRESS (4 of 6 plans complete). Remaining work:
+
+1. **Manual UAT execution** on physical Windows 11 host (OPS-04)
+   - Run all 36 scenarios from `.planning/milestones/v0.10.0-UAT.md`
+   - Verify CRIT-04 benchmark gate (<= 25% overhead)
+   - Record results in UAT document
+
+2. **After UAT completes:**
+   - Analyze results and make ship/no-ship decision
+   - Update deployment guide with any UAT-discovered corrections
+   - Create final VERIFICATION.md with PASS/FAIL determination
+   - Update STATE.md and ROADMAP.md with Phase 57 completion
+
+3. **Phase 58** (Differentiators Bundle) can proceed in parallel with UAT execution if resources allow.
+
+### v0.11.0 Active Phases (Post-v0.10.0 Ship)
 
 Both plans in Phase 55.1 are complete. Ready for verification (`/gsd-verify-phase` or `/gsd-verify-work`).
 

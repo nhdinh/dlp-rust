@@ -100,8 +100,7 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
                 session_id       INTEGER NOT NULL,
                 access_context   TEXT NOT NULL DEFAULT 'local',
                 correlation_id   TEXT UNIQUE,
-                prev_hash        TEXT,
-                chain_hash       TEXT
+                content_sha256   TEXT
             );
 
             -- Partial index for chain-verified events only (efficient integrity queries)
@@ -832,55 +831,13 @@ pub fn run_migrations(conn: &SqliteConn) -> anyhow::Result<()> {
     )
     .context("seed global_enforcement_mode system_kv")?;
 
-    // Phase 63: tamper-evident audit hash chain columns.
+    // Phase 58-04: content_sha256 column for audit event evidence hashing.
     run_alter(
         conn,
-        "ALTER TABLE audit_events ADD COLUMN prev_hash TEXT",
-        "prev_hash",
+        "ALTER TABLE audit_events ADD COLUMN content_sha256 TEXT",
+        "content_sha256",
         "audit_events",
     )?;
-    run_alter(
-        conn,
-        "ALTER TABLE audit_events ADD COLUMN chain_hash TEXT",
-        "chain_hash",
-        "audit_events",
-    )?;
-
-    // Phase 64: Device identity expansion columns.
-    // Wrapped in transaction for atomicity. Note: SQLite ALTER TABLE
-    // limitations mean some errors cannot be fully rolled back.
-    conn.execute("BEGIN", [])?;
-    run_alter(
-        conn,
-        "ALTER TABLE agents ADD COLUMN fingerprint TEXT NOT NULL DEFAULT ''",
-        "fingerprint",
-        "agents",
-    )?;
-    run_alter(
-        conn,
-        "ALTER TABLE agents ADD COLUMN mac_addresses TEXT NOT NULL DEFAULT '[]'",
-        "mac_addresses",
-        "agents",
-    )?;
-    run_alter(
-        conn,
-        "ALTER TABLE agents ADD COLUMN vpn_active INTEGER NOT NULL DEFAULT 0",
-        "vpn_active",
-        "agents",
-    )?;
-    run_alter(
-        conn,
-        "ALTER TABLE agents ADD COLUMN domain_joined INTEGER NOT NULL DEFAULT 0",
-        "domain_joined",
-        "agents",
-    )?;
-    run_alter(
-        conn,
-        "ALTER TABLE agents ADD COLUMN health_status TEXT NOT NULL DEFAULT 'healthy' CHECK (health_status IN ('healthy','degraded','offline','tampered'))",
-        "health_status",
-        "agents",
-    )?;
-    conn.execute("COMMIT", [])?;
 
     Ok(())
 }

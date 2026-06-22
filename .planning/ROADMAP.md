@@ -353,7 +353,7 @@ Plans:
   3. The admin TUI Conditions Builder exposes `source_volume_class` and `destination_volume_class` as dropdowns with the six enum values; the existing USB/disk allowlist screens render SD/Optical/Virtual rows alongside USB without UI breakage.
   4. `WM_DEVICECHANGE` handlers cover virtual mounts (Daemon Tools, ISO mounting via Windows Explorer, VHD/VHDX mount) by registering `GUID_DEVINTERFACE_VOLUME` notification handlers for non-USB volume classes; the 500 ms deferred-processing pattern from v0.7.0 is preserved.
 
-**Plans:** 6/6 plans complete (completed 2026-06-06)
+**Plans:** 5/6 plans executed
 **UI hint**: yes
 
 Plans:
@@ -404,7 +404,7 @@ Plans:
   3. The deployment guide explicitly addresses Secure Boot reality (AppInit_DLLs is inert; `siem.appinit_dlls_disabled` will fire), the PPL coverage gap (lsass/MsMpEng/EDR-self) and the DACL-tripwire backstop, `SeSystemProfilePrivilege` preservation across upgrades, and the post-install reboot requirement for hook activation.
   4. UAT executes on a real Windows 11 host with real OneDrive/Google Drive/Dropbox/Box clients, real printers, and real USB/SD/optical/virtual drives; every v0.9.0 cloud-sync regression test plus every v0.10.0 active-blocking scenario passes; the CRIT-04 benchmark gate (<= 25% wall-clock overhead on representative `cargo build` + `Office app launch` workloads) holds; results are captured in `.planning/milestones/v0.10.0-UAT.md`.
 
-**Plans:** 6/6 plans complete
+**Plans:** 2/6 plans executed
 
 ### Phase 58: Differentiators Bundle (Override + Diagnostic + Hash Evidence + Self-Health)
 
@@ -602,10 +602,8 @@ Plans:
 | 53.1 | Close gap ETW-03 — add BypassAlert to IpcPayloadV1 and route in agent hook_ipc (INSERTED) | 4/4 | Complete   | 2026-06-17 |
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 6/6 | Complete    | 2026-05-28 |
 | 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 7/7 | Complete    | 2026-05-29 |
-| 55.1 | Close gap MODE-01 — read global_enforcement_mode in BypassCorrelator (INSERTED) | 2/2 | Complete    | 2026-06-20 |
-| 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 6/6 | Complete | 2026-06-06 |
-| 56.1 | Close gap DRIVE-03/04 — add volume class fields to HookRequest and ABAC path (INSERTED) | 3/3 | Complete    | 2026-06-18 |
-| 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 6/6 | Complete    | 2026-06-10 |
+| 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 5/6 | In Progress|  |
+| 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 2/6 | In Progress|  |
 | 58. Differentiators Bundle (cuttable to v0.10.1) | 0/0 | Not started | - |
 | 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Complete | 2026-05-21 |
 | 60. Data Owner Review Queue + Admin TUI Screen | 1/1 | Complete | 2026-05-12 |

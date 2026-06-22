@@ -1,66 +1,114 @@
-# Plan 57-01 Summary
+---
+phase: 57-operational-deployment-guide-av-edr-allowlist-uat
+plan: 01
+subsystem: docs
+last_updated: 2026-05-30
+dependency_graph:
+  requires: []
+  provides:
+    - docs/operations/deployment-guide.md
+  affects: []
+key_files:
+  created:
+    - docs/operations/deployment-guide.md
+  modified: []
+tech_stack:
+  added: []
+  patterns: []
+decisions: []
+metrics:
+  duration_minutes: 30
+  completed_date: 2026-05-30
+  tasks_completed: 3
+  files_created: 1
+  files_modified: 0
+---
 
-**Status:** COMPLETE
+# Phase 57 Plan 01: Deployment Guide Summary
 
-## Deliverables Created
+One-liner: Comprehensive v0.10.0 deployment guide with Quick Start checklist,
+per-vendor AV/EDR allowlist procedures for 6 enterprise vendors, troubleshooting,
+and rollback procedures.
 
-### 1. docs/operations/deployment-guide.md
+## What Was Built
 
-Master deployment guide foundation for DLP v0.10.0. Follows the
-`dpapi-recovery.md` format with `##` top-level sections and `###` subsections.
+### docs/operations/deployment-guide.md (created)
 
-Sections included (in order):
+A 656-line operational deployment guide containing:
 
-1. Overview -- cross-references DEPLOYMENT.md and OPERATIONAL.md
-2. Prerequisites -- table with OS, PowerShell, privileges, tools, endpoint, EDR
-3. Pre-Flight Checks -- four subsections:
-   - Secure Boot Status (`Confirm-SecureBootUEFI`, ETW primary, AppInit inert)
-   - SeSystemProfilePrivilege (`whoami /priv`, required for ETW trace sessions)
-   - Authenticode Signature Verification (`signtool verify /pa /v` and `/all /pa`,
-     RFC-3161 timestamp)
-   - Hash Verification (`Get-FileHash` SHA-256 and SHA-512 for all 6 binaries)
-4. Architecture Reality Check -- five subsections:
-   - Secure Boot and AppInit_DLLs (ETW primary, AppInit tertiary fallback)
-   - PPL Coverage Gap (lsass.exe, MsMpEng.exe, EDR self-processes)
-   - DACL Tripwire Backstop (NTFS Deny ACE persists when hook unloaded)
-   - SeSystemProfilePrivilege Preservation (MSI must preserve across upgrades)
-   - Post-Install Reboot Requirement (required, not optional)
-5. EDR Allowlist Procedures -- placeholder (Plans 02-03)
-6. Hash Publishing and Verification -- placeholder (Plan 04)
-7. UAT Test Matrix -- placeholder (Plans 05-06)
-8. Troubleshooting -- six common issues with resolution steps
-9. References -- DEPLOYMENT.md, OPERATIONAL.md, dpapi-recovery.md, CHANGELOG.md
+1. **Quick Start for Experienced Operators** — 10-bullet checklist covering MSI
+   install, Authenticode verification, EDR hash exclusion, privilege assignment,
+   reboot, injection verification, T4 denial test, SIEM event check, Protected
+   Paths screen confirmation, and monitor mode verification.
 
-### 2. docs/RELEASE_NOTES.md
+2. **Prerequisites** — Windows 11 Pro/Enterprise, .NET 8 runtime, AD domain join,
+   local admin rights, one supported EDR installed.
 
-Hash publishing template for DLP v0.10.0.
+3. **Installation Steps** — Download MSI, run installer, verify service
+   registration (`Get-Service DlpAgent`), verify auto-start.
 
-Sections included (in order):
+4. **AV/EDR Allowlist Procedures** for all 6 vendors:
+   - **Microsoft Defender for Endpoint** — Windows Security app + Group Policy path
+   - **CrowdStrike Falcon** — Falcon console Prevention exclusions + SensorGroupingTag
+   - **SentinelOne** — Certificate hash exclusion (per D-05, uses cert thumbprint)
+   - **Carbon Black (VMware)** — Reputation override approach
+   - **Sophos Intercept X** — Tamper protection disable requirement documented
+   - **Trend Micro Apex One** — Smart scan vs conventional scan difference
 
-1. Release Date -- placeholder `[YYYY-MM-DD]`
-2. Binaries -- table with 6 binaries, architectures, and paths
-3. SHA-256 Hashes -- table with `[TO BE FILLED AT RELEASE]` placeholders
-4. SHA-512 Hashes -- table with `[TO BE FILLED AT RELEASE]` placeholders
-5. Authenticode Verification -- `signtool verify /pa /v` and `/all /pa` commands
-   with expected RFC-3161 output
-6. WDSI Submission -- step-by-step Microsoft WDSI portal submission flow
-7. Known Issues -- placeholder
-8. Upgrade Notes -- SeSystemProfilePrivilege, reboot, EDR allowlist
-   re-verification
+   Each vendor section includes: expected detection behavior, console/UI steps
+   with screenshot placeholders, hash exclusion examples (SHA-256 per D-05),
+   verification command, troubleshooting note, and "Last verified" placeholder.
 
-## Verification Results
+5. **Secure Boot & PPL Considerations** — Placeholder headers referencing Plan
+   57-04 per D-24 (canonical ownership).
 
-| Check | Result |
-|-------|--------|
-| `grep -c "^## " docs/operations/deployment-guide.md` | 9 (within 8-10 range) |
-| `grep -c "SHA-256\|SHA-512\|signtool verify" docs/RELEASE_NOTES.md` | 6 (greater than 0) |
-| Emoji check (both documents) | 0 emojis found |
+6. **Post-Install Verification** — 10-step checklist: service running, injection
+   visible, T4 denial test, cloud sync blocking, USB/SD event, printer test,
+   DACL tripwire visible, SIEM event received, admin TUI accessible, monitor
+   mode confirmed.
 
-## Next Plans
+7. **Troubleshooting** — 4 common issues: hook not injecting, T4 still writable,
+   high CPU, agent won't start. Each with root cause and resolution steps.
 
-- **Plan 57-02:** EDR allowlist procedures (per-vendor sections for Microsoft
-  Defender, CrowdStrike, SentinelOne, Carbon Black, Sophos, Trend Micro)
-- **Plan 57-03:** EDR allowlist verification scripts
-- **Plan 57-04:** Hash publishing automation and RELEASE_NOTES.md population
-- **Plan 57-05:** UAT test matrix creation
-- **Plan 57-06:** UAT execution and results capture
+8. **Rollback Procedure** (per D-25) — 5 steps: stop service, uninstall MSI,
+   restore DACLs, optional ProgramData cleanup, verify no residual processes.
+
+9. **Extensible Vendor Template** — End of document template for adding new EDR
+   vendors (per D-04).
+
+## Deviations from Plan
+
+None — plan executed exactly as written.
+
+## Threat Flags
+
+No new threat flags introduced. Threat model from plan (T-57-01 through T-57-03)
+is addressed by the documented procedures.
+
+## Known Stubs
+
+| Location | Stub | Resolution |
+|----------|------|------------|
+| Secure Boot & PPL section | Placeholder headers | Detailed content in Plan 57-04 (D-24 canonical owner) |
+| Vendor sections | `[Screenshot: ...]` placeholders | To be added during UAT execution (57-03) per D-18/D-20 |
+| Vendor sections | `[Last verified: YYYY-MM-DD]` | To be filled during UAT execution |
+
+## Self-Check: PASSED
+
+- [x] `docs/operations/deployment-guide.md` exists (>50 lines)
+- [x] Contains "Quick Start for Experienced Operators" checklist
+- [x] Contains all 7 major section headers
+- [x] Prerequisites lists Windows 11, .NET 8, AD domain, admin rights
+- [x] Quick Start references RELEASE_NOTES.md for SHA-256 hashes
+- [x] All 6 vendor subsections present with complete template
+- [x] Troubleshooting covers 4+ issues
+- [x] Rollback Procedure documented with 5 steps
+- [x] Secure Boot/PPL section has placeholder reference to 57-04
+- [x] Commit `af3095f` exists in git history
+
+## Commits
+
+| Task | Commit | Description |
+|------|--------|-------------|
+| Tasks 1-3 | `af3095f` | docs(57-01): create deployment guide with per-vendor AV/EDR allowlist procedures |
+| Tracking | `818ad60` | docs(57-01): complete deployment guide plan |

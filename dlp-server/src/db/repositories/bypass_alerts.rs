@@ -205,6 +205,71 @@ impl BypassAlertsRepository {
         rows.collect()
     }
 
+    /// Returns the total count of bypass alerts matching the filter criteria
+    /// (before pagination).
+    pub fn count_by_filters(pool: &Pool, filter: &BypassAlertFilter) -> rusqlite::Result<usize> {
+        let conn = pool
+            .get()
+            .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+
+        let mut sql = String::from("SELECT COUNT(*) FROM bypass_alerts WHERE 1=1");
+        let mut param_count = 0;
+
+        if filter.since.is_some() {
+            param_count += 1;
+            sql.push_str(&format!(" AND created_at >= ?{param_count}"));
+        }
+        if let Some(ref sev_list) = filter.severity {
+            if !sev_list.is_empty() {
+                param_count += 1;
+                let placeholders: Vec<String> = (param_count..param_count + sev_list.len())
+                    .map(|i| format!("?{i}"))
+                    .collect();
+                sql.push_str(&format!(" AND severity IN ({})", placeholders.join(", ")));
+                param_count += sev_list.len() - 1;
+            }
+        }
+        if let Some(ack) = filter.acknowledged {
+            if ack {
+                sql.push_str(" AND ack_by IS NOT NULL");
+            } else {
+                sql.push_str(" AND ack_by IS NULL");
+            }
+        }
+        if filter.agent_id.is_some() {
+            param_count += 1;
+            sql.push_str(&format!(" AND agent_id = ?{param_count}"));
+        }
+        if filter.pid.is_some() {
+            param_count += 1;
+            sql.push_str(&format!(" AND pid = ?{param_count}"));
+        }
+
+        let mut stmt = conn.prepare(&sql)?;
+
+        let mut params: Vec<Box<dyn rusqlite::types::ToSql>> = Vec::new();
+        if let Some(ref since) = filter.since {
+            params.push(Box::new(since.clone()));
+        }
+        if let Some(ref sev_list) = filter.severity {
+            for sev in sev_list {
+                params.push(Box::new(sev.clone()));
+            }
+        }
+        if let Some(ref agent_id) = filter.agent_id {
+            params.push(Box::new(agent_id.clone()));
+        }
+        if let Some(pid) = filter.pid {
+            params.push(Box::new(pid));
+        }
+
+        let param_refs: Vec<&dyn rusqlite::types::ToSql> =
+            params.iter().map(|p| p.as_ref()).collect();
+
+        let count: i64 = stmt.query_row(param_refs.as_slice(), |row| row.get(0))?;
+        Ok(count as usize)
+    }
+
     /// Inserts a single bypass alert using `INSERT OR IGNORE`.
     ///
     /// Returns `last_insert_rowid()` if the row was inserted, or `0` if a

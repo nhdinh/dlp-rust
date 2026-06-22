@@ -142,6 +142,17 @@ pub struct IntegrityQueryParams {
 /// call the async `ingest_events` from within a blocking thread without
 /// deadlocking the async runtime. JSON serialization of enum fields stays here.
 pub fn store_events_sync(uow: &UnitOfWork<'_>, events: &[AuditEvent]) -> Result<(), AppError> {
+    // Validate content_sha256 for all events before storing.
+    for event in events {
+        if let Some(ref hash) = event.content_sha256 {
+            if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(AppError::BadRequest(
+                    "invalid content_sha256: must be 64 hex chars".to_string(),
+                ));
+            }
+        }
+    }
+
     let rows: Vec<AuditEventRow> = events
         .iter()
         .map(|event| {
@@ -175,8 +186,7 @@ pub fn store_events_sync(uow: &UnitOfWork<'_>, events: &[AuditEvent]) -> Result<
                     .unwrap_or_default()
                     .to_string(),
                 correlation_id: event.correlation_id.clone(),
-                prev_hash: event.prev_hash.clone(),
-                chain_hash: event.chain_hash.clone(),
+                content_sha256: event.content_sha256.clone(),
             })
         })
         .collect::<Result<Vec<_>, serde_json::Error>>()?;
@@ -227,6 +237,18 @@ pub async fn ingest_events(
             return Err(AppError::BadRequest(
                 "audit event missing destination_application".to_string(),
             ));
+        }
+        // Validate content_sha256 is a valid 64-character hex string when present.
+        if let Some(ref hash) = event.content_sha256 {
+            if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                tracing::warn!(
+                    correlation_id = %event.correlation_id.as_deref().unwrap_or("none"),
+                    "Rejecting audit event with invalid content_sha256"
+                );
+                return Err(AppError::BadRequest(
+                    "invalid content_sha256: must be 64 hex chars".to_string(),
+                ));
+            }
         }
     }
 
@@ -320,43 +342,41 @@ pub async fn ingest_events(
             let mut conn = pool.get().map_err(AppError::from)?;
             let uow = UnitOfWork::new(&mut conn).map_err(AppError::from)?;
 
-            // Pre-serialize enum fields into AuditEventRow structs.
-            let rows: Vec<AuditEventRow> = events_for_repo
-                .iter()
-                .map(|event| {
-                    Ok(AuditEventRow {
-                        timestamp: event.timestamp.to_rfc3339(),
-                        event_type: serde_json::to_value(event.event_type)?
-                            .as_str()
-                            .unwrap_or_default()
-                            .to_string(),
-                        user_sid: event.user_sid.clone(),
-                        user_name: event.user_name.clone(),
-                        resource_path: event.resource_path.clone(),
-                        classification: serde_json::to_value(event.classification)?
-                            .as_str()
-                            .unwrap_or_default()
-                            .to_string(),
-                        action_attempted: serde_json::to_value(event.action_attempted)?
-                            .as_str()
-                            .unwrap_or_default()
-                            .to_string(),
-                        decision: serde_json::to_value(event.decision)?
-                            .as_str()
-                            .unwrap_or_default()
-                            .to_string(),
-                        policy_id: event.policy_id.clone(),
-                        policy_name: event.policy_name.clone(),
-                        agent_id: event.agent_id.clone(),
-                        session_id: event.session_id as i64,
-                        access_context: serde_json::to_value(event.access_context)?
-                            .as_str()
-                            .unwrap_or_default()
-                            .to_string(),
-                        correlation_id: event.correlation_id.clone(),
-                        prev_hash: event.prev_hash.clone(),
-                        chain_hash: event.chain_hash.clone(),
-                    })
+        // Pre-serialize enum fields into AuditEventRow structs.
+        let rows: Vec<AuditEventRow> = events_for_repo
+            .iter()
+            .map(|event| {
+                Ok(AuditEventRow {
+                    timestamp: event.timestamp.to_rfc3339(),
+                    event_type: serde_json::to_value(event.event_type)?
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    user_sid: event.user_sid.clone(),
+                    user_name: event.user_name.clone(),
+                    resource_path: event.resource_path.clone(),
+                    classification: serde_json::to_value(event.classification)?
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    action_attempted: serde_json::to_value(event.action_attempted)?
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    decision: serde_json::to_value(event.decision)?
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    policy_id: event.policy_id.clone(),
+                    policy_name: event.policy_name.clone(),
+                    agent_id: event.agent_id.clone(),
+                    session_id: event.session_id as i64,
+                    access_context: serde_json::to_value(event.access_context)?
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                    correlation_id: event.correlation_id.clone(),
+                    content_sha256: event.content_sha256.clone(),
                 })
                 .collect::<Result<Vec<_>, serde_json::Error>>()
                 .map_err(AppError::from)?;
@@ -882,468 +902,66 @@ mod tests {
         assert_eq!(resource_path, "policy:test-policy");
     }
 
-    // --- Phase 63: chain verification tests ---
-
-    /// A valid event with genesis prev_hash and correct chain_hash is accepted.
     #[test]
-    fn test_ingest_verifies_valid_chain() {
-        let rt = tokio::runtime::Runtime::new().expect("create runtime");
-        rt.block_on(async {
-            let state = test_app_state();
-            let genesis = dlp_common::audit::genesis_hash();
-            let event = chain_event("agent-a", Some(genesis), chrono::Duration::zero());
+    fn test_store_events_sync_content_sha256() {
+        use crate::db;
+        let pool = db::new_pool(":memory:").expect("build pool");
+        let event = dlp_common::AuditEvent::new(
+            dlp_common::EventType::Access,
+            "S-1-5-21-1".to_string(),
+            "testuser".to_string(),
+            r"C:\Data\secret.doc".to_string(),
+            dlp_common::Classification::T4,
+            dlp_common::Action::READ,
+            dlp_common::Decision::DenyWithAlert,
+            "agent-01".to_string(),
+            42,
+        )
+        .with_content_hash("abc123def456".to_string(), false, false);
 
-            let result = ingest_events(State(state.clone()), Json(vec![event])).await;
-            assert!(result.is_ok(), "valid chain event must be accepted");
+        let mut conn = pool.get().expect("acquire connection");
+        let uow = db::UnitOfWork::new(&mut conn).expect("begin transaction");
+        store_events_sync(&uow, &[event]).expect("store event");
+        uow.commit().expect("commit");
 
-            // Query back and verify hash fields are persisted.
-            let rows = AuditEventRepository::query(
-                &state.pool,
-                &AuditEventFilter {
-                    agent_id: Some("agent-a".to_string()),
-                    ..Default::default()
-                },
+        let (content_sha256,): (Option<String>,) = conn
+            .query_row(
+                "SELECT content_sha256 FROM audit_events",
+                [],
+                |row: &rusqlite::Row| Ok((row.get(0)?,)),
             )
-            .expect("query");
-            assert_eq!(rows.len(), 1, "one event must be stored");
-            assert!(
-                rows[0]["prev_hash"].as_str().is_some(),
-                "prev_hash must be persisted"
-            );
-            assert!(
-                rows[0]["chain_hash"].as_str().is_some(),
-                "chain_hash must be persisted"
-            );
-
-            // No ChainBreakDetected synthetic event should exist.
-            let breaks = AuditEventRepository::query(
-                &state.pool,
-                &AuditEventFilter {
-                    event_type: Some("CHAIN_BREAK_DETECTED".to_string()),
-                    ..Default::default()
-                },
-            )
-            .expect("query breaks");
-            assert_eq!(breaks.len(), 0, "no chain break for valid event");
-        });
+            .expect("query audit_events");
+        assert_eq!(content_sha256, Some("abc123def456".to_string()));
     }
 
-    /// A broken chain (wrong prev_hash) is detected and stored alongside a synthetic alert.
     #[test]
-    fn test_ingest_detects_broken_chain() {
-        let rt = tokio::runtime::Runtime::new().expect("create runtime");
-        rt.block_on(async {
-            let state = test_app_state();
-            let genesis = dlp_common::audit::genesis_hash();
+    fn test_store_events_sync_null_content_sha256() {
+        use crate::db;
+        let pool = db::new_pool(":memory:").expect("build pool");
+        let event = dlp_common::AuditEvent::new(
+            dlp_common::EventType::Access,
+            "S-1-5-21-1".to_string(),
+            "testuser".to_string(),
+            r"C:\Data\secret.doc".to_string(),
+            dlp_common::Classification::T4,
+            dlp_common::Action::READ,
+            dlp_common::Decision::DenyWithAlert,
+            "agent-01".to_string(),
+            42,
+        );
 
-            // First: ingest a valid event to establish chain state.
-            let event1 = chain_event("agent-b", Some(genesis.clone()), chrono::Duration::zero());
-            let _ = ingest_events(State(state.clone()), Json(vec![event1]))
-                .await
-                .expect("first event ingested");
+        let mut conn = pool.get().expect("acquire connection");
+        let uow = db::UnitOfWork::new(&mut conn).expect("begin transaction");
+        store_events_sync(&uow, &[event]).expect("store event");
+        uow.commit().expect("commit");
 
-            // Second: ingest an event with wrong prev_hash but computable chain_hash.
-            let mut event2 = chain_event(
-                "agent-b",
-                Some(genesis.clone()),
-                chrono::Duration::seconds(1),
-            );
-            // Force wrong prev_hash: claim it links to genesis again, but DB expects event1's chain_hash.
-            event2.prev_hash = Some(genesis.clone());
-            event2.chain_hash =
-                Some(dlp_common::audit::compute_chain_hash(&genesis, &event2).expect("compute"));
-
-            let result = ingest_events(State(state.clone()), Json(vec![event2])).await;
-            assert!(result.is_ok(), "broken event must still be stored");
-
-            // Verify a synthetic ChainBreakDetected event was persisted.
-            let breaks = AuditEventRepository::query(
-                &state.pool,
-                &AuditEventFilter {
-                    event_type: Some("CHAIN_BREAK_DETECTED".to_string()),
-                    agent_id: Some("agent-b".to_string()),
-                    ..Default::default()
-                },
+        let (content_sha256,): (Option<String>,) = conn
+            .query_row(
+                "SELECT content_sha256 FROM audit_events",
+                [],
+                |row: &rusqlite::Row| Ok((row.get(0)?,)),
             )
-            .expect("query breaks");
-            assert_eq!(
-                breaks.len(),
-                1,
-                "exactly one chain break alert must be persisted"
-            );
-        });
-    }
-
-    /// Legacy events without hash fields skip verification entirely.
-    #[test]
-    fn test_ingest_skips_verification_for_legacy_events() {
-        let rt = tokio::runtime::Runtime::new().expect("create runtime");
-        rt.block_on(async {
-            let state = test_app_state();
-            let mut event = AuditEvent::new(
-                dlp_common::EventType::Access,
-                "S-1-5-21-1".to_string(),
-                "legacy".to_string(),
-                r"C:\legacy.txt".to_string(),
-                dlp_common::Classification::T1,
-                dlp_common::Action::READ,
-                dlp_common::Decision::ALLOW,
-                "agent-legacy".to_string(),
-                1,
-            );
-            event.source_application = Some(dlp_common::endpoint::AppIdentity {
-                image_path: r"C:\test.exe".to_string(),
-                publisher: "Test".to_string(),
-                trust_tier: dlp_common::endpoint::AppTrustTier::Trusted,
-                signature_state: dlp_common::endpoint::SignatureState::Valid,
-                aumid: None,
-                package_family_name: None,
-                is_uwp: false,
-            });
-            event.destination_application = Some(dlp_common::endpoint::AppIdentity {
-                image_path: r"C:\dst.exe".to_string(),
-                publisher: "Test".to_string(),
-                trust_tier: dlp_common::endpoint::AppTrustTier::Trusted,
-                signature_state: dlp_common::endpoint::SignatureState::Valid,
-                aumid: None,
-                package_family_name: None,
-                is_uwp: false,
-            });
-            // Explicitly no hash fields.
-            event.prev_hash = None;
-            event.chain_hash = None;
-
-            let result = ingest_events(State(state.clone()), Json(vec![event])).await;
-            assert!(result.is_ok(), "legacy event must be accepted");
-
-            let rows = AuditEventRepository::query(
-                &state.pool,
-                &AuditEventFilter {
-                    agent_id: Some("agent-legacy".to_string()),
-                    ..Default::default()
-                },
-            )
-            .expect("query");
-            assert_eq!(rows.len(), 1, "legacy event must be stored");
-
-            // No chain break alert should be generated.
-            let breaks = AuditEventRepository::query(
-                &state.pool,
-                &AuditEventFilter {
-                    event_type: Some("CHAIN_BREAK_DETECTED".to_string()),
-                    ..Default::default()
-                },
-            )
-            .expect("query breaks");
-            assert_eq!(breaks.len(), 0, "no chain break for legacy event");
-        });
-    }
-
-    /// A chain break triggers a synthetic ChainBreakDetected event in the audit log.
-    #[test]
-    fn test_ingest_triggers_alert_on_chain_break() {
-        let rt = tokio::runtime::Runtime::new().expect("create runtime");
-        rt.block_on(async {
-            let state = test_app_state();
-            let genesis = dlp_common::audit::genesis_hash();
-
-            // Seed a broken event directly.
-            let mut event = chain_event("agent-c", Some(genesis.clone()), chrono::Duration::zero());
-            // Corrupt the prev_hash so it does not match genesis (it IS genesis, but let's
-            // make the chain_hash mismatch by mutating the event after hash computation).
-            event.resource_path = r"C:\tampered.txt".to_string();
-            // Recompute chain_hash with original prev_hash — now the event data doesn't match.
-            event.chain_hash =
-                Some(dlp_common::audit::compute_chain_hash(&genesis, &event).expect("compute"));
-            // Mutate again AFTER computing hash — this creates a HashMismatch.
-            event.resource_path = r"C:\original.txt".to_string();
-
-            let result = ingest_events(State(state.clone()), Json(vec![event])).await;
-            assert!(result.is_ok(), "handler must not error on chain break");
-
-            // The broken event is still persisted.
-            let rows = AuditEventRepository::query(
-                &state.pool,
-                &AuditEventFilter {
-                    agent_id: Some("agent-c".to_string()),
-                    ..Default::default()
-                },
-            )
-            .expect("query");
-            assert_eq!(
-                rows.len(),
-                2,
-                "broken event + synthetic alert must both be stored"
-            );
-
-            // A synthetic ChainBreakDetected row must exist.
-            let breaks = AuditEventRepository::query(
-                &state.pool,
-                &AuditEventFilter {
-                    event_type: Some("CHAIN_BREAK_DETECTED".to_string()),
-                    agent_id: Some("agent-c".to_string()),
-                    ..Default::default()
-                },
-            )
-            .expect("query breaks");
-            assert_eq!(
-                breaks.len(),
-                1,
-                "synthetic ChainBreakDetected must be persisted"
-            );
-        });
-    }
-
-    /// Multiple broken events from the same agent with the same reason deduplicate to one alert.
-    #[test]
-    fn test_ingest_deduplicates_chain_break_alerts() {
-        let rt = tokio::runtime::Runtime::new().expect("create runtime");
-        rt.block_on(async {
-            let state = test_app_state();
-            let _genesis = dlp_common::audit::genesis_hash();
-
-            // Ingest two events with the SAME broken prev_hash (both claim genesis
-            // when no prior event exists — but the first event SHOULD use genesis,
-            // so this is only a break for the SECOND event if the first was valid).
-            // Instead: both events have a computable chain_hash but share a prev_hash
-            // that does NOT match the DB state (we seed nothing, so DB expects genesis).
-            // If both use a WRONG prev_hash (not genesis), both break with the same reason.
-            let wrong_prev =
-                "0000000000000000000000000000000000000000000000000000000000000000".to_string();
-            let mut event1 = chain_event(
-                "agent-d",
-                Some(wrong_prev.clone()),
-                chrono::Duration::zero(),
-            );
-            event1.prev_hash = Some(wrong_prev.clone());
-            event1.chain_hash =
-                Some(dlp_common::audit::compute_chain_hash(&wrong_prev, &event1).expect("compute"));
-
-            let mut event2 = chain_event(
-                "agent-d",
-                Some(wrong_prev.clone()),
-                chrono::Duration::seconds(1),
-            );
-            event2.prev_hash = Some(wrong_prev.clone());
-            event2.chain_hash =
-                Some(dlp_common::audit::compute_chain_hash(&wrong_prev, &event2).expect("compute"));
-
-            let result = ingest_events(State(state.clone()), Json(vec![event1, event2])).await;
-            assert!(result.is_ok());
-
-            // Only ONE synthetic event should be persisted (deduplicated per agent+reason).
-            let breaks = AuditEventRepository::query(
-                &state.pool,
-                &AuditEventFilter {
-                    event_type: Some("CHAIN_BREAK_DETECTED".to_string()),
-                    agent_id: Some("agent-d".to_string()),
-                    ..Default::default()
-                },
-            )
-            .expect("query breaks");
-            assert_eq!(
-                breaks.len(),
-                1,
-                "duplicate chain breaks must be deduplicated to one alert"
-            );
-        });
-    }
-
-    /// Out-of-order events within a batch are sorted and pass verification.
-    #[test]
-    fn test_ingest_out_of_order_events_sorted_correctly() {
-        let rt = tokio::runtime::Runtime::new().expect("create runtime");
-        rt.block_on(async {
-            let state = test_app_state();
-            let genesis = dlp_common::audit::genesis_hash();
-
-            // Create event A (timestamp 0) and event B (timestamp 1).
-            // B depends on A's chain_hash as its prev_hash.
-            let event_a = chain_event("agent-e", Some(genesis.clone()), chrono::Duration::zero());
-            let chain_hash_a = event_a.chain_hash.clone().unwrap();
-
-            let mut event_b = chain_event(
-                "agent-e",
-                Some(chain_hash_a.clone()),
-                chrono::Duration::seconds(1),
-            );
-            event_b.chain_hash = Some(
-                dlp_common::audit::compute_chain_hash(&chain_hash_a, &event_b).expect("compute"),
-            );
-
-            // Submit in REVERSE order: B first, then A.
-            let result = ingest_events(State(state.clone()), Json(vec![event_b, event_a])).await;
-            assert!(result.is_ok(), "out-of-order batch must pass after sorting");
-
-            // Both events stored, no chain break.
-            let rows = AuditEventRepository::query(
-                &state.pool,
-                &AuditEventFilter {
-                    agent_id: Some("agent-e".to_string()),
-                    ..Default::default()
-                },
-            )
-            .expect("query");
-            assert_eq!(rows.len(), 2, "both events must be stored");
-
-            let breaks = AuditEventRepository::query(
-                &state.pool,
-                &AuditEventFilter {
-                    event_type: Some("\"ChainBreakDetected\"".to_string()),
-                    agent_id: Some("agent-e".to_string()),
-                    ..Default::default()
-                },
-            )
-            .expect("query breaks");
-            assert_eq!(
-                breaks.len(),
-                0,
-                "no false positive chain break after sorting"
-            );
-        });
-    }
-
-    // --- Phase 68.1: IngestEventsResponse tamper detection tests ---
-
-    /// A valid batch returns tamper_detected_for_agent: None and chain_break_count: 0.
-    #[test]
-    fn test_ingest_response_contains_tamper_flag() {
-        let rt = tokio::runtime::Runtime::new().expect("create runtime");
-        rt.block_on(async {
-            let state = test_app_state();
-            let genesis = dlp_common::audit::genesis_hash();
-            let event = chain_event("agent-x", Some(genesis.clone()), chrono::Duration::zero());
-
-            let result = ingest_events(State(state.clone()), Json(vec![event])).await;
-            assert!(result.is_ok(), "valid batch must be accepted");
-
-            let (status, json) = result.expect("unwrap");
-            assert_eq!(status, StatusCode::CREATED);
-            let resp = json.0;
-            assert_eq!(
-                resp.tamper_detected_for_agent, None,
-                "no tamper for valid batch"
-            );
-            assert_eq!(resp.chain_break_count, 0, "no breaks for valid batch");
-        });
-    }
-
-    /// A broken batch for the same agent returns tamper_detected_for_agent: Some(agent-x)
-    /// and chain_break_count: 1.
-    #[test]
-    fn test_ingest_response_tamper_flag_for_same_agent() {
-        let rt = tokio::runtime::Runtime::new().expect("create runtime");
-        rt.block_on(async {
-            let state = test_app_state();
-            let genesis = dlp_common::audit::genesis_hash();
-
-            // Seed a broken event: hash mismatch.
-            let mut event = chain_event("agent-x", Some(genesis.clone()), chrono::Duration::zero());
-            event.resource_path = r"C:\tampered.txt".to_string();
-            event.chain_hash =
-                Some(dlp_common::audit::compute_chain_hash(&genesis, &event).expect("compute"));
-            event.resource_path = r"C:\original.txt".to_string(); // mutate after hash
-
-            let result = ingest_events(State(state.clone()), Json(vec![event])).await;
-            assert!(result.is_ok(), "handler must not error on chain break");
-
-            let (status, json) = result.expect("unwrap");
-            assert_eq!(status, StatusCode::CREATED);
-            let resp = json.0;
-            assert_eq!(
-                resp.tamper_detected_for_agent,
-                Some("agent-x".to_string()),
-                "tamper flag must name the requesting agent"
-            );
-            assert_eq!(resp.chain_break_count, 1, "one unique break");
-        });
-    }
-
-    /// When a batch contains events from agent A but the break is for agent B,
-    /// tamper_detected_for_agent is None.
-    #[test]
-    fn test_ingest_response_other_agent_break() {
-        let rt = tokio::runtime::Runtime::new().expect("create runtime");
-        rt.block_on(async {
-            let state = test_app_state();
-            let genesis = dlp_common::audit::genesis_hash();
-
-            // First: seed a valid event for agent-b to establish DB state.
-            let event_b = chain_event("agent-b", Some(genesis.clone()), chrono::Duration::zero());
-            let _ = ingest_events(State(state.clone()), Json(vec![event_b]))
-                .await
-                .expect("seed agent-b");
-
-            // Second: ingest an event from agent-a with a broken chain_hash,
-            // but the prev_hash points to agent-b's chain (wrong agent).
-            // Actually, the chain verification only checks per-agent continuity,
-            // so a break for agent-b would require an agent-b event. Instead:
-            // Send a valid event for agent-a, and a separate broken event for agent-b
-            // in the SAME batch. The requesting_agent_id is agent-a (first event),
-            // but the break is for agent-b.
-            let event_a = chain_event("agent-a", Some(genesis.clone()), chrono::Duration::zero());
-
-            // Broken event for agent-b: wrong prev_hash (claims genesis again,
-            // but DB now expects event_b's chain_hash).
-            let mut event_b2 = chain_event(
-                "agent-b",
-                Some(genesis.clone()),
-                chrono::Duration::seconds(1),
-            );
-            event_b2.prev_hash = Some(genesis.clone());
-            event_b2.chain_hash =
-                Some(dlp_common::audit::compute_chain_hash(&genesis, &event_b2).expect("compute"));
-
-            let result = ingest_events(State(state.clone()), Json(vec![event_a, event_b2])).await;
-            assert!(result.is_ok(), "handler must not error");
-
-            let (status, json) = result.expect("unwrap");
-            assert_eq!(status, StatusCode::CREATED);
-            let resp = json.0;
-            // The first event is from agent-a, so requesting_agent_id = agent-a.
-            // The break is for agent-b, so tamper_detected_for_agent should be None.
-            assert_eq!(
-                resp.tamper_detected_for_agent, None,
-                "no tamper flag when break is for a different agent"
-            );
-            assert_eq!(resp.chain_break_count, 1, "one unique break counted");
-        });
-    }
-
-    /// Synthetic ChainBreakDetected events are included in the relay_events Vec
-    /// that is passed to the SIEM relay.
-    #[test]
-    fn test_synthetic_events_in_relay_list() {
-        let rt = tokio::runtime::Runtime::new().expect("create runtime");
-        rt.block_on(async {
-            let state = test_app_state();
-            let genesis = dlp_common::audit::genesis_hash();
-
-            // Ingest a broken event to trigger synthetic event generation.
-            let mut event = chain_event("agent-f", Some(genesis.clone()), chrono::Duration::zero());
-            event.resource_path = r"C:\tampered.txt".to_string();
-            event.chain_hash =
-                Some(dlp_common::audit::compute_chain_hash(&genesis, &event).expect("compute"));
-            event.resource_path = r"C:\original.txt".to_string(); // mutate after hash
-
-            let result = ingest_events(State(state.clone()), Json(vec![event])).await;
-            assert!(result.is_ok(), "handler must not error on chain break");
-
-            // Verify a synthetic ChainBreakDetected row was persisted.
-            let breaks = AuditEventRepository::query(
-                &state.pool,
-                &AuditEventFilter {
-                    event_type: Some("CHAIN_BREAK_DETECTED".to_string()),
-                    agent_id: Some("agent-f".to_string()),
-                    ..Default::default()
-                },
-            )
-            .expect("query breaks");
-            assert_eq!(
-                breaks.len(),
-                1,
-                "synthetic ChainBreakDetected must be persisted"
-            );
-        });
+            .expect("query audit_events");
+        assert!(content_sha256.is_none());
     }
 }

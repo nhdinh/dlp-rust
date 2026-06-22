@@ -1,62 +1,137 @@
-# Plan 57-03 Summary: Append SentinelOne, Carbon Black, Sophos, and Trend Micro Apex One EDR Allowlist Sections
+---
+phase: 57-operational-deployment-guide-av-edr-allowlist-uat
+plan: 03
+subsystem: docs
+last_updated: 2026-05-30
+dependency_graph:
+  requires:
+    - 57-01
+    - 57-02
+  provides:
+    - .planning/milestones/v0.10.0-UAT.md (test plan)
+  affects:
+    - .planning/milestones/v0.10.0-UAT.md
+key_files:
+  created:
+    - .planning/milestones/v0.10.0-UAT.md
+  modified: []
+tech_stack:
+  added: []
+  patterns: []
+decisions: []
+metrics:
+  duration_minutes: 30
+  completed_date: 2026-05-30
+  tasks_completed: 1 of 2
+  files_created: 1
+  files_modified: 0
+---
 
-**Date:** 2026-06-05
-**Status:** COMPLETED
+# Phase 57 Plan 03: UAT Test Plan and Execution Summary
 
-## What Was Done
+One-liner: Comprehensive UAT test plan with 36 scenarios across 10 categories
+created. Physical execution on Windows 11 host is PENDING.
 
-Appended four new vendor-specific EDR allowlist sections to `docs/operations/deployment-guide.md`, replacing the `<!-- INSERT-REMAINING-VENDORS-AFTER-HERE -->` marker. All 6 vendors (Microsoft Defender, CrowdStrike, SentinelOne, Carbon Black, Sophos, Trend Micro) are now fully documented.
+## What Was Built
 
-## Sections Added
+### .planning/milestones/v0.10.0-UAT.md (created)
 
-### Vendor: SentinelOne
-- Console URL, Required Role, Propagation Time, Supported Methods
-- Agent requirement note: SHA-256 requires SentinelOne agent S-25.1.1+
-- Method 1: Hash Exclusion (8 steps)
-- Method 2: Path Exclusion (`C:\Program Files\DLP\*`)
-- Verification: console check + robust registry check (both `HKLM:\SOFTWARE\SentinelLabs\SentinelAgent` and `HKLM:\SOFTWARE\WOW6432Node\SentinelLabs\SentinelAgent`) + `Test-Path`
-- Notes: exact-match hash exclusions
+A 636-line UAT test plan document containing:
 
-### Vendor: Carbon Black (VMware Carbon Black Cloud)
-- Console URL (`https://[REGION].conferdeploy.net`), Required Role, Propagation Time
-- Method 1: Reputation Approved List (9 steps)
-- Method 2: Policy Exclusion (path-based)
-- Verification: console check + pilot endpoint flow (4 steps) for "file must be known" requirement
-- Notes: reputation is global per tenant
+1. **Environment Section** — Template for host OS version/build, hardware specs,
+   EDR version, cloud client versions, peripherals present/absent with N/A justification.
 
-### Vendor: Sophos
-- Console URL (`https://central.sophos.com`), Required Role, Propagation Time
-- Explicit limitation: "Sophos Central does NOT support hash-based allowlisting"
-- Method 1: Path Exclusion (9 steps)
-- Method 2: SophosLabs Reclassification (false positive submission)
-- Verification: console check + `Test-Path` + log file check
+2. **Test Scenarios** organized in 10 categories (36 scenarios total):
+   - **Category A: Hook Injection** (4 scenarios) — universal injection, allowlist,
+     WoW64, agent restart sweep
+   - **Category B: File Blocking** (6 scenarios) — IAT hook, CopyFileExW,
+     MoveFileExW, DeleteFileW, T1/T2 false-positive negative test, direct-syscall bypass
+   - **Category C: Cloud Sync** (4 scenarios) — OneDrive, Google Drive, Dropbox, Box regression
+   - **Category D: Print** (2 scenarios) — print block, XPS content hash
+   - **Category E: USB/SD/Optical/Virtual** (5 scenarios) — VolumeArrival events,
+     volume-class ABAC
+   - **Category F: DACL Tripwire** (3 scenarios) — Deny ACE presence, icacls tamper alert,
+     staged removal no-alert
+   - **Category G: ETW Bypass** (2 scenarios) — hook uninstall alert, allowlisted PID no-alert
+   - **Category H: Monitor Mode** (3 scenarios) — Audit allows, Block denies, global override
+   - **Category I: Performance** (2 scenarios) — CRIT-04 cargo build, Word launch/save
+   - **Category J: Operational Verification** (5 scenarios) — Authenticode, EDR allowlist,
+     SeSystemProfilePrivilege, Secure Boot fallback, binary hash verification
 
-### Vendor: Trend Micro Apex One
-- Console URL (tenant-specific), Required Role, Propagation Time
-- Method 1: Application Control Hash Allow (14 steps)
-- Method 2: Scan Exclusion (path)
-- Verification: console check + robust service detection (`Get-Service | Where-Object { $_.Name -like "*Apex*One*" -or $_.DisplayName -like "*Apex*One*" }`) + `Test-Path`
-- Notes: Application Control is PE-only (.exe, .dll, .sys); separate licensed feature
+3. **Per-Scenario Table Format** — Scenario ID | Prerequisites | Steps |
+   Expected Result | Actual Result | Pass/Fail | Notes | Artifacts Captured
 
-## Verification Results
+4. **Peripheral Availability Section** — Lists all required peripherals, present/absent
+   marking, N/A protocol for absent items.
 
-| Check | Expected | Actual |
-|-------|----------|--------|
-| `grep -c "SentinelOne"` | > 0 | 12 |
-| `grep -c "Carbon Black"` | > 0 | 7 |
-| `grep -c "WOW6432Node"` | > 0 | 3 |
-| `grep -c "Sophos"` | > 0 | 9 |
-| `grep -c "Trend Micro"` | > 0 | 3 |
-| `grep -c "Get-Service \| Where-Object"` | > 0 | 1 |
-| `grep -c "does NOT support hash-based allowlisting"` | > 0 | 1 |
-| No emojis | 0 | 0 |
-| `INSERT-REMAINING-VENDORS-AFTER-HERE` marker removed | absent | absent |
-| `PLACEHOLDER: EDR-VENDORS-END` marker preserved | present | present |
+5. **Test Isolation Strategy** — Reboot-between-categories protocol documented.
 
-## Files Modified
+6. **Artifact Capture Requirements** — Logs, screenshots, event IDs per scenario
+   with naming convention.
 
-- `C:\Users\nhdinh\dev\dlp-rust\docs\operations\deployment-guide.md` -- Added SentinelOne, Carbon Black, Sophos, and Trend Micro Apex One sections between the insertion marker and `<!-- PLACEHOLDER: EDR-VENDORS-END -->`.
+7. **UAT Sign-Off Section** — Tester name, date, version tested, host details,
+   EDR version, overall pass/fail, severity tier definitions (Blocking/Major/Minor
+   per D-26), dual approval authority (engineering + QA per D-27).
 
-## Files Created
+8. **CRIT-04 Benchmark** — Hard gate with warm-up protocol (median of 3 runs,
+   exact overhead formula per D-23).
 
-- `C:\Users\nhdinh\dev\dlp-rust\.planning\phases\57-operational-deployment-guide-av-edr-allowlist-uat\57-03-SUMMARY.md` (this file)
+## Task Status
+
+| Task | Status | Description |
+|------|--------|-------------|
+| Task 1 | Complete | UAT test plan document created with 36 scenarios |
+| Task 2 | **PENDING** | UAT execution on physical Windows 11 host |
+
+## Blockers
+
+**Task 2 (UAT Execution) requires:**
+- Physical Windows 11 host with USB, SD, optical, printer, network share
+- Real cloud clients installed (OneDrive, Google Drive, Dropbox, Box)
+- One of 6 covered EDRs installed
+- Manual execution by operator
+
+## Deviations from Plan
+
+None — Task 1 executed exactly as written. Task 2 is pending by design (manual task).
+
+## Threat Flags
+
+No new threat flags introduced. Threat model from plan (T-57-06 through T-57-07,
+T-57-16) is addressed by artifact capture requirements and tester identity
+requirements (per D-22).
+
+## Known Stubs
+
+| Location | Count | Stub | Reason |
+|----------|-------|------|--------|
+| v0.10.0-UAT.md | 100 | `[TO BE FILLED DURING UAT EXECUTION]` | UAT test plan template awaiting physical execution |
+
+## Self-Check: PARTIAL
+
+- [x] UAT document exists with all 10 categories (A through J)
+- [x] Each scenario has ID, prerequisites, steps, expected result, actual result, pass/fail, artifacts captured
+- [x] CRIT-04 benchmark documented as hard gate with warm-up protocol
+- [x] Category J has 5 operational verification scenarios
+- [x] Peripheral Availability section with N/A protocol
+- [x] Test Isolation Strategy documented
+- [x] Artifact Capture Requirements documented
+- [x] UAT sign-off section present with hardware details
+- [ ] **PENDING:** Actual results filled in for all scenarios
+- [ ] **PENDING:** CRIT-04 benchmark executed with actual percentages
+- [ ] **PENDING:** UAT sign-off completed with tester identity and host details
+- [x] Commit `4580e3e` exists in git history
+
+## Commits
+
+| Task | Commit | Description |
+|------|--------|-------------|
+| Task 1 | `4580e3e` | docs(57-03): create v0.10.0 UAT test plan with 36 scenarios across 10 categories |
+
+## Next Steps
+
+1. Execute UAT on physical Windows 11 host following the test plan
+2. Fill in Actual Result and Pass/Fail for all 36 scenarios
+3. Execute CRIT-04 benchmark with warm-up protocol
+4. Complete UAT Sign-Off section
+5. Once complete, proceed to Plan 57-05 for ship/no-ship decision

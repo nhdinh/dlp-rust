@@ -45,15 +45,17 @@ use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
 use windows::Win32::System::Memory::{VirtualProtect, PAGE_EXECUTE_READWRITE};
 
 use dlp_common::hook_ipc::HandleHookRequest;
-use dlp_common::{Decision, HookRequest};
+use dlp_common::{Decision, HookRequest, VolumeClass};
 
 mod allowlist;
 mod background_thread;
 mod classification_cache;
 mod crash_guard;
+pub mod diagnostic_ring;
 pub mod edr_detector;
 mod fail_closed;
 mod fail_mode;
+pub mod hash_compute;
 mod hook_journal;
 pub mod ntdll_patcher;
 mod pe_utils;
@@ -696,21 +698,33 @@ pub extern "system" fn UnhookAll() {
 // ---------------------------------------------------------------------------
 
 /// Sends a classification request to the agent via named pipe.
-#[allow(dead_code)]
+///
+/// # Arguments
+///
+/// * `path` - The file path being accessed.
+/// * `action` - The action being performed (e.g., "CREATE", "WRITE").
+/// * `pipe_name` - The named pipe to communicate with.
+/// * `source_volume_class` - Volume class of the source path (if known).
+/// * `destination_volume_class` - Volume class of the destination path
+///   (for copy/move operations).
 pub(crate) fn classify_path(
     path: &str,
     action: &str,
     pipe_name: &str,
-) -> Result<Decision, pipe_client::PipeError> {
+    source_volume_class: Option<VolumeClass>,
+    destination_volume_class: Option<VolumeClass>,
+) -> Result<dlp_common::HookResponse, pipe_client::PipeError> {
     let req = HookRequest {
         path: path.to_string(),
         action: action.to_string(),
+        source_volume_class,
+        destination_volume_class,
+        pid: std::process::id(),
         ..Default::default()
     };
-    let resp = pipe_client::send_request(
+    pipe_client::send_request(
         pipe_name, &req, 50, // 50 ms timeout per task spec
-    )?;
-    Ok(resp.decision)
+    )
 }
 
 /// Sends a handle-based classification request to the agent via named pipe.
@@ -726,7 +740,7 @@ pub(crate) fn classify_handle(
     handle_value: u64,
     action: &str,
     pipe_name: &str,
-) -> Result<Decision, pipe_client::PipeError> {
+) -> Result<dlp_common::HookResponse, pipe_client::PipeError> {
     let req = HandleHookRequest {
         handle_value,
         action: action.to_string(),
@@ -741,7 +755,7 @@ pub(crate) fn classify_handle(
         Ok(r) => r,
         Err(_) => return Err(pipe_client::PipeError::Malformed),
     };
-    Ok(resp.decision)
+    Ok(resp)
 }
 
 // ---------------------------------------------------------------------------
@@ -906,6 +920,7 @@ mod tests {
             reason: format!("blocked: {}", req.path),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
         let _server = start_agent_mock_server(pipe_name, handler);
         std::thread::sleep(Duration::from_millis(50));
@@ -929,6 +944,7 @@ mod tests {
             reason: "allowed".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
         let _server = start_agent_mock_server(pipe_name, handler);
         std::thread::sleep(Duration::from_millis(50));
@@ -952,13 +968,14 @@ mod tests {
             reason: "denied".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
         let _server = start_agent_mock_server(pipe_name, handler);
         std::thread::sleep(Duration::from_millis(50));
 
-        let result = classify_path(r"C:\secret.txt", "CREATE", pipe_name);
+        let result = classify_path(r"C:\secret.txt", "CREATE", pipe_name, None, None);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Decision::DENY);
+        assert_eq!(result.unwrap().decision, Decision::DENY);
     }
 
     #[test]
@@ -969,13 +986,14 @@ mod tests {
             reason: "allowed".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
         let _server = start_agent_mock_server(pipe_name, handler);
         std::thread::sleep(Duration::from_millis(50));
 
-        let result = classify_path(r"C:\public.txt", "CREATE", pipe_name);
+        let result = classify_path(r"C:\public.txt", "CREATE", pipe_name, None, None);
         assert!(result.is_ok());
-        assert_eq!(result.unwrap(), Decision::ALLOW);
+        assert_eq!(result.unwrap().decision, Decision::ALLOW);
     }
 
     #[test]

@@ -669,11 +669,11 @@ pub fn handle_volume_class_query(
     let detector_opt = {
         #[cfg(windows)]
         {
-            *DRIVE_DETECTOR.lock()
+            DRIVE_DETECTOR.lock().clone()
         }
         #[cfg(not(windows))]
         {
-            None::<&VolumeDetector>
+            None::<std::sync::Arc<VolumeDetector>>
         }
     };
 
@@ -868,7 +868,7 @@ fn query_disk_index_for_letter(
 /// Global reference to the `VolumeDetector` shared with the device notification handlers.
 /// Protected by a `Mutex` so it can be cleared on unregister.
 #[cfg(windows)]
-static DRIVE_DETECTOR: parking_lot::Mutex<Option<&'static VolumeDetector>> =
+static DRIVE_DETECTOR: parking_lot::Mutex<Option<std::sync::Arc<VolumeDetector>>> =
     parking_lot::Mutex::new(None);
 
 /// Global registry cache reference, set from `service.rs` before the USB window
@@ -960,9 +960,9 @@ pub fn set_registry_runtime_handle(handle: tokio::runtime::Handle) {
 ///
 /// # Arguments
 ///
-/// * `detector` — a `'static` reference to the `VolumeDetector`.
+/// * `detector` — an `Arc<VolumeDetector>` shared with the device watcher.
 #[cfg(windows)]
-pub fn set_drive_detector(detector: &'static VolumeDetector) {
+pub fn set_drive_detector(detector: std::sync::Arc<VolumeDetector>) {
     *DRIVE_DETECTOR.lock() = Some(detector);
 }
 
@@ -1664,9 +1664,9 @@ fn on_usb_device_removal(detector: &VolumeDetector, device_path: &str) {
 #[cfg(windows)]
 pub fn handle_volume_event_dispatch(event_type: u32) {
     // Task 3 will populate this with the existing handle_volume_event logic.
-    let detector_opt = *DRIVE_DETECTOR.lock();
+    let detector_opt = DRIVE_DETECTOR.lock().clone();
     if let Some(detector) = detector_opt {
-        handle_volume_event(detector, event_type);
+        handle_volume_event(&detector, event_type);
     }
 }
 
@@ -1682,9 +1682,9 @@ pub fn handle_volume_event_dispatch(event_type: u32) {
 /// * `device_path` -- the `dbcc_name` string from the `WM_DEVICECHANGE` callback.
 #[cfg(windows)]
 pub fn dispatch_usb_device_arrival(device_path: &str) {
-    let detector_opt = *DRIVE_DETECTOR.lock();
+    let detector_opt = DRIVE_DETECTOR.lock().clone();
     if let Some(detector) = detector_opt {
-        on_usb_device_arrival(detector, device_path);
+        on_usb_device_arrival(&detector, device_path);
 
         // Trigger an immediate device registry cache refresh so the new device's
         // trust tier is available before the first I/O event (D-09).
@@ -1716,9 +1716,9 @@ pub fn dispatch_usb_device_arrival(device_path: &str) {
 /// * `device_path` -- the `dbcc_name` string from the `WM_DEVICECHANGE` callback.
 #[cfg(windows)]
 pub fn dispatch_usb_device_removal(device_path: &str) {
-    let detector_opt = *DRIVE_DETECTOR.lock();
+    let detector_opt = DRIVE_DETECTOR.lock().clone();
     if let Some(detector) = detector_opt {
-        on_usb_device_removal(detector, device_path);
+        on_usb_device_removal(&detector, device_path);
     }
 }
 
@@ -1731,6 +1731,33 @@ fn extract_drive_letter(path: &str) -> Option<char> {
         Some((bytes[0] as char).to_ascii_uppercase())
     } else {
         None
+    }
+}
+
+/// Injects a volume class into the detector's cache for testing.
+///
+/// This helper allows tests to bypass WMI queries and directly populate
+/// the `volume_class_map` with a known classification. Used by integration
+/// tests to simulate drive classifications without requiring physical hardware.
+///
+/// # Arguments
+///
+/// * `letter` - Drive letter to inject (e.g., `'C'`, `'D'`).
+/// * `class` - The [`VolumeClass`] to associate with the drive letter.
+///
+/// # Example
+///
+/// ```
+/// let detector = VolumeDetector::new();
+/// detector.inject_volume_class_for_test('C', VolumeClass::LocalNTFS);
+/// detector.inject_volume_class_for_test('D', VolumeClass::Optical);
+/// ```
+#[cfg(test)]
+impl VolumeDetector {
+    pub fn inject_volume_class_for_test(&self, letter: char, class: VolumeClass) {
+        self.volume_class_map
+            .write()
+            .insert(letter.to_ascii_uppercase(), (class, Instant::now()));
     }
 }
 

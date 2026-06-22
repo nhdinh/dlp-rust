@@ -86,6 +86,7 @@ fn test_app() -> (axum::Router, Arc<db::Pool>) {
         bypass_alerts: std::sync::Arc::new(
             dlp_server::db::repositories::bypass_alerts::BypassAlertsRepository,
         ),
+        diagnostic_store: None,
     });
     (admin_router(state), pool)
 }
@@ -125,7 +126,8 @@ fn assert_admin_audit_event(
     resource_path_prefix: &str,
     user_name: &str,
 ) {
-    let action_filter = action_attempted.to_string();
+    // Enum variants are stored as JSON-quoted strings, so encode the expected value.
+    let action_filter = format!("\"{action_attempted}\"");
     let conn = pool.get().expect("acquire connection");
     let row: (String, String, String, String, String, String) = conn
         .query_row(
@@ -146,8 +148,16 @@ fn assert_admin_audit_event(
         )
         .expect("audit event must exist");
 
-    assert_eq!(row.0, "ADMIN_ACTION", "event_type should be ADMIN_ACTION");
-    assert_eq!(row.1, action_attempted, "action_attempted mismatch");
+    // Note: enum variants are stored as JSON-quoted strings via serde_json.
+    assert_eq!(
+        row.0, "\"ADMIN_ACTION\"",
+        "event_type should be ADMIN_ACTION"
+    );
+    assert_eq!(
+        row.1,
+        format!("\"{action_attempted}\""),
+        "action_attempted mismatch"
+    );
     assert!(
         row.2.starts_with(resource_path_prefix),
         "resource_path '{0}' should start with '{1}'",
@@ -155,7 +165,7 @@ fn assert_admin_audit_event(
         resource_path_prefix
     );
     assert_eq!(row.3, user_name, "user_name mismatch");
-    assert_eq!(row.4, "ALLOW", "decision should be ALLOW");
+    assert_eq!(row.4, "\"ALLOW\"", "decision should be ALLOW");
     assert_eq!(row.5, "server", "agent_id should be 'server'");
 }
 
