@@ -245,9 +245,7 @@ impl DiagnosticSnapshotStore {
         if snap.user_sid.len() > MAX_SID_LEN {
             return Some(format!("user_sid exceeds {MAX_SID_LEN} chars"));
         }
-        if snap.abac_subject.len() > MAX_SID_LEN {
-            return Some(format!("abac_subject exceeds {MAX_SID_LEN} chars"));
-        }
+
         if let Some(ref policy_id) = snap.matched_policy_id {
             if policy_id.len() > MAX_STRING_LEN {
                 return Some(format!("matched_policy_id exceeds {MAX_STRING_LEN} chars"));
@@ -268,9 +266,7 @@ impl DiagnosticSnapshotStore {
         if !snap.user_sid.is_empty() && !Self::is_valid_sid(&snap.user_sid) {
             return Some(format!("user_sid has invalid format: {}", snap.user_sid));
         }
-        if !snap.abac_subject.is_empty() && !Self::is_valid_sid(&snap.abac_subject) {
-            return Some(format!("abac_subject has invalid format: {}", snap.abac_subject));
-        }
+
 
         None
     }
@@ -304,7 +300,6 @@ mod tests {
             hook_function: "WriteFile".to_string(),
             classification_source: ClassificationSource::CacheHit,
             classification_age_ms: 42,
-            abac_subject: user_sid.to_string(),
             abac_resource: r"C:\Data\file.txt".to_string(),
             abac_action: "WRITE".to_string(),
             abac_environment: "local".to_string(),

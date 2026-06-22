@@ -359,9 +359,6 @@ pub struct DiagnosticSnapshot {
     /// Age of the classification in milliseconds.
     #[serde(default)]
     pub classification_age_ms: u64,
-    /// The ABAC subject (user SID).
-    #[serde(default)]
-    pub abac_subject: String,
     /// The ABAC resource (file path).
     #[serde(default)]
     pub abac_resource: String,
@@ -902,7 +899,6 @@ mod tests {
             hook_function: "WriteFile".to_string(),
             classification_source: ClassificationSource::CacheHit,
             classification_age_ms: 42,
-            abac_subject: "S-1-5-21-1".to_string(),
             abac_resource: r"C:\Data\file.txt".to_string(),
             abac_action: "WRITE".to_string(),
             abac_environment: "local".to_string(),
@@ -924,7 +920,6 @@ mod tests {
                 hook_function: "WriteFile".to_string(),
                 classification_source: ClassificationSource::Pipe,
                 classification_age_ms: 0,
-                abac_subject: "S-1-5-21-1".to_string(),
                 abac_resource: r"C:\Data\file.txt".to_string(),
                 abac_action: "WRITE".to_string(),
                 abac_environment: "local".to_string(),
@@ -1025,7 +1020,6 @@ mod tests {
                 hook_function: "NtCreateFile".to_string(),
                 classification_source: ClassificationSource::CacheMiss,
                 classification_age_ms: 10,
-                abac_subject: "S-1-5-21-2".to_string(),
                 abac_resource: r"C:\Data\x.txt".to_string(),
                 abac_action: "CREATE".to_string(),
                 abac_environment: "local".to_string(),
