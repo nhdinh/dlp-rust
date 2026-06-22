@@ -525,6 +525,50 @@ impl ApprovalFilter {
     }
 }
 
+/// Filter state for the DiagnosticList screen.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[allow(dead_code)]
+pub enum DiagnosticSeverityFilter {
+    #[default]
+    All,
+    Crit,
+    Warn,
+    Info,
+}
+
+#[allow(dead_code)]
+impl DiagnosticSeverityFilter {
+    /// Cycles to the next filter state.
+    pub fn next(self) -> Self {
+        match self {
+            Self::All => Self::Crit,
+            Self::Crit => Self::Warn,
+            Self::Warn => Self::Info,
+            Self::Info => Self::All,
+        }
+    }
+
+    /// Returns the wire-format query parameter value, or None for "all".
+    pub fn as_str(self) -> Option<&'static str> {
+        match self {
+            Self::All => None,
+            Self::Crit => Some("crit"),
+            Self::Warn => Some("warn"),
+            Self::Info => Some("info"),
+        }
+    }
+
+    /// Returns the human-readable display label.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::Crit => "Critical",
+            Self::Warn => "Warning",
+            Self::Info => "Info",
+        }
+    }
+}
+
 /// Filter state for the BypassAlertList screen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[allow(dead_code)]
@@ -1238,20 +1282,42 @@ pub enum Screen {
     /// Bypass alert detail popup (read-only).
     /// Pattern: ApprovalDetail — full-screen read-only view.
     BypassAlertDetail { alert: serde_json::Value },
-    /// Audit integrity chain status list screen.
-    /// Pattern: BypassAlertList — scrollable table with filter and pagination.
-    AuditIntegrityList {
-        agents: Vec<serde_json::Value>,
+    /// Diagnostic-mode admin TUI screen showing blocked events with decision tree details.
+    ///
+    /// Pattern: BypassAlertList — scrollable table with filter, pagination, and detail popup.
+    /// Each row shows: time, user SID, path, tier, policy, latency, classification source.
+    /// Enter opens a detail popup with full ABAC context and decision tree.
+    DiagnosticList {
+        /// Raw JSON diagnostic responses from the API.
+        events: Vec<serde_json::Value>,
+        /// Currently highlighted row index.
         selected: usize,
-        filter: AuditIntegrityFilter,
+        /// Active severity filter.
+        filter: DiagnosticSeverityFilter,
+        /// Current page number (0-based).
         page: usize,
+        /// Items per page.
         page_size: usize,
+        /// Total count from server (for pagination).
         total: usize,
-        integrity_ok: bool,
     },
-    /// Audit integrity detail popup (read-only).
-    /// Pattern: BypassAlertDetail — full-screen read-only view.
-    AuditIntegrityDetail { agent: serde_json::Value },
+    /// Diagnostic event detail popup (read-only).
+    ///
+    /// Pattern: BypassAlertDetail — full-screen read-only view with ABAC context.
+    DiagnosticDetail { event: serde_json::Value },
+    /// Self-health dashboard showing per-host hook health counters with sparkline trends.
+    ///
+    /// Pattern: ProtectedPathList / BypassAlertList — two-panel layout with status and trends.
+    /// Left panel: current snapshot with color-coded status.
+    /// Right panel: 5-minute sparkline trends for cache_hit_rate and pipe_round_trips.
+    SelfHealthDashboard {
+        /// Raw JSON health snapshot from the API (current values).
+        snapshot: Option<serde_json::Value>,
+        /// Historical snapshots for sparkline rendering (last 12 minutes).
+        history: Vec<serde_json::Value>,
+        /// Last refresh timestamp for display.
+        last_refresh: Option<String>,
+    },
     /// Allowlist configuration screen.
     Allowlist {
         /// Screen state.
@@ -1395,6 +1461,73 @@ mod tests {
     fn test_policy_form_state_default_mode_is_all() {
         let form = PolicyFormState::default();
         assert_eq!(form.mode, PolicyMode::ALL);
+    }
+
+    #[test]
+    fn diagnostic_severity_filter_next_cycles() {
+        assert_eq!(
+            DiagnosticSeverityFilter::All.next(),
+            DiagnosticSeverityFilter::Crit
+        );
+        assert_eq!(
+            DiagnosticSeverityFilter::Crit.next(),
+            DiagnosticSeverityFilter::Warn
+        );
+        assert_eq!(
+            DiagnosticSeverityFilter::Warn.next(),
+            DiagnosticSeverityFilter::Info
+        );
+        assert_eq!(
+            DiagnosticSeverityFilter::Info.next(),
+            DiagnosticSeverityFilter::All
+        );
+    }
+
+    #[test]
+    fn diagnostic_severity_filter_as_str() {
+        assert_eq!(DiagnosticSeverityFilter::All.as_str(), None);
+        assert_eq!(DiagnosticSeverityFilter::Crit.as_str(), Some("crit"));
+        assert_eq!(DiagnosticSeverityFilter::Warn.as_str(), Some("warn"));
+        assert_eq!(DiagnosticSeverityFilter::Info.as_str(), Some("info"));
+    }
+
+    #[test]
+    fn diagnostic_severity_filter_label() {
+        assert_eq!(DiagnosticSeverityFilter::All.label(), "All");
+        assert_eq!(DiagnosticSeverityFilter::Crit.label(), "Critical");
+        assert_eq!(DiagnosticSeverityFilter::Warn.label(), "Warning");
+        assert_eq!(DiagnosticSeverityFilter::Info.label(), "Info");
+    }
+
+    #[test]
+    fn screen_diagnostic_list_constructible() {
+        let s = Screen::DiagnosticList {
+            events: vec![],
+            selected: 0,
+            filter: DiagnosticSeverityFilter::All,
+            page: 0,
+            page_size: 20,
+            total: 0,
+        };
+        assert!(matches!(s, Screen::DiagnosticList { .. }));
+    }
+
+    #[test]
+    fn screen_diagnostic_detail_constructible() {
+        let s = Screen::DiagnosticDetail {
+            event: serde_json::json!({}),
+        };
+        assert!(matches!(s, Screen::DiagnosticDetail { .. }));
+    }
+
+    #[test]
+    fn screen_self_health_dashboard_constructible() {
+        let s = Screen::SelfHealthDashboard {
+            snapshot: None,
+            history: vec![],
+            last_refresh: None,
+        };
+        assert!(matches!(s, Screen::SelfHealthDashboard { .. }));
     }
 
     #[test]

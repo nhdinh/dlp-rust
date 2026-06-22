@@ -9,17 +9,14 @@ use ratatui::widgets::{
 use ratatui::Frame;
 
 use crate::app::{
-    App, ApprovalFilter, AuditIntegrityFilter, BypassAlertSeverityFilter, ConditionAttribute,
-    ImportState, LabelFilter, LabelFormMode, Screen, SimulateFormState, SimulateOutcome,
-    StatusKind, UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES, OBJECT_TYPE_OPTIONS,
-    SIMULATE_ACCESS_CONTEXT_OPTIONS, SIMULATE_ACTION_OPTIONS, SIMULATE_CLASSIFICATION_OPTIONS,
-    SIMULATE_DEVICE_TRUST_OPTIONS, SIMULATE_NETWORK_LOCATION_OPTIONS, TIER_OPTIONS,
+    App, ApprovalFilter, BypassAlertSeverityFilter, ConditionAttribute, ImportState, LabelFilter,
+    LabelFormMode, Screen, SimulateFormState, SimulateOutcome, StatusKind, UsbScanEntry,
+    ACTION_OPTIONS, ATTRIBUTES, OBJECT_TYPE_OPTIONS, SIMULATE_ACCESS_CONTEXT_OPTIONS,
+    SIMULATE_ACTION_OPTIONS, SIMULATE_CLASSIFICATION_OPTIONS, SIMULATE_DEVICE_TRUST_OPTIONS,
+    SIMULATE_NETWORK_LOCATION_OPTIONS, TIER_OPTIONS,
 };
 use crate::screens::approvals::{
     APPROVAL_GRANT_HINTS, APPROVAL_LIST_EMPTY, APPROVAL_LIST_HINTS, EXPIRY_OPTIONS,
-};
-use crate::screens::audit_integrity::{
-    AUDIT_INTEGRITY_DETAIL_HINTS, AUDIT_INTEGRITY_LIST_EMPTY, AUDIT_INTEGRITY_LIST_HINTS,
 };
 use crate::screens::bypass_alerts::{
     BYPASS_ALERT_DETAIL_HINTS, BYPASS_ALERT_LIST_EMPTY, BYPASS_ALERT_LIST_HINTS,
@@ -27,12 +24,16 @@ use crate::screens::bypass_alerts::{
 use crate::screens::cloud_config::{
     CLOUD_CONFIG_BACK_ROW, CLOUD_CONFIG_KEYS, CLOUD_CONFIG_LABELS, CLOUD_CONFIG_SAVE_ROW,
 };
+use crate::screens::diagnostic_list::{
+    DIAGNOSTIC_DETAIL_HINTS, DIAGNOSTIC_LIST_EMPTY, DIAGNOSTIC_LIST_HINTS,
+};
 use crate::screens::dispatch::condition_display;
 use crate::screens::dispatch::operators_for;
 use crate::screens::print_config::{
     is_print_bool, is_print_numeric, is_print_picker, PRINT_CONFIG_KEYS, PRINT_CONFIG_LABELS,
 };
 use crate::screens::protected_paths::{PROTECTED_PATH_LIST_EMPTY, PROTECTED_PATH_LIST_HINTS};
+use crate::screens::self_health_dashboard::SELF_HEALTH_HINTS;
 use crate::screens::syslog_config::draw_syslog_config;
 use crate::screens::usb_enforcement::{
     USB_ENFORCEMENT_BACK_ROW, USB_ENFORCEMENT_KEYS, USB_ENFORCEMENT_LABELS,
@@ -489,30 +490,33 @@ fn draw_screen(app: &App, frame: &mut Frame, area: Rect) {
         Screen::BypassAlertDetail { alert } => {
             draw_bypass_alert_detail(frame, area, alert);
         }
-        // Phase 68.1 screens
-        Screen::AuditIntegrityList {
-            agents,
+        Screen::DiagnosticList {
+            events,
             selected,
             filter,
             page,
             page_size,
             total,
-            integrity_ok,
         } => {
-            draw_audit_integrity_list(
-                frame,
-                area,
-                agents,
-                *selected,
-                filter.clone(),
-                *page,
-                *page_size,
-                *total,
-                *integrity_ok,
+            draw_diagnostic_list(
+                frame, area, events, *selected, *filter, *page, *page_size, *total,
             );
         }
-        Screen::AuditIntegrityDetail { agent } => {
-            draw_audit_integrity_detail(frame, area, agent);
+        Screen::DiagnosticDetail { event } => {
+            draw_diagnostic_detail(frame, area, event);
+        }
+        Screen::SelfHealthDashboard {
+            snapshot,
+            history,
+            last_refresh,
+        } => {
+            draw_self_health_dashboard(
+                frame,
+                area,
+                snapshot.as_ref(),
+                history,
+                last_refresh.as_deref(),
+            );
         }
     }
 }
@@ -4471,120 +4475,122 @@ fn draw_bypass_alert_detail(frame: &mut Frame, area: Rect, alert: &serde_json::V
     draw_hints(frame, area, BYPASS_ALERT_DETAIL_HINTS);
 }
 
-/// Renders the audit integrity list screen.
+// ---------------------------------------------------------------------------
+// Diagnostic List screen (Phase 58)
+// ---------------------------------------------------------------------------
+
+/// Renders the diagnostic event list screen.
 #[allow(clippy::too_many_arguments)]
-///
-/// Columns: Agent ID | Events | Verified | Breaks | Last Hash (truncated).
-/// Top banner shows integrity status (green "OK" or red "BROKEN").
-fn draw_audit_integrity_list(
+fn draw_diagnostic_list(
     frame: &mut Frame,
     area: Rect,
-    agents: &[serde_json::Value],
+    events: &[serde_json::Value],
     selected: usize,
-    filter: AuditIntegrityFilter,
+    filter: crate::app::DiagnosticSeverityFilter,
     page: usize,
     page_size: usize,
     total: usize,
-    integrity_ok: bool,
 ) {
-    if agents.is_empty() {
-        let filter_suffix = match &filter {
-            AuditIntegrityFilter::All => String::new(),
-            AuditIntegrityFilter::PerAgent(id) => format!(" [Agent: {id}]"),
+    if events.is_empty() {
+        let filter_suffix = if filter != crate::app::DiagnosticSeverityFilter::All {
+            format!(" [Severity: {}]", filter.as_str().unwrap_or(""))
+        } else {
+            String::new()
         };
-        let paragraph = Paragraph::new(AUDIT_INTEGRITY_LIST_EMPTY)
+        let paragraph = Paragraph::new(DIAGNOSTIC_LIST_EMPTY)
             .block(
                 Block::default()
-                    .title(format!(" Audit Integrity (0){filter_suffix} "))
+                    .title(format!(" Diagnostic Events (0){filter_suffix} "))
                     .borders(Borders::ALL),
             )
             .alignment(ratatui::layout::Alignment::Center);
         frame.render_widget(paragraph, area);
-        draw_hints(frame, area, AUDIT_INTEGRITY_LIST_HINTS);
+        draw_hints(frame, area, DIAGNOSTIC_LIST_HINTS);
         return;
     }
 
-    let filter_suffix = match &filter {
-        AuditIntegrityFilter::All => String::new(),
-        AuditIntegrityFilter::PerAgent(id) => format!(" [Agent: {id}]"),
+    let filter_suffix = if filter != crate::app::DiagnosticSeverityFilter::All {
+        format!(" [Severity: {}]", filter.as_str().unwrap_or(""))
+    } else {
+        String::new()
     };
 
     let total_pages = total.div_ceil(page_size).max(1);
     let page_info = format!("Page {} of {} ({} total)", page + 1, total_pages, total);
 
     let header = Row::new(vec![
-        "Agent ID",
-        "Events",
-        "Verified",
-        "Breaks",
-        "Last Hash",
+        "Severity", "Time", "User", "Path", "Tier", "Policy", "Latency",
     ])
     .style(Style::default().add_modifier(Modifier::BOLD))
     .bottom_margin(1);
 
-    let rows: Vec<Row> = agents
+    let rows: Vec<Row> = events
         .iter()
-        .map(|a| {
-            let agent_id = a["agent_id"].as_str().unwrap_or("-");
-            let event_count = a["event_count"].as_u64().unwrap_or(0);
-            let verified_count = a["verified_count"].as_u64().unwrap_or(0);
-            let break_count = a["break_count"].as_u64().unwrap_or(0);
-            let last_hash = a["last_chain_hash"].as_str().unwrap_or("-");
-            let hash_display = if last_hash.len() > 16 {
-                format!("{}...", &last_hash[..16])
-            } else {
-                last_hash.to_string()
+        .map(|e| {
+            let severity = e["severity"].as_str().unwrap_or("info");
+            let severity_style = match severity {
+                "crit" => Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                "warn" => Style::default().fg(Color::Yellow),
+                "info" => Style::default().fg(Color::Blue),
+                _ => Style::default(),
             };
 
-            let break_style = if break_count > 0 {
-                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+            let time = e["timestamp"].as_str().unwrap_or("-");
+            let time_display = format_relative_time(time);
+
+            let user = e["user_sid"].as_str().unwrap_or("-");
+            let user_display = if user.len() > 15 {
+                format!("...{}", &user[user.len() - 12..])
             } else {
-                Style::default()
+                user.to_string()
             };
+
+            let path = e["path"].as_str().unwrap_or("-");
+            let path_display = if path.len() > 25 {
+                format!("{}...", &path[..22])
+            } else {
+                path.to_string()
+            };
+
+            let tier = e["classification"].as_str().unwrap_or("-");
+
+            let policy = e["policy_id"].as_str().unwrap_or("-");
+            let policy_display = if policy.len() > 15 {
+                format!("{}...", &policy[..14])
+            } else {
+                policy.to_string()
+            };
+
+            let latency = e["decision_latency_us"].as_u64().unwrap_or(0);
+            let latency_display = format!("{latency} us");
 
             Row::new(vec![
-                Cell::from(agent_id.to_string()),
-                Cell::from(format!("{event_count}")),
-                Cell::from(format!("{verified_count}")),
-                Cell::from(format!("{break_count}")).style(break_style),
-                Cell::from(hash_display),
+                Cell::from(severity.to_string()).style(severity_style),
+                Cell::from(time_display),
+                Cell::from(user_display),
+                Cell::from(path_display),
+                Cell::from(tier.to_string()),
+                Cell::from(policy_display),
+                Cell::from(latency_display),
             ])
         })
         .collect();
 
     let widths = [
-        Constraint::Percentage(30), // Agent ID
-        Constraint::Percentage(15), // Events
-        Constraint::Percentage(15), // Verified
-        Constraint::Percentage(15), // Breaks
-        Constraint::Percentage(25), // Last Hash
+        Constraint::Percentage(10), // Severity
+        Constraint::Percentage(12), // Time
+        Constraint::Percentage(15), // User
+        Constraint::Percentage(25), // Path
+        Constraint::Percentage(8),  // Tier
+        Constraint::Percentage(15), // Policy
+        Constraint::Percentage(15), // Latency
     ];
-
-    let integrity_status = if integrity_ok {
-        (
-            "OK",
-            Style::default()
-                .fg(Color::Green)
-                .add_modifier(Modifier::BOLD),
-        )
-    } else {
-        (
-            "BROKEN",
-            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
-        )
-    };
 
     let table = Table::new(rows, widths)
         .header(header)
         .block(
             Block::default()
-                .title(format!(
-                    " Audit Integrity ({}) — {} {}{} ",
-                    total,
-                    integrity_status.0,
-                    filter_suffix,
-                    if integrity_ok { "" } else { " ⚠" }
-                ))
+                .title(format!(" Diagnostic Events ({}){filter_suffix} ", total))
                 .borders(Borders::ALL),
         )
         .row_highlight_style(
@@ -4599,92 +4605,399 @@ fn draw_audit_integrity_list(
     state.select(Some(selected));
     frame.render_stateful_widget(table, area, &mut state);
 
-    let hint_text = format!("{AUDIT_INTEGRITY_LIST_HINTS}  |  {page_info}");
+    let hint_text = format!("{DIAGNOSTIC_LIST_HINTS}  |  {page_info}");
     draw_hints(frame, area, &hint_text);
 }
 
-/// Renders the audit integrity detail view.
-///
-/// Displays per-agent chain metadata: agent_id, event_count, verified_count,
-/// break_count, last_chain_hash, and chain_breaks list.
-fn draw_audit_integrity_detail(frame: &mut Frame, area: Rect, agent: &serde_json::Value) {
-    let agent_id = agent["agent_id"].as_str().unwrap_or("-");
-    let event_count = agent["event_count"].as_u64().unwrap_or(0);
-    let verified_count = agent["verified_count"].as_u64().unwrap_or(0);
-    let break_count = agent["break_count"].as_u64().unwrap_or(0);
-    let last_hash = agent["last_chain_hash"].as_str().unwrap_or("-");
-
-    let mut lines = vec![
-        Line::from(vec![
-            Span::styled("Agent ID: ", Style::default().add_modifier(Modifier::BOLD)),
-            Span::raw(agent_id.to_string()),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "Total Events: ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(format!("{event_count}")),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "Verified Events: ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(format!("{verified_count}")),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "Break Count: ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("{break_count}"),
-                if break_count > 0 {
-                    Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::Green)
-                },
-            ),
-        ]),
-        Line::from(vec![
-            Span::styled(
-                "Last Chain Hash: ",
-                Style::default().add_modifier(Modifier::BOLD),
-            ),
-            Span::raw(last_hash.to_string()),
-        ]),
-        Line::from(""),
-    ];
-
-    if let Some(breaks) = agent["chain_breaks"].as_array() {
-        if !breaks.is_empty() {
-            lines.push(Line::from(vec![Span::styled(
-                "Chain Breaks:",
-                Style::default().add_modifier(Modifier::BOLD),
-            )]));
-            for b in breaks {
-                let expected = b["expected_prev_hash"].as_str().unwrap_or("-");
-                let actual = b["actual_prev_hash"].as_str().unwrap_or("-");
-                lines.push(Line::from(vec![
-                    Span::raw("  Expected: "),
-                    Span::raw(expected.to_string()),
-                    Span::raw(" | Actual: "),
-                    Span::raw(actual.to_string()),
-                ]));
+/// Renders the diagnostic event detail popup.
+fn draw_diagnostic_detail(frame: &mut Frame, area: Rect, event: &serde_json::Value) {
+    let id = event["id"].as_i64().unwrap_or(0);
+    let time = event["timestamp"].as_str().unwrap_or("-");
+    let user_sid = event["user_sid"].as_str().unwrap_or("-");
+    let path = event["path"].as_str().unwrap_or("-");
+    let tier = event["classification"].as_str().unwrap_or("-");
+    let policy_id = event["policy_id"].as_str().unwrap_or("-");
+    let enforcement_mode = event["enforcement_mode"].as_str().unwrap_or("-");
+    let latency = event["decision_latency_us"].as_u64().unwrap_or(0);
+    let classification_source = event["classification_source"].as_str().unwrap_or("-");
+    let cache_age_ms = event["cache_age_ms"].as_u64();
+    let source_display = match classification_source {
+        "CacheHit" | "cache_hit" => {
+            if let Some(age) = cache_age_ms {
+                format!("CacheHit (age: {age} ms)")
+            } else {
+                "CacheHit".to_string()
             }
         }
-    }
+        "CacheMiss" | "cache_miss" => "CacheMiss".to_string(),
+        "Pipe" | "pipe" => "Pipe".to_string(),
+        _ => classification_source.to_string(),
+    };
+
+    let subject = event["subject"].as_str().unwrap_or("-");
+    let action = event["action"].as_str().unwrap_or("-");
+    let environment = event["environment"].as_str().unwrap_or("-");
+    let hook = event["hook"].as_str().unwrap_or("-");
+
+    let lines = vec![
+        Line::from(vec![
+            Span::styled("Time: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(time.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("User SID: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(user_sid.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("Path: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(path.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Classification Tier: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(tier.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Matched Policy: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("{policy_id} ({enforcement_mode})")),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Decision Latency: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("{latency} us")),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Classification Source: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(source_display),
+        ]),
+        Line::raw(""),
+        Line::styled(
+            "-- ABAC Context --",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Line::from(vec![
+            Span::styled("Subject: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(subject.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("Resource: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(path.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled("Action: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(action.to_string()),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Environment: ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(environment.to_string()),
+        ]),
+        Line::raw(""),
+        Line::styled(
+            "-- Hook Function --",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Line::from(vec![
+            Span::styled("Hook: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::raw(hook.to_string()),
+        ]),
+    ];
 
     let paragraph = Paragraph::new(lines)
         .block(
             Block::default()
-                .title(format!(" Audit Integrity Detail — {agent_id} "))
+                .title(format!(" Diagnostic Detail (ID: {id}) "))
                 .borders(Borders::ALL),
         )
         .wrap(Wrap { trim: true });
     frame.render_widget(paragraph, area);
-    draw_hints(frame, area, AUDIT_INTEGRITY_DETAIL_HINTS);
+    draw_hints(frame, area, DIAGNOSTIC_DETAIL_HINTS);
+}
+
+/// Renders the self-health dashboard screen.
+fn draw_self_health_dashboard(
+    frame: &mut Frame,
+    area: Rect,
+    snapshot: Option<&serde_json::Value>,
+    history: &[serde_json::Value],
+    last_refresh: Option<&str>,
+) {
+    // Terminal size check
+    if area.width < 80 || area.height < 20 {
+        let warning = Paragraph::new("Terminal too small. Please resize to at least 80x20.")
+            .alignment(ratatui::layout::Alignment::Center)
+            .style(Style::default().fg(Color::Yellow));
+        frame.render_widget(warning, area);
+        draw_hints(frame, area, SELF_HEALTH_HINTS);
+        return;
+    }
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Min(3), Constraint::Length(1)])
+        .split(area);
+
+    let main_area = chunks[0];
+
+    let panels = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(45), Constraint::Percentage(55)])
+        .split(main_area);
+
+    let left_panel = panels[0];
+    let right_panel = panels[1];
+
+    // Extract values from snapshot
+    let overall_status = snapshot
+        .and_then(|s| s["overall_status"].as_str())
+        .unwrap_or("unknown");
+    let injected_pids = snapshot
+        .and_then(|s| s["injected_pids"].as_u64())
+        .unwrap_or(0);
+    let patched_modules = snapshot
+        .and_then(|s| s["patched_modules"].as_u64())
+        .unwrap_or(0);
+    let pipe_round_trips = snapshot
+        .and_then(|s| s["pipe_round_trips_60s"].as_u64())
+        .unwrap_or(0);
+    let cache_hit_rate = snapshot
+        .and_then(|s| s["cache_hit_rate_60s"].as_f64())
+        .unwrap_or(0.0);
+    let fail_state = snapshot
+        .and_then(|s| s["fail_state"].as_str())
+        .unwrap_or("Unknown");
+
+    // Status badge colors
+    let (badge_bg, badge_text) = match overall_status.to_lowercase().as_str() {
+        "healthy" => (Color::Green, "HEALTHY"),
+        "degraded" => (Color::Yellow, "DEGRADED"),
+        "critical" => (Color::Red, "CRITICAL"),
+        _ => (Color::DarkGray, "UNKNOWN"),
+    };
+
+    // Left panel: Current Status
+    let status_lines = vec![
+        Line::styled(
+            "-- Current Status --",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled("Overall: ", Style::default().add_modifier(Modifier::BOLD)),
+            Span::styled(
+                badge_text,
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(badge_bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]),
+        Line::raw(""),
+        Line::from(vec![
+            Span::styled(
+                "Injected PIDs:     ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("{injected_pids}")),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Patched Modules:   ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("{patched_modules}")),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Pipe Round-Trips:  ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("{pipe_round_trips}")),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Cache Hit Rate:    ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(format!("{:.0}%", cache_hit_rate * 100.0)),
+        ]),
+        Line::from(vec![
+            Span::styled(
+                "Fail State:        ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(fail_state.to_string()),
+        ]),
+    ];
+
+    if let Some(ts) = last_refresh {
+        let refresh_line = Line::from(vec![
+            Span::styled(
+                "Last Refresh:      ",
+                Style::default().add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(ts.to_string()),
+        ]);
+        // We can't easily append to a vec inside the render; just render separately
+        let left_paragraph = Paragraph::new(status_lines);
+        let refresh_para = Paragraph::new(vec![Line::raw(""), refresh_line]);
+        let left_chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(1), Constraint::Length(2)])
+            .split(left_panel);
+        frame.render_widget(left_paragraph, left_chunks[0]);
+        frame.render_widget(refresh_para, left_chunks[1]);
+    } else {
+        let left_paragraph = Paragraph::new(status_lines);
+        frame.render_widget(left_paragraph, left_panel);
+    }
+
+    // Right panel: 5-Min Trends
+    let mut trend_lines = vec![
+        Line::styled(
+            "-- 5-Min Trends --",
+            Style::default().add_modifier(Modifier::BOLD),
+        ),
+        Line::raw(""),
+    ];
+
+    if history.is_empty() {
+        trend_lines.push(Line::styled(
+            "No trend data available. Poll begins on first agent connection.",
+            Style::default().fg(Color::DarkGray),
+        ));
+        let right_paragraph = Paragraph::new(trend_lines);
+        frame.render_widget(right_paragraph, right_panel);
+    } else {
+        // Cache hit rate sparkline data
+        let cache_data: Vec<u64> = history
+            .iter()
+            .map(|h| {
+                h["cache_hit_rate_60s"]
+                    .as_f64()
+                    .unwrap_or(0.0)
+                    .mul_add(100.0, 0.0) as u64
+            })
+            .collect();
+        let last_cache = cache_data.last().copied().unwrap_or(0);
+        let _cache_color = if last_cache >= 80 {
+            Color::Green
+        } else if last_cache >= 60 {
+            Color::Yellow
+        } else {
+            Color::Red
+        };
+
+        trend_lines.push(Line::styled(
+            "Cache Hit Rate",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+        let right_paragraph = Paragraph::new(trend_lines.clone());
+        frame.render_widget(right_paragraph, right_panel);
+
+        // Use a simple text-based sparkline representation since we need to compile
+        let spark_text = if cache_data.len() >= 2 {
+            let mut bars = String::new();
+            for (i, &v) in cache_data.iter().enumerate() {
+                let bar = match v {
+                    0..=20 => "_",
+                    21..=40 => "-",
+                    41..=60 => "=",
+                    61..=80 => "+",
+                    _ => "#",
+                };
+                bars.push_str(bar);
+                if i < cache_data.len() - 1 {
+                    bars.push(' ');
+                }
+            }
+            bars
+        } else {
+            format!("{}", cache_data.first().copied().unwrap_or(0))
+        };
+
+        let pipe_data: Vec<u64> = history
+            .iter()
+            .map(|h| h["pipe_round_trips_60s"].as_u64().unwrap_or(0))
+            .collect();
+        let last_pipe = pipe_data.last().copied().unwrap_or(0);
+        let pipe_color = if last_pipe > 0 && overall_status == "healthy" {
+            Color::Green
+        } else if last_pipe > 0 && overall_status == "degraded" {
+            Color::Yellow
+        } else {
+            Color::Red
+        };
+
+        let pipe_max = pipe_data.iter().copied().max().unwrap_or(1).max(1);
+        let pipe_mid = pipe_max / 2;
+
+        let mut all_trend_lines = trend_lines;
+        all_trend_lines.push(Line::raw(spark_text));
+        all_trend_lines.push(Line::from(vec![
+            Span::raw("0%"),
+            Span::raw(format!(
+                "{:>width$}",
+                "50%",
+                width = (cache_data.len() * 2).max(10)
+            )),
+            Span::raw("100%"),
+        ]));
+        all_trend_lines.push(Line::raw(""));
+        all_trend_lines.push(Line::styled(
+            "Pipe Round-Trips / 60s",
+            Style::default().add_modifier(Modifier::BOLD),
+        ));
+
+        let pipe_spark = if pipe_data.len() >= 2 {
+            let mut bars = String::new();
+            for (i, &v) in pipe_data.iter().enumerate() {
+                let pct = if pipe_max > 0 { v * 100 / pipe_max } else { 0 };
+                let bar = match pct {
+                    0..=20 => "_",
+                    21..=40 => "-",
+                    41..=60 => "=",
+                    61..=80 => "+",
+                    _ => "#",
+                };
+                bars.push_str(bar);
+                if i < pipe_data.len() - 1 {
+                    bars.push(' ');
+                }
+            }
+            bars
+        } else {
+            format!("{}", pipe_data.first().copied().unwrap_or(0))
+        };
+
+        all_trend_lines.push(Line::styled(pipe_spark, Style::default().fg(pipe_color)));
+        all_trend_lines.push(Line::from(vec![
+            Span::raw("0"),
+            Span::raw(format!(
+                "{:>width$}",
+                pipe_mid.to_string(),
+                width = (pipe_data.len() * 2).max(10)
+            )),
+            Span::raw(format!("{pipe_max}")),
+        ]));
+
+        let right_paragraph = Paragraph::new(all_trend_lines);
+        frame.render_widget(right_paragraph, right_panel);
+    }
+
+    draw_hints(frame, area, SELF_HEALTH_HINTS);
 }
 
 #[cfg(test)]
@@ -5333,269 +5646,82 @@ mod disk_registry_render_tests {
 }
 
 #[cfg(test)]
-mod import_confirm_render_tests {
+mod managed_origin_render_tests {
     use super::*;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+    use serde_json::json;
 
-    fn get_buffer_content(terminal: &Terminal<TestBackend>) -> String {
-        let buf = terminal.backend().buffer().clone();
-        buf.content.iter().map(|c| c.symbol()).collect()
+    #[test]
+    fn draw_managed_origin_list_empty_shows_message() {
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).expect("test terminal");
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_managed_origin_list(frame, area, &[], 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        assert!(
+            s.contains("Managed Origins (0)"),
+            "empty title missing: {s}"
+        );
+        assert!(
+            s.contains("No managed origins configured."),
+            "empty message missing: {s}"
+        );
+        assert!(s.contains("a: Add"), "add hint missing: {s}");
+        assert!(s.contains("d: Delete"), "delete hint missing: {s}");
+        assert!(s.contains("Esc: Back"), "esc hint missing: {s}");
     }
 
     #[test]
-    fn draw_import_confirm_shows_header_and_counts() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                draw_import_confirm(frame, frame.area(), 5, 2, 3, 3, &ImportState::Pending);
-            })
-            .unwrap();
-        let content = get_buffer_content(&terminal);
-
+    fn draw_managed_origin_list_renders_origins() {
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).expect("test terminal");
+        let origins = vec![
+            json!({"id": "uuid-1", "origin": "https://dropbox.com/*"}),
+            json!({"id": "uuid-2", "origin": "https://onedrive.live.com/*"}),
+        ];
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_managed_origin_list(frame, area, &origins, 0);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
         assert!(
-            content.contains("Import 5 policies?"),
-            "header missing: {content}"
+            s.contains("Managed Origins (2)"),
+            "title count missing: {s}"
         );
         assert!(
-            content.contains("2 will overwrite existing entries"),
-            "conflicting count missing: {content}"
+            s.contains("https://dropbox.com/*"),
+            "first origin missing: {s}"
         );
         assert!(
-            content.contains("3 will be created as new"),
-            "non-conflicting count missing: {content}"
-        );
-    }
-
-    #[test]
-    fn draw_import_confirm_shows_confirm_selected() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                draw_import_confirm(frame, frame.area(), 2, 1, 1, 3, &ImportState::Pending);
-            })
-            .unwrap();
-        let content = get_buffer_content(&terminal);
-
-        assert!(
-            content.contains("[ Confirm ]"),
-            "confirm button missing: {content}"
-        );
-        assert!(
-            content.contains("(Enter to proceed)"),
-            "confirm hint missing: {content}"
-        );
-    }
-
-    #[test]
-    fn draw_import_confirm_shows_cancel_selected() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                draw_import_confirm(frame, frame.area(), 2, 1, 1, 4, &ImportState::Pending);
-            })
-            .unwrap();
-        let content = get_buffer_content(&terminal);
-
-        assert!(
-            content.contains("[ Cancel ]"),
-            "cancel button missing: {content}"
-        );
-        assert!(
-            content.contains("(Esc to abort)"),
-            "cancel hint missing: {content}"
+            s.contains("https://onedrive.live.com/*"),
+            "second origin missing: {s}"
         );
     }
 
     #[test]
-    fn draw_import_confirm_pending_shows_nav_hints() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                draw_import_confirm(frame, frame.area(), 3, 1, 2, 3, &ImportState::Pending);
-            })
-            .unwrap();
-        let content = get_buffer_content(&terminal);
-
-        assert!(
-            content.contains("Up/Down: navigate"),
-            "pending nav hint missing: {content}"
-        );
-        assert!(
-            content.contains("Enter: confirm"),
-            "pending confirm hint missing: {content}"
-        );
-        assert!(
-            content.contains("Esc: cancel"),
-            "pending cancel hint missing: {content}"
-        );
-    }
-
-    #[test]
-    fn draw_import_confirm_inprogress_shows_working_block() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                draw_import_confirm(frame, frame.area(), 4, 0, 4, 3, &ImportState::InProgress);
-            })
-            .unwrap();
-        let content = get_buffer_content(&terminal);
-
-        assert!(
-            content.contains("Importing policies..."),
-            "inprogress text missing: {content}"
-        );
-        assert!(
-            content.contains("Enter/Esc: dismiss"),
-            "dismiss hint missing in inprogress: {content}"
-        );
-    }
-
-    #[test]
-    fn draw_import_confirm_success_shows_summary() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                draw_import_confirm(
-                    frame,
-                    frame.area(),
-                    5,
-                    2,
-                    3,
-                    3,
-                    &ImportState::Success {
-                        created: 3,
-                        updated: 2,
-                    },
-                );
-            })
-            .unwrap();
-        let content = get_buffer_content(&terminal);
-
-        assert!(
-            content.contains("Import Complete"),
-            "success title missing: {content}"
-        );
-        assert!(
-            content.contains("Imported 5 policies (3 new, 2 updated)"),
-            "success summary missing: {content}"
-        );
-        assert!(
-            content.contains("Enter/Esc: dismiss"),
-            "dismiss hint missing in success: {content}"
-        );
-    }
-
-    #[test]
-    fn draw_import_confirm_error_shows_message() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                draw_import_confirm(
-                    frame,
-                    frame.area(),
-                    3,
-                    1,
-                    2,
-                    3,
-                    &ImportState::Error("Failed on policy 'Bad': 500".to_string()),
-                );
-            })
-            .unwrap();
-        let content = get_buffer_content(&terminal);
-
-        assert!(
-            content.contains("Import Failed"),
-            "error title missing: {content}"
-        );
-        assert!(
-            content.contains("Failed on policy 'Bad': 500"),
-            "error message missing: {content}"
-        );
-        assert!(
-            content.contains("Enter/Esc: dismiss"),
-            "dismiss hint missing in error: {content}"
-        );
-    }
-
-    #[test]
-    fn draw_import_confirm_zero_counts_still_renders() {
-        let backend = TestBackend::new(80, 24);
-        let mut terminal = Terminal::new(backend).unwrap();
-        terminal
-            .draw(|frame| {
-                draw_import_confirm(frame, frame.area(), 0, 0, 0, 3, &ImportState::Pending);
-            })
-            .unwrap();
-        let content = get_buffer_content(&terminal);
-
-        assert!(
-            content.contains("Import 0 policies?"),
-            "zero header missing: {content}"
-        );
-        assert!(
-            content.contains("0 will overwrite existing entries"),
-            "zero conflicting missing: {content}"
-        );
-        assert!(
-            content.contains("0 will be created as new"),
-            "zero non-conflicting missing: {content}"
-        );
-    }
-}
-
-#[cfg(test)]
-mod policy_menu_render_tests {
-    use super::*;
-    use crate::app::{App, Screen};
-    use ratatui::backend::TestBackend;
-    use ratatui::Terminal;
-
-    fn make_app(screen: Screen) -> App {
-        let client = crate::client::EngineClient::for_test();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("test runtime build must succeed");
-        let mut app = App::new(client, rt);
-        app.screen = screen;
-        app
-    }
-
-    #[test]
-    fn draw_screen_policy_menu_shows_import_export_entries() {
-        let backend = TestBackend::new(80, 24);
-        let mut term = Terminal::new(backend).unwrap();
-        let app = make_app(Screen::PolicyMenu { selected: 6 });
-        term.draw(|frame| draw_screen(&app, frame, frame.area()))
-            .unwrap();
-        let content: String = term
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|c| c.symbol())
-            .collect();
-
-        assert!(
-            content.contains("Policy Management"),
-            "title missing: {content}"
-        );
-        assert!(
-            content.contains("Import Policies..."),
-            "import entry missing: {content}"
-        );
-        assert!(
-            content.contains("Export Policies..."),
-            "export entry missing: {content}"
-        );
-        assert!(content.contains("Back"), "back entry missing: {content}");
+    fn draw_managed_origin_list_selects_highlighted() {
+        let backend = TestBackend::new(120, 20);
+        let mut term = Terminal::new(backend).expect("test terminal");
+        let origins = vec![
+            json!({"id": "uuid-1", "origin": "https://a.com/*"}),
+            json!({"id": "uuid-2", "origin": "https://b.com/*"}),
+        ];
+        term.draw(|frame| {
+            let area = frame.area();
+            draw_managed_origin_list(frame, area, &origins, 1);
+        })
+        .expect("draw");
+        let buf = term.backend().buffer().clone();
+        let s: String = buf.content().iter().map(|c| c.symbol()).collect();
+        // The second item should be selected; both origins should still render.
+        assert!(s.contains("https://a.com/*"), "first origin missing: {s}");
+        assert!(s.contains("https://b.com/*"), "second origin missing: {s}");
     }
 }

@@ -149,6 +149,7 @@ fn build_state(pool: &Arc<db::Pool>, crypto: &Arc<SecretCrypto>) -> Arc<AppState
         bypass_alerts: std::sync::Arc::new(
             dlp_server::db::repositories::bypass_alerts::BypassAlertsRepository,
         ),
+        diagnostic_store: None,
     })
 }
 

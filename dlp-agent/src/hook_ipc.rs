@@ -32,11 +32,12 @@ use windows::Win32::System::Pipes::{
     PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_WAIT,
 };
 
-use dlp_common::hook_ipc::CacheHint;
-use dlp_common::{AccessContext, Action, Environment, EvaluateRequest, Resource, Subject};
-use dlp_common::{Classification, Decision, HookRequest, HookResponse};
+use dlp_common::hook_ipc::{
+    CacheHint, DiagnosticsResponse, HealthResponse, IpcEnvelope, IpcMessageV1, IpcPayloadV1,
+    PullDiagnosticsRequest, PullHealthRequest,
+};
+use dlp_common::{Classification, HookRequest, HookResponse};
 
-use crate::interception::policy_mapper::PolicyMapper;
 use crate::ipc::frame::{read_frame, write_frame};
 use crate::ipc::pipe_security::PipeSecurity;
 
@@ -55,118 +56,16 @@ const PIPE_TIMEOUT_MS: u32 = 5_000;
 /// Handler type for processing hook requests.
 pub type HookHandler = Arc<dyn Fn(HookRequest) -> HookResponse + Send + Sync + 'static>;
 
-/// Maps a hook DLL action string to the corresponding ABAC [`Action`] variant.
-///
-/// Uses case-insensitive matching. Unknown actions default to [`Action::READ`]
-/// (least-privilege fallback).
-///
-/// # Action Mapping
-///
-/// | HookRequest.action | ABAC Action | Notes |
-/// |-------------------|-------------|-------|
-/// | CREATE | WRITE | File creation is a write operation |
-/// | WRITE | WRITE | Direct write |
-/// | NT_WRITE | WRITE | ntdll trampoline write |
-/// | READ | READ | Direct read |
-/// | NT_READ | READ | ntdll trampoline read |
-/// | COPY | COPY | Copy operation |
-/// | MOVE | DELETE | Move is delete + create |
-/// | DELETE | DELETE | Direct delete |
-/// | REPLACE | DELETE | Replace is delete + create |
-/// | SET_INFO | DELETE | SetFileInformation can delete/rename |
-/// | NT_SET_INFO | DELETE | ntdll trampoline set info |
-/// | (any other) | READ | Default fallback (least-privilege) |
-#[must_use]
-pub fn map_hook_action_to_abac(action: &str) -> Action {
-    if action.eq_ignore_ascii_case("CREATE")
-        || action.eq_ignore_ascii_case("WRITE")
-        || action.eq_ignore_ascii_case("NT_WRITE")
-    {
-        Action::WRITE
-    } else if action.eq_ignore_ascii_case("READ") || action.eq_ignore_ascii_case("NT_READ") {
-        Action::READ
-    } else if action.eq_ignore_ascii_case("COPY") {
-        Action::COPY
-    } else if action.eq_ignore_ascii_case("MOVE")
-        || action.eq_ignore_ascii_case("DELETE")
-        || action.eq_ignore_ascii_case("REPLACE")
-        || action.eq_ignore_ascii_case("SET_INFO")
-        || action.eq_ignore_ascii_case("NT_SET_INFO")
-    {
-        Action::DELETE
-    } else {
-        Action::READ
-    }
-}
+/// Handler type for processing diagnostic pull requests.
+pub type DiagnosticsHandler =
+    Arc<dyn Fn(PullDiagnosticsRequest) -> DiagnosticsResponse + Send + Sync + 'static>;
 
-/// Converts a [`HookRequest`] from the hook DLL into an [`EvaluateRequest`]
-/// for the ABAC policy engine.
-///
-/// # Volume Class Forwarding
-///
-/// `source_volume_class` and `destination_volume_class` from the hook DLL are
-/// forwarded directly to the corresponding fields in [`EvaluateRequest`].
-///
-/// # Subject Identity (Known Limitation)
-///
-/// Subject identity is **synthetic** (placeholder SID). The hook DLL IPC path
-/// does not yet have PID-to-SID resolution. Real identity resolution is deferred
-/// to a follow-up phase (see RESEARCH.md Open Question #1).
-///
-/// Tests using this function should use only resource/action/environment
-/// conditions, not identity-based conditions.
-///
-/// # Arguments
-///
-/// * `req` - The incoming [`HookRequest`] from the hook DLL.
-///
-/// # Returns
-///
-/// An [`EvaluateRequest`] ready for `OfflineManager::offline_decision` or
-/// `PolicyStore::evaluate`.
-#[must_use]
-pub fn hook_request_to_evaluate_request(req: &HookRequest) -> EvaluateRequest {
-    // TODO: Replace placeholder SID with real PID-to-SID resolution.
-    // The hook DLL currently does not include the process PID in HookRequest.
-    // When PID is available, call get_sid_for_pid() to resolve the real user.
-    tracing::warn!(
-        path = %req.path,
-        "hook_request_to_evaluate_request: using synthetic SID — identity-based policies will not match"
-    );
-    let subject = Subject {
-        user_sid: "S-1-5-21-hook".to_string(),
-        user_name: "hook_user".to_string(),
-        groups: Vec::new(),
-        device_trust: dlp_common::abac::DeviceTrust::Unknown,
-        network_location: dlp_common::abac::NetworkLocation::Unknown,
-        device_health: crate::device_identity::current_health(),
-    };
+/// Handler type for processing health pull requests.
+pub type HealthHandler = Arc<dyn Fn(PullHealthRequest) -> HealthResponse + Send + Sync + 'static>;
 
-    let resource = Resource {
-        path: req.path.clone(),
-        classification: PolicyMapper::provisional_classification(&req.path),
-    };
-
-    let environment = Environment {
-        timestamp: chrono::Utc::now(),
-        session_id: 0,
-        access_context: AccessContext::Local,
-    };
-
-    EvaluateRequest {
-        subject,
-        resource,
-        environment,
-        action: map_hook_action_to_abac(&req.action),
-        agent: None,
-        source_application: None,
-        destination_application: None,
-        source_origin: None,
-        destination_origin: None,
-        source_volume_class: req.source_volume_class,
-        destination_volume_class: req.destination_volume_class,
-    }
-}
+/// Handler type for processing override requests.
+pub type OverrideHandler =
+    Arc<dyn Fn(dlp_common::hook_ipc::OverrideRequest) + Send + Sync + 'static>;
 
 /// Classification cache accessor for the hook IPC handler.
 ///
@@ -193,9 +92,9 @@ impl CacheAccessor for crate::classification_cache::ClassificationCache {
 pub struct HookIpcServer {
     pipe_name: String,
     handler: HookHandler,
-    /// Optional channel sender for routing BypassAlert payloads to the
-    /// bypass correlator. When None, BypassAlert payloads are dropped.
-    bypass_tx: Option<crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>>,
+    diagnostics_handler: Option<DiagnosticsHandler>,
+    health_handler: Option<HealthHandler>,
+    override_handler: Option<OverrideHandler>,
 }
 
 impl HookIpcServer {
@@ -207,24 +106,9 @@ impl HookIpcServer {
         Self {
             pipe_name: pipe_name.into(),
             handler,
-            bypass_tx: None,
-        }
-    }
-
-    /// Creates a new hook IPC server with a bypass channel.
-    ///
-    /// `bypass_tx` receives `BypassAlert` payloads from the hook DLL for
-    /// routing to the bypass correlator. The channel should be unbounded
-    /// (per REVIEW-M-01) to avoid blocking the pipe loop.
-    pub fn with_bypass_channel(
-        pipe_name: impl Into<String>,
-        handler: HookHandler,
-        bypass_tx: crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>,
-    ) -> Self {
-        Self {
-            pipe_name: pipe_name.into(),
-            handler,
-            bypass_tx: Some(bypass_tx),
+            diagnostics_handler: None,
+            health_handler: None,
+            override_handler: None,
         }
     }
 
@@ -251,131 +135,28 @@ impl HookIpcServer {
         Self {
             pipe_name: pipe_name.into(),
             handler,
-            bypass_tx: None,
+            diagnostics_handler: None,
+            health_handler: None,
+            override_handler: None,
         }
     }
 
-    /// Creates a new hook IPC server with both cache and approval cache awareness.
-    ///
-    /// This is the structural preparation for future hook-path approval override
-    /// integration (WORKFLOW-04-followup). The approval cache is stored but the
-    /// override check is NOT activated — the hook path remains fail-closed until
-    /// real ABAC evaluation is wired.
-    ///
-    /// The returned handler:
-    /// 1. Reads `cache_version` from the request and detects stale DLLs.
-    /// 2. Delegates to `inner_handler` for the actual ABAC evaluation.
-    /// 3. Builds a [`CacheHint`] from the response for DLL LRU warming.
-    /// 4. Returns the current cache version in the response.
-    ///
-    /// # Cache Non-Authoritative Invariant
-    ///
-    /// The cache stores classification **HINT only**. ABAC authority is never
-    /// bypassed. The `inner_handler` always performs full ABAC evaluation.
-    pub fn with_approval_cache(
-        pipe_name: impl Into<String>,
-        inner_handler: HookHandler,
-        cache: Arc<dyn CacheAccessor>,
-        approval_cache: Option<Arc<crate::approval_cache::ApprovalCache>>,
-    ) -> Self {
-        let handler: HookHandler = Arc::new(move |req: HookRequest| {
-            handle_hook_request(req, &inner_handler, &cache, approval_cache.as_ref())
-        });
-        Self {
-            pipe_name: pipe_name.into(),
-            handler,
-            bypass_tx: None,
-        }
+    /// Sets the diagnostics handler for `PullDiagnostics` requests.
+    pub fn with_diagnostics_handler(mut self, handler: DiagnosticsHandler) -> Self {
+        self.diagnostics_handler = Some(handler);
+        self
     }
 
-    /// Creates a new hook IPC server with cache, approval cache, and bypass channel.
-    ///
-    /// This is the full constructor for production use when the bypass correlator
-    /// is active. The bypass channel routes hook-derived alerts to the correlator.
-    pub fn with_approval_cache_and_bypass(
-        pipe_name: impl Into<String>,
-        inner_handler: HookHandler,
-        cache: Arc<dyn CacheAccessor>,
-        approval_cache: Option<Arc<crate::approval_cache::ApprovalCache>>,
-        bypass_tx: crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>,
-    ) -> Self {
-        let handler: HookHandler = Arc::new(move |req: HookRequest| {
-            handle_hook_request(req, &inner_handler, &cache, approval_cache.as_ref())
-        });
-        Self {
-            pipe_name: pipe_name.into(),
-            handler,
-            bypass_tx: Some(bypass_tx),
-        }
+    /// Sets the health handler for `PullHealth` requests.
+    pub fn with_health_handler(mut self, handler: HealthHandler) -> Self {
+        self.health_handler = Some(handler);
+        self
     }
 
-    /// Creates a new hook IPC server with cache and offline ABAC evaluation.
-    ///
-    /// The returned handler performs real ABAC evaluation via
-    /// `OfflineManager::offline_decision` (synchronous, no async bridging).
-    /// The hook handler calls `offline_decision` synchronously. No `block_on`,
-    /// `spawn_blocking`, `block_in_place`, or new Tokio runtime is used in this
-    /// code path.
-    ///
-    /// The handler:
-    /// 1. Converts `HookRequest` to `EvaluateRequest` via [`hook_request_to_evaluate_request`].
-    /// 2. Calls `offline.offline_decision(&evaluate_request)` synchronously.
-    /// 3. Converts `EvaluateResponse` to `HookResponse` (decision + reason).
-    /// 4. Builds a [`CacheHint`] from the response classification for DLL LRU warming.
-    /// 5. Returns the current cache version in the response.
-    ///
-    /// # Cache Non-Authoritative Invariant
-    ///
-    /// The cache stores classification **HINT only**. ABAC authority is never
-    /// bypassed. The offline manager always performs full ABAC evaluation.
-    pub fn with_cache_and_offline(
-        pipe_name: impl Into<String>,
-        cache: Arc<dyn CacheAccessor>,
-        offline: Arc<crate::offline::OfflineManager>,
-    ) -> Self {
-        let handler: HookHandler = Arc::new(move |req: HookRequest| {
-            // Convert HookRequest to EvaluateRequest with volume class forwarded.
-            let evaluate_request = hook_request_to_evaluate_request(&req);
-
-            // The hook handler calls offline_decision synchronously.
-            // No async bridging (block_on, spawn_blocking, block_in_place)
-            // is used in this code path.
-            let evaluate_response = offline.offline_decision(&evaluate_request);
-
-            // Build cache hint from the request classification (resolved by
-            // PolicyMapper::provisional_classification in hook_request_to_evaluate_request).
-            // The response does not carry classification directly; we use the
-            // classification from the request that produced the response.
-            let cache_hint =
-                build_cache_hint(&req.path, Some(evaluate_request.resource.classification));
-
-            HookResponse {
-                decision: evaluate_response.decision,
-                reason: evaluate_response.reason,
-                cache_hint,
-                cache_version: cache.current_version(),
-            }
-        });
-        Self {
-            pipe_name: pipe_name.into(),
-            handler,
-            bypass_tx: None,
-        }
-    }
-
-    /// Creates a new hook IPC server with cache, offline evaluation, and bypass channel.
-    ///
-    /// This is the full production constructor when both real ABAC evaluation
-    /// and bypass alert routing are active.
-    pub fn with_cache_offline_and_bypass(
-        pipe_name: impl Into<String>,
-        cache: Arc<dyn CacheAccessor>,
-        offline: Arc<crate::offline::OfflineManager>,
-        bypass_tx: crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>,
-    ) -> Self {
-        let mut server = Self::with_cache_and_offline(pipe_name, cache, offline);
-        server.bypass_tx = Some(bypass_tx);
-        server
+    /// Sets the override handler for `RequestOverride` messages.
+    pub fn with_override_handler(mut self, handler: OverrideHandler) -> Self {
+        self.override_handler = Some(handler);
+        self
     }
 
     /// Runs the blocking accept loop on the current thread.
@@ -393,7 +174,14 @@ impl HookIpcServer {
         info!(pipe = %self.pipe_name, "Hook IPC server starting");
         let pipe = create_pipe(&self.pipe_name)?;
         on_ready();
-        accept_loop(pipe, self.pipe_name, self.handler, self.bypass_tx)
+        accept_loop(
+            pipe,
+            self.pipe_name,
+            self.handler,
+            self.diagnostics_handler,
+            self.health_handler,
+            self.override_handler,
+        )
     }
 }
 
@@ -430,7 +218,9 @@ fn accept_loop(
     first_pipe: HANDLE,
     pipe_name: String,
     handler: HookHandler,
-    bypass_tx: Option<crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>>,
+    diagnostics_handler: Option<DiagnosticsHandler>,
+    health_handler: Option<HealthHandler>,
+    override_handler: Option<OverrideHandler>,
 ) -> Result<()> {
     let mut pipe = first_pipe;
     loop {
@@ -458,8 +248,13 @@ fn accept_loop(
 
         info!("Hook IPC: client connected");
 
-        let bypass_tx_ref = bypass_tx.as_ref();
-        if let Err(e) = handle_connection(pipe, &handler, bypass_tx_ref) {
+        if let Err(e) = handle_connection(
+            pipe,
+            &handler,
+            diagnostics_handler.as_ref(),
+            health_handler.as_ref(),
+            override_handler.as_ref(),
+        ) {
             warn!(error = %e, "Hook IPC: connection handler error");
         }
         let _ = unsafe { DisconnectNamedPipe(pipe) };
@@ -472,10 +267,10 @@ fn accept_loop(
 fn handle_connection(
     pipe: HANDLE,
     handler: &HookHandler,
-    bypass_tx: Option<&crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>>,
+    diagnostics_handler: Option<&DiagnosticsHandler>,
+    health_handler: Option<&HealthHandler>,
+    override_handler: Option<&OverrideHandler>,
 ) -> Result<()> {
-    use dlp_common::hook_ipc::{HookRequest, IpcEnvelope, IpcMessageV1, IpcPayloadV1};
-
     loop {
         let frame = match read_frame(pipe) {
             Ok(f) => f,
@@ -485,102 +280,82 @@ fn handle_connection(
             }
         };
 
-        // Try IpcEnvelope first (new protocol), then fall back to legacy HookRequest.
-        match bincode::deserialize::<IpcEnvelope>(&frame) {
-            Ok(IpcEnvelope::V1(msg)) => {
-                match msg.payload {
-                    IpcPayloadV1::Request(req) => {
-                        debug!(path = %req.path, action = %req.action, "Hook IPC: classifying envelope request");
-                        let response = handler(req);
-                        debug!(decision = ?response.decision, "Hook IPC: classification complete");
+        // Try the new envelope protocol first (Phase 58).
+        if let Ok(envelope) = bincode::deserialize::<IpcEnvelope>(&frame) {
+            // IpcEnvelope only has V1 variant, so let-destructure is sufficient.
+            let IpcEnvelope::V1(msg) = envelope;
+            let response_payload = match msg.payload {
+                IpcPayloadV1::Request(req) => {
+                    debug!(path = %req.path, action = %req.action, "Hook IPC: classifying");
+                    let response = handler(req);
+                    debug!(decision = ?response.decision, "Hook IPC: classification complete");
+                    IpcPayloadV1::Response(response)
+                }
+                IpcPayloadV1::RequestOverride(req) => {
+                    debug!(resource_path = %req.resource_path, "Hook IPC: override request");
+                    if let Some(oh) = override_handler {
+                        oh(req);
+                    } else {
+                        warn!("Hook IPC: override request received but no handler configured");
+                    }
+                    // Override is fire-and-forget; respond with empty OK.
+                    IpcPayloadV1::Response(HookResponse {
+                        decision: dlp_common::Decision::ALLOW,
+                        reason: "override request forwarded".to_string(),
+                        cache_hint: None,
+                        cache_version: 0,
+                        approval_override: None,
+                    })
+                }
+                IpcPayloadV1::PullDiagnostics(req) => {
+                    debug!(max_entries = req.max_entries, "Hook IPC: pull diagnostics");
+                    let response = diagnostics_handler.map(|dh| dh(req)).unwrap_or_default();
+                    IpcPayloadV1::DiagnosticsResponse(response)
+                }
+                IpcPayloadV1::PullHealth(req) => {
+                    debug!("Hook IPC: pull health");
+                    let response = health_handler.map(|hh| hh(req)).unwrap_or_default();
+                    IpcPayloadV1::HealthResponse(response)
+                }
+                IpcPayloadV1::BypassAlert(ref alert) => {
+                    debug!(reason = ?alert.reason, stub = %alert.stub_name, "Hook IPC: bypass alert received");
+                    continue;
+                }
+                // Agent-to-DLL responses should not arrive on the server.
+                other => {
+                    warn!(payload = ?other, "Hook IPC: unexpected payload from DLL");
+                    continue;
+                }
+            };
 
-                        // Wrap response in envelope for protocol consistency.
-                        let envelope_response = IpcEnvelope::V1(IpcMessageV1 {
-                            payload: IpcPayloadV1::Response(response),
-                        });
-                        let payload = bincode::serialize(&envelope_response)
-                            .context("serialize envelope response")?;
-                        if let Err(e) = write_frame(pipe, &payload) {
-                            warn!(error = %e, "Hook IPC: write response failed — disconnecting");
-                            break;
-                        }
-                    }
-                    IpcPayloadV1::BypassAlert(alert) => {
-                        debug!(pid = alert.pid, reason = ?alert.reason, "Hook IPC: routing BypassAlert to correlator");
-                        if let Some(tx) = bypass_tx {
-                            // Best-effort send; unbounded channel never blocks (per REVIEW-M-01).
-                            let _ = tx.send(alert);
-                        } else {
-                            warn!("Hook IPC: received BypassAlert but no bypass channel configured — dropping");
-                        }
-                        // Send minimal acknowledgment so clients using request-style sends do not deadlock.
-                        let ack = IpcEnvelope::V1(IpcMessageV1 {
-                            payload: IpcPayloadV1::Response(HookResponse {
-                                decision: Decision::ALLOW,
-                                reason: "BypassAlert received".to_string(),
-                                cache_hint: None,
-                                cache_version: 0,
-                            }),
-                        });
-                        let ack_bytes =
-                            bincode::serialize(&ack).context("serialize BypassAlert ack")?;
-                        if let Err(e) = write_frame(pipe, &ack_bytes) {
-                            warn!(error = %e, "Hook IPC: write BypassAlert ack failed — disconnecting");
-                            break;
-                        }
-                    }
-                    IpcPayloadV1::VolumeClassQuery(query) => {
-                        debug!(
-                            drive_letter = %query.drive_letter,
-                            "Hook IPC: VolumeClassQuery received"
-                        );
-                        let response = crate::detection::usb::handle_volume_class_query(&query);
-                        // Respond with the resolved class (or None on failure).
-                        // This keeps the fail-closed invariant while allowing real
-                        // drive-letter classification when the detector is available.
-                        let resp = IpcEnvelope::V1(IpcMessageV1 {
-                            payload: IpcPayloadV1::VolumeClassResponse(response),
-                        });
-                        let resp_bytes = bincode::serialize(&resp)
-                            .context("serialize VolumeClassQuery response")?;
-                        if let Err(e) = write_frame(pipe, &resp_bytes) {
-                            warn!(error = %e, "Hook IPC: write VolumeClassQuery response failed — disconnecting");
-                            break;
-                        }
-                    }
-                    IpcPayloadV1::VolumeClassResponse(_resp) => {
-                        warn!("Hook IPC: unexpected VolumeClassResponse from hook DLL — dropping");
-                        // Disconnect explicitly since this is an unexpected client-side payload.
-                        break;
-                    }
-                    IpcPayloadV1::Response(_resp) => {
-                        warn!("Hook IPC: unexpected Response payload from hook DLL — dropping");
-                        // Disconnect explicitly since this is an unexpected client-side payload.
-                        break;
-                    }
+            let response_envelope = IpcEnvelope::V1(IpcMessageV1 {
+                payload: response_payload,
+            });
+            let payload =
+                bincode::serialize(&response_envelope).context("serialize envelope response")?;
+            if let Err(e) = write_frame(pipe, &payload) {
+                warn!(error = %e, "Hook IPC: write response failed — disconnecting");
+                break;
+            }
+            continue;
+        }
+
+        // Fall back to legacy raw HookRequest (pre-Phase 58 DLLs).
+        match bincode::deserialize::<HookRequest>(&frame) {
+            Ok(request) => {
+                debug!(path = %request.path, action = %request.action, "Hook IPC: classifying (legacy)");
+                let response = handler(request);
+                debug!(decision = ?response.decision, "Hook IPC: classification complete (legacy)");
+
+                let payload = bincode::serialize(&response).context("serialize response")?;
+                if let Err(e) = write_frame(pipe, &payload) {
+                    warn!(error = %e, "Hook IPC: write response failed — disconnecting");
+                    break;
                 }
             }
-            Err(_envelope_err) => {
-                // Fall back to legacy HookRequest deserialization (backward compat).
-                match bincode::deserialize::<HookRequest>(&frame) {
-                    Ok(req) => {
-                        debug!(path = %req.path, action = %req.action, "Hook IPC: classifying legacy request");
-                        let response = handler(req);
-                        debug!(decision = ?response.decision, "Hook IPC: classification complete");
-
-                        // Serialize raw HookResponse (NOT envelope-wrapped) for backward compat.
-                        let payload =
-                            bincode::serialize(&response).context("serialize response")?;
-                        if let Err(e) = write_frame(pipe, &payload) {
-                            warn!(error = %e, "Hook IPC: write response failed — disconnecting");
-                            break;
-                        }
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "Hook IPC: malformed frame — neither IpcEnvelope nor legacy HookRequest");
-                        continue;
-                    }
-                }
+            Err(e) => {
+                warn!(error = %e, "Hook IPC: malformed request — bincode deserialization failed");
+                continue;
             }
         }
     }
@@ -844,6 +619,7 @@ mod tests {
             reason: format!("blocked: {}", req.path),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let _server_handle = start_server(pipe_name, handler);
@@ -867,6 +643,7 @@ mod tests {
                 op: dlp_common::hook_ipc::HookOp::Read,
                 source_volume_class: None,
                 destination_volume_class: None,
+                pid: 1234,
             };
 
             let start = Instant::now();
@@ -919,6 +696,7 @@ mod tests {
             },
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let _server_handle = start_server(pipe_name, handler);
@@ -932,6 +710,7 @@ mod tests {
             op: dlp_common::hook_ipc::HookOp::Read,
             source_volume_class: None,
             destination_volume_class: None,
+            pid: 1234,
         };
         let resp = send_request(client, &req).expect("send empty path request");
         assert_eq!(resp.decision, Decision::ALLOW);
@@ -950,6 +729,7 @@ mod tests {
             reason: "never reached".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let _server_handle = start_server(pipe_name, handler);
@@ -1018,6 +798,7 @@ mod tests {
             reason: "should not reach".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let _server_handle = start_server(pipe_name, handler);
@@ -1095,6 +876,7 @@ mod tests {
             reason: "ok".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let _server_handle = start_server(pipe_name, handler);
@@ -1110,6 +892,7 @@ mod tests {
             op: dlp_common::hook_ipc::HookOp::Write,
             source_volume_class: None,
             destination_volume_class: None,
+            pid: 1234,
         };
 
         // Serialisation itself should succeed.
@@ -1168,6 +951,7 @@ mod tests {
             reason: "ok".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let cache: Arc<dyn CacheAccessor> = Arc::new(MockCache { version: 42 });
@@ -1180,6 +964,7 @@ mod tests {
             op: dlp_common::hook_ipc::HookOp::Write,
             source_volume_class: None,
             destination_volume_class: None,
+            pid: 1234,
         };
 
         let resp = handle_hook_request(req, &inner, &cache, None);
@@ -1201,6 +986,7 @@ mod tests {
             reason: "ok".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let cache: Arc<dyn CacheAccessor> = Arc::new(MockCache { version: 42 });
@@ -1213,6 +999,7 @@ mod tests {
             op: dlp_common::hook_ipc::HookOp::Read,
             source_volume_class: None,
             destination_volume_class: None,
+            pid: 1234,
         };
 
         let resp = handle_hook_request(req, &inner, &cache, None);
@@ -1230,6 +1017,7 @@ mod tests {
             reason: "blocked".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let cache: Arc<dyn CacheAccessor> = Arc::new(MockCache { version: 7 });
@@ -1242,6 +1030,7 @@ mod tests {
             op: dlp_common::hook_ipc::HookOp::Write,
             source_volume_class: None,
             destination_volume_class: None,
+            pid: 1234,
         };
 
         let resp = handle_hook_request(req, &inner, &cache, None);

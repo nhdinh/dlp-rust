@@ -1,7 +1,7 @@
 ---
 phase: 56
 slug: sd-optical-virtual-drive-enumeration-volume-class-abac-seed
-status: draft
+status: complete
 nyquist_compliant: true
 wave_0_complete: true
 created: 2026-05-29
@@ -46,7 +46,7 @@ created: 2026-05-29
 | 56-03-01 | 03 | 2 | DRIVE-03 | T-56-06 | Hook DLL thread-local cache returns correct class | unit | `cargo test -p dlp-hook-dll volume_class_cache` | Yes | green |
 | 56-04-01 | 04 | 2 | DRIVE-04 | T-56-07 | `VolumeArrival` event emitted on virtual mount | integration | `cargo test -p dlp-agent --features integration-tests` | Yes | green |
 | 56-05-01 | 05 | 2 | DRIVE-04 | T-56-08 | `WM_DEVICECHANGE` covers SD/optical arrival with 500ms defer | integration | `cargo test -p dlp-agent --features integration-tests` | Yes | green |
-| 56-06-01 | 06 | 3 | DRIVE-02 | T-56-09 | End-to-end: "DENY LocalNTFS T4 to Optical" blocks `CopyFileExW` | integration | `cargo test -p dlp-agent --test volume_class_integration` | Yes | green |
+| 56-06-01 | 06 | 3 | DRIVE-02 | T-56-09 | End-to-end: "DENY LocalNTFS T4 to Optical" blocks `CopyFileExW` | integration | `cargo test -p dlp-server --test volume_class_integration` | Yes | green |
 
 *Status: pending / green / red / flaky*
 
@@ -83,4 +83,4 @@ created: 2026-05-29
 - [x] Feedback latency < 30s
 - [x] `nyquist_compliant: true` set in frontmatter
 
-**Approval:** approved
+**Approval:** approved 2026-05-29

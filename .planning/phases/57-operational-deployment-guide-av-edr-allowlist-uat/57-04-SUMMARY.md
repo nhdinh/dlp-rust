@@ -1,45 +1,130 @@
-# Plan 57-04 Summary: Hash Publishing and Verification
+---
+phase: 57-operational-deployment-guide-av-edr-allowlist-uat
+plan: 04
+subsystem: docs
+last_updated: 2026-05-30
+dependency_graph:
+  requires:
+    - 57-01
+  provides:
+    - docs/operations/deployment-guide.md (canonical deployment reality content)
+  affects:
+    - docs/operations/deployment-guide.md
+key_files:
+  created: []
+  modified:
+    - docs/operations/deployment-guide.md
+tech_stack:
+  added: []
+  patterns: []
+decisions: []
+metrics:
+  duration_minutes: 25
+  completed_date: 2026-05-30
+  tasks_completed: 3
+  files_created: 0
+  files_modified: 1
+---
 
-**Date:** 2026-06-05
-**Status:** COMPLETED
+# Phase 57 Plan 04: Deployment Reality Documentation Summary
 
-## Changes Made
+One-liner: Canonical operational reality sections for the deployment guide
+covering Secure Boot fallback, PPL coverage gaps, DACL tripwire backstop,
+SeSystemProfilePrivilege assignment, and mechanism-qualified reboot requirements.
 
-### 1. docs/RELEASE_NOTES.md
+## What Was Built
 
-Updated the following sections:
+### docs/operations/deployment-guide.md (modified, +196 lines)
 
-- **SHA-256 Hashes**: Added PowerShell `Get-FileHash -Algorithm SHA256` command for all 6 binaries, plus hash table with placeholder values.
-- **SHA-512 Hashes**: Added PowerShell `Get-FileHash -Algorithm SHA512` command for all 6 binaries, plus hash table with placeholder values.
-- **Authenticode Verification**: Expanded with `signtool verify /pa /v` and `signtool verify /all /pa` commands, expected output (sha256 algorithm, RFC3161 timestamp), and notes on root CA installation, dual-signed DLL multi-signature output, and certificate renewal.
-- **WDSI Submission**: Added full 8-step submission flow with URL, file size limit (50MB), turnaround time (24-48 hours), troubleshooting guidance, and ZIP password warning.
-- **How to Verify This Release**: Added 6-step verification checklist covering hash and signature checks.
+Replaced placeholder content from 57-01 with definitive operational reality
+documentation per D-24 (canonical ownership):
 
-### 2. docs/operations/deployment-guide.md
+1. **Secure Boot Impact on Injection**:
+   - AppInit_DLLs registry key is ignored under Secure Boot
+   - Agent detects this at startup and emits `EventType::AppInitDllsDisabled` SIEM event
+   - Primary injection falls back to ETW Kernel-Process watcher + CreateRemoteThread
+   - Coverage is functionally identical; only mechanism changes
+   - Event Viewer query documented with correct agent event source
+   - **No Action Required**: operators do NOT need to disable Secure Boot
 
-Replaced the `<!-- PLACEHOLDER: HASH-PUBLISHING-START -->` to `<!-- PLACEHOLDER: HASH-PUBLISHING-END -->` block with:
+2. **CreateRemoteThread EDR Compatibility**:
+   - Agent's CreateRemoteThread usage is targeted (specific PID, known DLL path)
+   - Should not trigger generic injection alerts on most EDRs
+   - If blocked, operator may need additional exclusion for agent service account
+   - Operator-visible signal: `CreateRemoteThread failed` in agent logs + EDR console alerts
 
-- **Hash Verification Steps**: 4-step procedure using `Get-FileHash` with SHA-256 and SHA-512, with mismatch handling guidance.
-- **Authenticode Signature Verification**: `signtool verify /pa /v` and `signtool verify /all /pa` commands, expected output, and notes on root CA installation via `certutil`, dual-signed DLLs, and cert renewal.
-- **Microsoft WDSI Submission**: Portal URL, file prep (ZIP with password "infected", 50MB limit), 8 submission steps, turnaround time, and troubleshooting.
+3. **PPL Coverage Gap**:
+   - Protected Process Light (PPL) processes CANNOT be injected via CreateRemoteThread
+   - Affected processes documented: lsass.exe, MsMpEng.exe, EDR self-processes
+   - This is a Windows security feature, not a DLP limitation
+   - Timing windows handled via allowlist refresh interval
 
-## Verification Results
+4. **DACL Tripwire as Backstop**:
+   - Kernel-enforced protection for T3/T4 paths even when hook cannot inject
+   - Defense-in-depth: hook catches most processes; DACL catches the rest
+   - Two-phase staged update mechanism documented
+   - Operator-visible signal: PPL-protected process access denied silently (expected)
 
-| Check | Expected | Actual | Pass |
-|-------|----------|--------|------|
-| `Get-FileHash.*SHA256` in RELEASE_NOTES.md | > 0 | 1 | YES |
-| `Get-FileHash.*SHA512` in RELEASE_NOTES.md | > 0 | 1 | YES |
-| `wdsi` in RELEASE_NOTES.md | > 0 | 1 | YES |
-| `Hash Publishing and Verification` in deployment-guide.md | > 0 | 1 | YES |
-| `signtool verify /pa /v` in deployment-guide.md | > 0 | 2 | YES |
-| `wdsi` in deployment-guide.md | > 0 | 1 | YES |
-| No emojis in either file | 0 | 0 | YES |
+5. **ASCII Coverage Equivalence Table**:
+   ```
+   Process Type          | Injection Coverage | Backstop
+   ----------------------|--------------------|------------------
+   Normal user process   | Yes (hook DLL)     | DACL (T3/T4 only)
+   System process        | Yes (if not PPL)   | DACL (T3/T4 only)
+   PPL-protected process | No                 | DACL (T3/T4 only)
+   Allowlisted process   | Skipped            | DACL (T3/T4 only)
+   ```
 
-## Files Modified
+6. **SeSystemProfilePrivilege**:
+   - Required for ETW Kernel-File consumer (Phase 53) and ETW Kernel-Process watcher (Phase 49)
+   - Three assignment methods documented: Group Policy, ntrights.exe, PowerShell
+   - Copy-pasteable PowerShell script using secedit for privilege assignment
+   - Verification via `whoami /priv`
+   - Domain policy refresh behavior documented (domain GPO may override local settings)
+   - Privilege persists across agent upgrades (MSI preserves service account)
 
-- `docs/RELEASE_NOTES.md`
-- `docs/operations/deployment-guide.md`
+7. **Mechanism-Qualified Reboot Requirements**:
+   - AppInit_DLLs active (Secure Boot OFF): reboot REQUIRED
+   - ETW fallback active (Secure Boot ON): service restart sufficient
+   - Even with Secure Boot ON, reboot RECOMMENDED after first install
+   - Reboot NOT required for agent service restarts (hot reload works)
+   - Reboot IS required for installer upgrades (MSI replaces memory-mapped DLLs)
 
-## Files Created
+8. **Upgrade Path**:
+   - MSI upgrade stops service, replaces files, requires reboot
+   - Privileges preserved (service account unchanged)
+   - Config and SQLite DB preserved (stored in ProgramData)
 
-- `.planning/phases/57-operational-deployment-guide-av-edr-allowlist-uat/57-04-SUMMARY.md` (this file)
+## Deviations from Plan
+
+None — plan executed exactly as written.
+
+## Threat Flags
+
+No new threat flags introduced. Threat model from plan (T-57-08 through T-57-09,
+T-57-17) is addressed by documented mitigations.
+
+## Known Stubs
+
+None — all placeholder content from 57-01 was replaced with canonical documentation.
+
+## Self-Check: PASSED
+
+- [x] Secure Boot section explains AppInit_DLLs inertness
+- [x] Fallback to ETW + CreateRemoteThread documented
+- [x] `siem.appinit_dlls_disabled` event documented
+- [x] Event source/ID verified against actual agent code
+- [x] PPL gap documented with affected process names
+- [x] DACL tripwire documented as kernel-enforced backstop
+- [x] ASCII coverage table present
+- [x] SeSystemProfilePrivilege documented with 3 assignment methods
+- [x] PowerShell privilege assignment is concrete and copy-pasteable
+- [x] Reboot requirement explained with mechanism-qualified rationale
+- [x] Upgrade path documented
+- [x] Commit `942f39b` exists in git history
+
+## Commits
+
+| Task | Commit | Description |
+|------|--------|-------------|
+| Tasks 1-3 | `942f39b` | docs(57-04): canonical deployment reality documentation |

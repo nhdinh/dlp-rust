@@ -32,6 +32,11 @@ tracing = { workspace = true }
 # Phase 51: Detours-style ntdll syscall-stub trampolines.
 retour = "0.4.0-alpha.4"
 parking_lot = "0.12"
+# Phase 58: SHA-256 content hashing with thread pool offloading.
+sha2 = "0.10"
+rayon = "1.10"
+hex = "0.4"
+crossbeam-queue = "0.3"
 
 [dev-dependencies]
 dlp-agent = { path = "../dlp-agent" }

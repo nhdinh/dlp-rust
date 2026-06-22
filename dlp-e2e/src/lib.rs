@@ -107,6 +107,7 @@ pub mod server {
             bypass_alerts: Arc::new(
                 dlp_server::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
+            diagnostic_store: None,
         });
         (admin_router(state), pool)
     }

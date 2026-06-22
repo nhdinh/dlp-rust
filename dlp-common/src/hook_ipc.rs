@@ -89,11 +89,33 @@ pub enum IpcPayloadV1 {
     /// or classification failed. The hook DLL treats `None` as fail-closed
     /// (does not default to [`VolumeClass::LocalNTFS`]).
     VolumeClassResponse(VolumeClassResponse),
-    /// A hook-derived bypass alert (EDR conflict, patch race) routed to the bypass correlator.
+    /// An override request from the hook DLL to the agent.
     ///
-    /// Sent when the hook DLL detects its trampoline was overwritten, a patch raced with a thread,
-    /// or EDR was detected at boot. The alert is forwarded to the bypass correlator and then to
-    /// SIEM / alert router.
+    /// Sent when a user requests an override for a blocked operation.
+    /// The agent validates the request and responds with [`IpcPayloadV1::Response`].
+    RequestOverride(OverrideRequest),
+    /// A diagnostics pull request from the agent to the hook DLL.
+    ///
+    /// The agent requests diagnostic snapshots from the hook DLL.
+    /// The hook DLL responds with [`IpcPayloadV1::DiagnosticsResponse`].
+    PullDiagnostics(PullDiagnosticsRequest),
+    /// A diagnostics response from the hook DLL to the agent.
+    ///
+    /// Contains diagnostic snapshots captured by the hook DLL.
+    DiagnosticsResponse(DiagnosticsResponse),
+    /// A health pull request from the agent to the hook DLL.
+    ///
+    /// The agent requests a health snapshot from the hook DLL.
+    /// The hook DLL responds with [`IpcPayloadV1::HealthResponse`].
+    PullHealth(PullHealthRequest),
+    /// A health response from the hook DLL to the agent.
+    ///
+    /// Contains a health snapshot of the hook DLL state.
+    HealthResponse(HealthResponse),
+    /// A bypass alert from the hook DLL to the agent.
+    ///
+    /// Sent when the hook DLL detects a bypass attempt (e.g., EDR overwriting
+    /// the trampoline, patch race condition). Fire-and-forget; no response expected.
     BypassAlert(BypassAlert),
 }
 
@@ -121,18 +143,22 @@ pub struct HookRequest {
     pub op: HookOp,
     /// Volume class of the source path (if any).
     ///
-    /// Populated by the hook DLL after path resolution. `None` when the volume
-    /// class cannot be determined — volume-class conditions evaluate to `false`
-    /// (fail-closed).
+    /// Populated by the hook DLL via [`volume_class_cache::resolve_volume_class_from_path`].
+    /// `None` when the volume class cannot be determined.
     #[serde(default)]
     pub source_volume_class: Option<VolumeClass>,
     /// Volume class of the destination path (if any).
     ///
-    /// Populated by the hook DLL after path resolution. `None` when the volume
-    /// class cannot be determined — volume-class conditions evaluate to `false`
-    /// (fail-closed).
+    /// Populated by the hook DLL for copy/move operations.
+    /// `None` for single-path operations or when undetermined.
     #[serde(default)]
     pub destination_volume_class: Option<VolumeClass>,
+    /// Process ID of the hooked process making this request.
+    ///
+    /// Used by the agent to look up the real user SID from the process token
+    /// for ABAC evaluation. A value of `0` means the PID was not provided.
+    #[serde(default)]
+    pub pid: u32,
 }
 
 fn default_protocol_version() -> u8 {
@@ -158,6 +184,13 @@ pub struct HookResponse {
     /// The DLL compares this against its last seen version to detect stale cache.
     #[serde(default)]
     pub cache_version: u64,
+    /// Whether the decision was overridden by an approval token (DIFF-01).
+    ///
+    /// When `true`, the agent checked the ApprovalCache after ABAC returned DENY
+    /// and found a valid override. The hook DLL should allow the operation and
+    /// emit an audit event with `override_granted=true`.
+    #[serde(default)]
+    pub approval_override: Option<bool>,
 }
 
 /// Request sent by the hook DLL to the agent for handle-based classification.
@@ -273,6 +306,142 @@ pub enum BypassReason {
     OpMismatch,
 }
 
+/// Classification source for diagnostic snapshots.
+///
+/// Indicates how the classification was resolved for a given operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum ClassificationSource {
+    /// Classification was resolved from the in-process cache.
+    #[default]
+    CacheHit,
+    /// Classification required a pipe round-trip to the agent.
+    CacheMiss,
+    /// Classification was resolved via named pipe IPC.
+    Pipe,
+}
+
+/// Request sent by the hook DLL to the agent for an override.
+///
+/// Used when a user requests an override for a blocked operation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct OverrideRequest {
+    /// The SID of the user requesting the override.
+    #[serde(default)]
+    pub requester_sid: String,
+    /// The ID of the data object being accessed.
+    #[serde(default)]
+    pub data_object_id: String,
+    /// The action being requested (e.g., "WRITE", "COPY").
+    #[serde(default)]
+    pub action: String,
+    /// The destination scope for the action (if applicable).
+    #[serde(default)]
+    pub destination_scope: Option<String>,
+    /// Human-readable justification for the override.
+    #[serde(default)]
+    pub justification: String,
+    /// The full path to the resource being accessed.
+    #[serde(default)]
+    pub resource_path: String,
+}
+
+/// Request sent by the agent to the hook DLL for diagnostic snapshots.
+///
+/// The agent polls the hook DLL for recent diagnostic data.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct PullDiagnosticsRequest {
+    /// Maximum number of diagnostic snapshots to return.
+    #[serde(default)]
+    pub max_entries: usize,
+}
+
+/// Diagnostic snapshot capturing full decision context on a DENY.
+///
+/// Used for troubleshooting and audit evidence collection.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct DiagnosticSnapshot {
+    /// The hooked function that triggered the snapshot (e.g., "WriteFile").
+    #[serde(default)]
+    pub hook_function: String,
+    /// How the classification was resolved.
+    #[serde(default)]
+    pub classification_source: ClassificationSource,
+    /// Age of the classification in milliseconds.
+    #[serde(default)]
+    pub classification_age_ms: u64,
+    /// The ABAC resource (file path).
+    #[serde(default)]
+    pub abac_resource: String,
+    /// The ABAC action (e.g., "WRITE").
+    #[serde(default)]
+    pub abac_action: String,
+    /// The ABAC environment context.
+    #[serde(default)]
+    pub abac_environment: String,
+    /// The ID of the matched policy (if any).
+    #[serde(default)]
+    pub matched_policy_id: Option<String>,
+    /// The enforcement mode of the matched policy (if any).
+    #[serde(default)]
+    pub enforcement_mode: Option<String>,
+    /// Decision latency in microseconds.
+    #[serde(default)]
+    pub decision_latency_us: u64,
+    /// QPC timestamp when the snapshot was captured.
+    #[serde(default)]
+    pub timestamp_qpc: u64,
+    /// The user's Windows SID.
+    #[serde(default)]
+    pub user_sid: String,
+}
+
+/// Response from the hook DLL containing diagnostic snapshots.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct DiagnosticsResponse {
+    /// The diagnostic snapshots captured by the hook DLL.
+    #[serde(default)]
+    pub snapshots: Vec<DiagnosticSnapshot>,
+}
+
+/// Request sent by the agent to the hook DLL for a health snapshot.
+///
+/// Unit struct — no parameters needed.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct PullHealthRequest {}
+
+/// Health snapshot of the hook DLL state.
+///
+/// Provides operational metrics for monitoring hook DLL health.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct HookHealthSnapshot {
+    /// Number of processes currently injected.
+    #[serde(default)]
+    pub injected_pids: u64,
+    /// Number of modules currently patched.
+    #[serde(default)]
+    pub patched_modules: u64,
+    /// Number of pipe round-trips in the last 60 seconds.
+    #[serde(default)]
+    pub pipe_round_trips_60s: u64,
+    /// Cache hit rate over the last 60 seconds (0.0 to 1.0).
+    #[serde(default)]
+    pub cache_hit_rate_60s: f64,
+    /// Current fail-mode state (0=Healthy, 1=Degraded, 2=Isolated).
+    #[serde(default)]
+    pub current_fail_state: u8,
+    /// Unix timestamp when the snapshot was captured.
+    #[serde(default)]
+    pub timestamp_secs: u64,
+}
+
+/// Response from the hook DLL containing a health snapshot.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct HealthResponse {
+    /// The health snapshot.
+    #[serde(default)]
+    pub snapshot: HookHealthSnapshot,
+}
+
 /// Current protocol version.
 pub const CURRENT_PROTOCOL_VERSION: u8 = 1;
 
@@ -353,6 +522,7 @@ mod tests {
             op: HookOp::Write,
             source_volume_class: None,
             destination_volume_class: None,
+            pid: 0,
         };
         let envelope = IpcEnvelope::V1(IpcMessageV1 {
             payload: IpcPayloadV1::Request(req),
@@ -385,8 +555,9 @@ mod tests {
             cache_version: 7,
             protocol_version: 1,
             op: HookOp::Write,
-            source_volume_class: Some(VolumeClass::USBRemovable),
-            destination_volume_class: Some(VolumeClass::Optical),
+            source_volume_class: None,
+            destination_volume_class: None,
+            pid: 0,
         };
         let bytes = bincode::serialize(&req).unwrap();
         let round_trip: HookRequest = bincode::deserialize(&bytes).unwrap();
@@ -449,6 +620,7 @@ mod tests {
         assert_eq!(deserialized.reason, "ok");
         assert!(deserialized.cache_hint.is_none());
         assert_eq!(deserialized.cache_version, 0);
+        assert_eq!(deserialized.approval_override, None);
     }
 
     #[test]
@@ -462,9 +634,25 @@ mod tests {
                 ttl_secs: 30,
             }),
             cache_version: 99,
+            approval_override: Some(false),
         };
         let bytes = bincode::serialize(&resp).unwrap();
         let round_trip: HookResponse = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(resp, round_trip);
+    }
+
+    #[test]
+    fn response_with_approval_override_roundtrips() {
+        let resp = HookResponse {
+            decision: Decision::ALLOW,
+            reason: "approved via override token".to_string(),
+            cache_hint: None,
+            cache_version: 0,
+            approval_override: Some(true),
+        };
+        let bytes = bincode::serialize(&resp).unwrap();
+        let round_trip: HookResponse = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(round_trip.approval_override, Some(true));
         assert_eq!(resp, round_trip);
     }
 
@@ -788,5 +976,199 @@ mod tests {
             !matches,
             "None volume class must fail closed (condition does not match)"
         );
+    }
+
+    // --- Phase 58: Override, Diagnostics, and Health IPC types ---
+
+    #[test]
+    fn test_override_request_roundtrip() {
+        let req = OverrideRequest {
+            requester_sid: "S-1-5-21-1".to_string(),
+            data_object_id: "doc-123".to_string(),
+            action: "WRITE".to_string(),
+            destination_scope: Some("USB".to_string()),
+            justification: "Business need".to_string(),
+            resource_path: r"C:\Data\secret.docx".to_string(),
+        };
+        let json = serde_json::to_string(&req).unwrap();
+        let rt: OverrideRequest = serde_json::from_str(&json).unwrap();
+        assert_eq!(req, rt);
+    }
+
+    #[test]
+    fn test_override_request_default_fields() {
+        let json = r#"{"requester_sid":"S-1-5-21-1"}"#;
+        let req: OverrideRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.requester_sid, "S-1-5-21-1");
+        assert_eq!(req.data_object_id, "");
+        assert_eq!(req.action, "");
+        assert_eq!(req.destination_scope, None);
+        assert_eq!(req.justification, "");
+        assert_eq!(req.resource_path, "");
+    }
+
+    #[test]
+    fn test_diagnostic_snapshot_roundtrip() {
+        let snap = DiagnosticSnapshot {
+            hook_function: "WriteFile".to_string(),
+            classification_source: ClassificationSource::CacheHit,
+            classification_age_ms: 42,
+            abac_resource: r"C:\Data\file.txt".to_string(),
+            abac_action: "WRITE".to_string(),
+            abac_environment: "local".to_string(),
+            matched_policy_id: Some("pol-001".to_string()),
+            enforcement_mode: Some("Block".to_string()),
+            decision_latency_us: 150,
+            timestamp_qpc: 1_000_000,
+            user_sid: "S-1-5-21-1".to_string(),
+        };
+        let json = serde_json::to_string(&snap).unwrap();
+        let rt: DiagnosticSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(snap, rt);
+    }
+
+    #[test]
+    fn test_diagnostics_response_roundtrip() {
+        let resp = DiagnosticsResponse {
+            snapshots: vec![DiagnosticSnapshot {
+                hook_function: "WriteFile".to_string(),
+                classification_source: ClassificationSource::Pipe,
+                classification_age_ms: 0,
+                abac_resource: r"C:\Data\file.txt".to_string(),
+                abac_action: "WRITE".to_string(),
+                abac_environment: "local".to_string(),
+                matched_policy_id: None,
+                enforcement_mode: None,
+                decision_latency_us: 200,
+                timestamp_qpc: 2_000_000,
+                user_sid: "S-1-5-21-1".to_string(),
+            }],
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let rt: DiagnosticsResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(resp, rt);
+    }
+
+    #[test]
+    fn test_pull_diagnostics_request_default() {
+        let json = r#"{}"#;
+        let req: PullDiagnosticsRequest = serde_json::from_str(json).unwrap();
+        assert_eq!(req.max_entries, 0);
+    }
+
+    #[test]
+    fn test_hook_health_snapshot_roundtrip() {
+        let snap = HookHealthSnapshot {
+            injected_pids: 5,
+            patched_modules: 12,
+            pipe_round_trips_60s: 100,
+            cache_hit_rate_60s: 0.85,
+            current_fail_state: 0,
+            timestamp_secs: 1_700_000_000,
+        };
+        let json = serde_json::to_string(&snap).unwrap();
+        let rt: HookHealthSnapshot = serde_json::from_str(&json).unwrap();
+        assert_eq!(snap, rt);
+    }
+
+    #[test]
+    fn test_health_response_roundtrip() {
+        let resp = HealthResponse {
+            snapshot: HookHealthSnapshot {
+                injected_pids: 3,
+                patched_modules: 8,
+                pipe_round_trips_60s: 50,
+                cache_hit_rate_60s: 0.92,
+                current_fail_state: 1,
+                timestamp_secs: 1_700_000_001,
+            },
+        };
+        let json = serde_json::to_string(&resp).unwrap();
+        let rt: HealthResponse = serde_json::from_str(&json).unwrap();
+        assert_eq!(resp, rt);
+    }
+
+    #[test]
+    fn test_pull_health_request_default() {
+        let json = r#"{}"#;
+        let req: PullHealthRequest = serde_json::from_str(json).unwrap();
+        // Unit struct with default — should deserialize successfully.
+        assert_eq!(req, PullHealthRequest {});
+    }
+
+    #[test]
+    fn test_classification_source_serde() {
+        for source in [
+            ClassificationSource::CacheHit,
+            ClassificationSource::CacheMiss,
+            ClassificationSource::Pipe,
+        ] {
+            let json = serde_json::to_string(&source).unwrap();
+            let rt: ClassificationSource = serde_json::from_str(&json).unwrap();
+            assert_eq!(source, rt);
+        }
+    }
+
+    #[test]
+    fn test_ipc_payload_override_roundtrip() {
+        let req = OverrideRequest {
+            requester_sid: "S-1-5-21-1".to_string(),
+            data_object_id: "doc-123".to_string(),
+            action: "WRITE".to_string(),
+            destination_scope: None,
+            justification: "test".to_string(),
+            resource_path: r"C:\test.txt".to_string(),
+        };
+        let envelope = IpcEnvelope::V1(IpcMessageV1 {
+            payload: IpcPayloadV1::RequestOverride(req),
+        });
+        let bytes = bincode::serialize(&envelope).unwrap();
+        let rt: IpcEnvelope = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(envelope, rt);
+    }
+
+    #[test]
+    fn test_ipc_payload_diagnostics_response_roundtrip() {
+        let resp = DiagnosticsResponse {
+            snapshots: vec![DiagnosticSnapshot {
+                hook_function: "NtCreateFile".to_string(),
+                classification_source: ClassificationSource::CacheMiss,
+                classification_age_ms: 10,
+                abac_resource: r"C:\Data\x.txt".to_string(),
+                abac_action: "CREATE".to_string(),
+                abac_environment: "local".to_string(),
+                matched_policy_id: Some("pol-002".to_string()),
+                enforcement_mode: Some("Audit".to_string()),
+                decision_latency_us: 300,
+                timestamp_qpc: 3_000_000,
+                user_sid: "S-1-5-21-2".to_string(),
+            }],
+        };
+        let envelope = IpcEnvelope::V1(IpcMessageV1 {
+            payload: IpcPayloadV1::DiagnosticsResponse(resp),
+        });
+        let bytes = bincode::serialize(&envelope).unwrap();
+        let rt: IpcEnvelope = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(envelope, rt);
+    }
+
+    #[test]
+    fn test_ipc_payload_health_response_roundtrip() {
+        let resp = HealthResponse {
+            snapshot: HookHealthSnapshot {
+                injected_pids: 1,
+                patched_modules: 4,
+                pipe_round_trips_60s: 20,
+                cache_hit_rate_60s: 0.75,
+                current_fail_state: 0,
+                timestamp_secs: 1_700_000_002,
+            },
+        };
+        let envelope = IpcEnvelope::V1(IpcMessageV1 {
+            payload: IpcPayloadV1::HealthResponse(resp),
+        });
+        let bytes = bincode::serialize(&envelope).unwrap();
+        let rt: IpcEnvelope = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(envelope, rt);
     }
 }

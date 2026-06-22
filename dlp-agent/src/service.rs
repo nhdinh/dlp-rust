@@ -27,7 +27,6 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use crate::hook_ipc::{HookIpcServer, DEFAULT_PIPE_NAME};
 use anyhow::{Context, Result};
 use dlp_common::hook_ipc::BypassAlert;
 use dlp_common::usb::{
@@ -1080,6 +1079,29 @@ struct RunLoopContext {
     correlator_shutdown: Option<tokio::sync::watch::Sender<bool>>,
     /// Phase 53: Handle for the bypass correlator task.
     correlator_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Phase 58: Diagnostic snapshot aggregator for hook DLL diagnostics.
+    #[allow(dead_code)]
+    diagnostic_aggregator: Arc<crate::diagnostic_aggregator::DiagnosticAggregator>,
+    /// Phase 58: Health snapshot aggregator for hook DLL health monitoring.
+    #[allow(dead_code)]
+    health_aggregator: Arc<crate::health_aggregator::HealthAggregator>,
+    /// Phase 58: Handle for the hook IPC server thread.
+    hook_ipc_handle: Option<std::thread::JoinHandle<()>>,
+    /// Phase 58: Shutdown signal for the diagnostic snapshot periodic push task.
+    #[allow(dead_code)]
+    diagnostic_push_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    /// Phase 58: Handle for the diagnostic snapshot periodic push task.
+    #[allow(dead_code)]
+    diagnostic_push_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Phase 58: Shutdown signal for the health snapshot periodic push task.
+    #[allow(dead_code)]
+    health_push_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    /// Phase 58: Handle for the health snapshot periodic push task.
+    #[allow(dead_code)]
+    health_push_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Phase 58-06: Handle for the override request processing task (DIFF-01).
+    #[allow(dead_code)]
+    override_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 /// The main service run loop.
@@ -1201,12 +1223,51 @@ fn emit_ntdll_patching_enabled_event() {
 /// failure. The handle is stored in [`BlockingThreads::hook_ipc`] and joined
 /// during service shutdown.
 fn spawn_hook_ipc_server(
-    cache: Arc<dyn crate::hook_ipc::CacheAccessor>,
+    _cache: Arc<dyn crate::hook_ipc::CacheAccessor>,
     offline: Arc<crate::offline::OfflineManager>,
-    bypass_tx: crossbeam_channel::Sender<BypassAlert>,
+    _bypass_tx: crossbeam_channel::Sender<BypassAlert>,
 ) -> Option<std::thread::JoinHandle<()>> {
-    let server =
-        HookIpcServer::with_cache_offline_and_bypass(DEFAULT_PIPE_NAME, cache, offline, bypass_tx);
+    let server = crate::hook_ipc::HookIpcServer::new(
+        crate::hook_ipc::DEFAULT_PIPE_NAME,
+        Arc::new(move |req: dlp_common::HookRequest| {
+            // Map hook action string to ABAC Action enum.
+            let action = match req.action.as_str() {
+                "READ" => dlp_common::Action::READ,
+                "WRITE" | "CREATE" => dlp_common::Action::WRITE,
+                "COPY" => dlp_common::Action::COPY,
+                "DELETE" => dlp_common::Action::DELETE,
+                "MOVE" | "RENAME" => dlp_common::Action::MOVE,
+                _ => dlp_common::Action::READ,
+            };
+            let evaluate_req = dlp_common::EvaluateRequest {
+                subject: dlp_common::Subject {
+                    user_sid: "S-1-5-18".to_string(),
+                    ..Default::default()
+                },
+                resource: dlp_common::Resource {
+                    path: req.path,
+                    ..Default::default()
+                },
+                environment: dlp_common::Environment::default(),
+                action,
+                agent: None,
+                source_application: None,
+                destination_application: None,
+                source_origin: None,
+                destination_origin: None,
+                source_volume_class: None,
+                destination_volume_class: None,
+            };
+            let eval_resp = offline.offline_decision(&evaluate_req);
+            dlp_common::HookResponse {
+                decision: eval_resp.decision,
+                reason: eval_resp.reason,
+                cache_hint: None,
+                cache_version: 0,
+                approval_override: None,
+            }
+        }),
+    );
 
     match std::thread::Builder::new()
         .name("hook-ipc-server".to_string())
@@ -1355,12 +1416,10 @@ async fn run_loop_init(
             Arc::clone(&registry_cache),
         )));
 
-    // SAFETY: detector_arc is stored in the RunLoopContext which outlives the
-    // service main loop. The static reference is only used during the lifetime
-    // of the service process.
-    let detector_static: &'static crate::detection::VolumeDetector =
-        unsafe { std::mem::transmute(detector_arc.as_ref()) };
-    crate::detection::usb::set_drive_detector(detector_static);
+    // Pass Arc<VolumeDetector> directly to avoid unsafe transmute for lifetime
+    // extension. DRIVE_DETECTOR stores Option<Arc<VolumeDetector>> so the Arc
+    // clone keeps the detector alive as long as needed.
+    crate::detection::usb::set_drive_detector(Arc::clone(&detector_arc));
 
     // ── Offline manager ────────────────────────────────────────────────────
     let offline = init_offline_manager(engine_client, cache, &server_client, machine_name.clone());
@@ -1702,6 +1761,156 @@ async fn run_loop_init(
         (None, None)
     };
 
+    // ── Phase 58: Diagnostic and Health Aggregators ────────────────────────
+    let diagnostic_aggregator = Arc::new(crate::diagnostic_aggregator::DiagnosticAggregator::new());
+    let health_aggregator = Arc::new(crate::health_aggregator::HealthAggregator::new());
+    info!("diagnostic and health aggregators initialised");
+
+    // ── Phase 58-06: Override request channel (DIFF-01) ────────────────────
+    // The HookIpcServer runs on a dedicated std::thread without a tokio runtime.
+    // Override requests need async server submission, so we use a channel to
+    // forward them to a tokio task that handles the async work.
+    let (override_tx, mut override_rx) =
+        tokio::sync::mpsc::channel::<dlp_common::hook_ipc::OverrideRequest>(100);
+    let override_server_client = server_client.clone();
+    let override_handle = tokio::spawn(async move {
+        while let Some(req) = override_rx.recv().await {
+            let request_id = format!("ovr-{}", uuid::Uuid::new_v4());
+            info!(
+                request_id = %request_id,
+                resource_path = %req.resource_path,
+                "Override request received from hook DLL"
+            );
+
+            // Forward to UI via Pipe 1.
+            let ui_msg = crate::ipc::messages::Pipe1AgentMsg::OverrideRequest {
+                request_id: request_id.clone(),
+                reason: format!("Blocked: {}", req.resource_path),
+                classification: "T3".to_string(),
+                resource_path: req.resource_path.clone(),
+            };
+            if let Err(e) = crate::ipc::pipe1::send_to_ui(0, &ui_msg) {
+                warn!(error = %e, "Failed to send OverrideRequest to UI");
+            }
+
+            // Submit to server via async HTTP call.
+            if let Some(ref sc) = override_server_client {
+                let approval_req = dlp_common::approval::ApprovalRequest {
+                    requester_sid: req.requester_sid.clone(),
+                    data_object_id: req.data_object_id.clone(),
+                    allowed_action: req.action.clone(),
+                    destination_scope: req.destination_scope.clone(),
+                    justification: req.justification.clone(),
+                    device_fingerprint: None,
+                };
+                match sc.submit_approval_request(&approval_req).await {
+                    Ok(server_request_id) => {
+                        info!(
+                            request_id = %request_id,
+                            server_request_id = %server_request_id,
+                            "Approval request submitted to server"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            request_id = %request_id,
+                            error = %e,
+                            "Failed to submit approval request to server"
+                        );
+                    }
+                }
+            } else {
+                warn!(
+                    request_id = %request_id,
+                    "No server client available — approval request not submitted"
+                );
+            }
+        }
+    });
+
+    // ── Phase 58: Hook IPC Server (named pipe for hook DLL communication) ──
+    // The server runs on a dedicated std::thread because ConnectNamedPipeW blocks.
+    let hook_ipc_diag = Arc::clone(&diagnostic_aggregator);
+    let hook_ipc_health = Arc::clone(&health_aggregator);
+    let hook_ipc_override_tx = override_tx.clone();
+    let hook_ipc_approval_cache = Arc::clone(&approval_cache);
+    let hook_ipc_handle = std::thread::Builder::new()
+        .name("hook-ipc".into())
+        .spawn(move || {
+            let diag_handler: crate::hook_ipc::DiagnosticsHandler =
+                Arc::new(move |req: dlp_common::hook_ipc::PullDiagnosticsRequest| {
+                    let filter = crate::diagnostic_aggregator::DiagnosticFilter::default();
+                    let (snapshots, _total) = hook_ipc_diag.get_snapshots_paginated(
+                        &filter,
+                        req.max_entries.min(1000),
+                        0,
+                    );
+                    dlp_common::hook_ipc::DiagnosticsResponse { snapshots }
+                });
+            let health_handler: crate::hook_ipc::HealthHandler =
+                Arc::new(move |_req: dlp_common::hook_ipc::PullHealthRequest| {
+                    let snapshot = hook_ipc_health
+                        .get_current_status()
+                        .map(|(_, s)| s)
+                        .unwrap_or_default();
+                    dlp_common::hook_ipc::HealthResponse { snapshot }
+                });
+            let override_handler: crate::hook_ipc::OverrideHandler =
+                Arc::new(move |req: dlp_common::hook_ipc::OverrideRequest| {
+                    if let Err(e) = hook_ipc_override_tx.try_send(req) {
+                        warn!(error = %e, "Override channel full — dropping request");
+                    }
+                });
+            let approval_cache_for_handler = Arc::clone(&hook_ipc_approval_cache);
+            let server = crate::hook_ipc::HookIpcServer::new(
+                crate::hook_ipc::DEFAULT_PIPE_NAME,
+                Arc::new(move |req| {
+                    // Stub handler — full ABAC evaluation wired in Phase 58-05.
+                    // For now, check ApprovalCache for override (DIFF-01).
+                    // SECURITY: Extract user SID from the process token of the
+                    // requesting process. Falls back to SYSTEM SID only on failure.
+                    let caller_sid =
+                        get_process_user_sid(req.pid).unwrap_or_else(|| "S-1-5-18".to_string());
+                    let cache_key = dlp_common::approval::ApprovalCacheKey::new(
+                        &caller_sid,
+                        &req.path,
+                        &req.action,
+                        None,
+                    );
+                    if let Some(eval_resp) = approval_cache_for_handler.check(&cache_key, None) {
+                        info!(path = %req.path, "Approval cache hit — granting override");
+                        return dlp_common::HookResponse {
+                            decision: eval_resp.decision,
+                            reason: eval_resp.reason,
+                            cache_hint: None,
+                            cache_version: 0,
+                            approval_override: Some(true),
+                        };
+                    }
+                    dlp_common::HookResponse {
+                        decision: dlp_common::Decision::ALLOW,
+                        reason: "stub".to_string(),
+                        cache_hint: None,
+                        cache_version: 0,
+                        approval_override: None,
+                    }
+                }),
+            )
+            .with_diagnostics_handler(diag_handler)
+            .with_health_handler(health_handler)
+            .with_override_handler(override_handler);
+            if let Err(e) = server.run() {
+                error!(error = %e, "Hook IPC server exited with error");
+            }
+        })
+        .ok();
+    if hook_ipc_handle.is_some() {
+        info!(
+            "Hook IPC server started on {}",
+            crate::hook_ipc::DEFAULT_PIPE_NAME
+        );
+    }
+
     // ── BitLocker Encryption Verification (Phase 34) ──────────────────────
     let (enc_shutdown_tx, enc_handle) = spawn_encryption_task(audit_ctx.clone(), recheck_interval);
 
@@ -1784,6 +1993,22 @@ async fn run_loop_init(
         correlator_shutdown: correlator_shutdown_tx,
         // Phase 53: Bypass correlator task handle.
         correlator_handle,
+        // Phase 58: Diagnostic snapshot aggregator.
+        diagnostic_aggregator,
+        // Phase 58: Health snapshot aggregator.
+        health_aggregator,
+        // Phase 58: Hook IPC server thread handle.
+        hook_ipc_handle,
+        // Phase 58: Diagnostic push task shutdown signal (reserved for future server push).
+        diagnostic_push_shutdown: None,
+        // Phase 58: Diagnostic push task handle (reserved for future server push).
+        diagnostic_push_handle: None,
+        // Phase 58: Health push task shutdown signal (reserved for future server push).
+        health_push_shutdown: None,
+        // Phase 58: Health push task handle (reserved for future server push).
+        health_push_handle: None,
+        // Phase 58-06: Override request processing task (DIFF-01).
+        override_handle: Some(override_handle),
     }
 }
 
@@ -2820,6 +3045,95 @@ fn get_process_image_path(pid: u32) -> Option<String> {
     Some(String::from_utf16_lossy(&buf[..len.min(buf.len())]))
 }
 
+/// Get the user SID (as a string) for a process by opening its token.
+///
+/// Opens the process with `PROCESS_QUERY_LIMITED_INFORMATION`, opens the
+/// process token with `TOKEN_QUERY`, retrieves the `TokenUser` information,
+/// and converts the SID to a string via `ConvertSidToStringSidW`.
+///
+/// Returns `None` if any step fails (e.g., process exited, access denied).
+#[cfg(windows)]
+fn get_process_user_sid(pid: u32) -> Option<String> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows::Win32::Security::GetTokenInformation;
+    use windows::Win32::Security::TokenUser;
+    use windows::Win32::Security::TOKEN_QUERY;
+    use windows::Win32::System::Threading::{
+        OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // Open the target process.
+    let proc_handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()? };
+
+    // Open the process token.
+    let mut token_handle = windows::Win32::Foundation::HANDLE(std::ptr::null_mut());
+    let open_result = unsafe { OpenProcessToken(proc_handle, TOKEN_QUERY, &mut token_handle) };
+    if open_result.is_err() {
+        unsafe {
+            let _ = CloseHandle(proc_handle);
+        }
+        return None;
+    }
+
+    // Get the required buffer size for TokenUser.
+    let mut needed: u32 = 0;
+    let _ = unsafe { GetTokenInformation(token_handle, TokenUser, None, 0, &mut needed) };
+
+    // Allocate buffer and fetch TokenUser.
+    let mut buf = vec![0u8; needed as usize];
+    let info_result = unsafe {
+        GetTokenInformation(
+            token_handle,
+            TokenUser,
+            Some(buf.as_mut_ptr().cast()),
+            needed,
+            &mut needed,
+        )
+    };
+
+    if info_result.is_err() {
+        unsafe {
+            let _ = CloseHandle(token_handle);
+            let _ = CloseHandle(proc_handle);
+        }
+        return None;
+    }
+
+    // SAFETY: GetTokenInformation succeeded with TokenUser, so the buffer
+    // contains a TOKEN_USER structure whose User.Sid field is valid.
+    let token_user = unsafe { &*(buf.as_ptr() as *const windows::Win32::Security::TOKEN_USER) };
+    let sid = token_user.User.Sid;
+
+    // Convert SID to string.
+    let mut sid_str_ptr = windows::core::PWSTR::null();
+    let convert_result = unsafe { ConvertSidToStringSidW(sid, &mut sid_str_ptr) };
+    if convert_result.is_err() || sid_str_ptr.is_null() {
+        unsafe {
+            let _ = CloseHandle(token_handle);
+            let _ = CloseHandle(proc_handle);
+        }
+        return None;
+    }
+
+    let sid_string = unsafe { sid_str_ptr.to_string().unwrap_or_default() };
+
+    // Cleanup.
+    unsafe {
+        let _ = windows::Win32::Foundation::LocalFree(Some(windows::Win32::Foundation::HLOCAL(
+            sid_str_ptr.as_ptr().cast(),
+        )));
+        let _ = CloseHandle(token_handle);
+        let _ = CloseHandle(proc_handle);
+    }
+
+    if sid_string.is_empty() {
+        None
+    } else {
+        Some(sid_string)
+    }
+}
+
 /// Spawns the config poll task when a server client is available.
 ///
 /// Returns `(shutdown_tx, cmd_tx, poll_handle)` where `poll_handle` is `None` when no
@@ -3314,6 +3628,45 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
         consumer.stop();
     }
     crate::password_stop::debug_log("run_loop: bypass correlator stopped");
+
+    // Phase 58: Stop hook IPC server thread.
+    // The HookIpcServer::run() loop exits when the pipe handle is closed.
+    // We disconnect the pipe by closing the handle from another thread.
+    if let Some(handle) = ctx.hook_ipc_handle {
+        crate::password_stop::debug_log("run_loop: stopping hook IPC server");
+        // Force-close the named pipe to unblock ConnectNamedPipeW.
+        // SAFETY: The pipe name is constant; we open a client handle and close it
+        // to trigger disconnection. This is best-effort — the thread may already
+        // be shutting down.
+        #[cfg(windows)]
+        unsafe {
+            use windows::core::PCWSTR;
+            use windows::Win32::Foundation::CloseHandle;
+            use windows::Win32::Storage::FileSystem::{
+                CreateFileW, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_NONE, OPEN_EXISTING,
+            };
+            let name_wide: Vec<u16> = crate::hook_ipc::DEFAULT_PIPE_NAME
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            if let Ok(client) = CreateFileW(
+                PCWSTR::from_raw(name_wide.as_ptr()),
+                FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
+                FILE_SHARE_NONE,
+                None,
+                OPEN_EXISTING,
+                windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(0),
+                None,
+            ) {
+                if !client.is_invalid() {
+                    let _ = CloseHandle(client);
+                }
+            }
+        }
+        let _ = handle.join();
+        crate::password_stop::debug_log("run_loop: hook IPC server stopped");
+        info!("hook IPC server stopped");
+    }
 
     crate::password_stop::debug_log("run_loop: shutdown complete");
     info!(

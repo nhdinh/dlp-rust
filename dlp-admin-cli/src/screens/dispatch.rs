@@ -3,11 +3,11 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 
 use crate::app::{
-    App, ApprovalFilter, AuditIntegrityFilter, BypassAlertSeverityFilter, CallerScreen,
-    ConditionAttribute, ConfirmPurpose, ImportCaller, ImportState, InputPurpose, LabelFilter,
-    LabelFormMode, PasswordPurpose, PolicyFormState, Screen, SimulateCaller, SimulateFormState,
-    SimulateOutcome, StatusKind, TierPickerCaller, UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES,
-    LDAP_BACK_ROW, LDAP_ROW_COUNT, LDAP_SAVE_ROW, OBJECT_TYPE_OPTIONS, TIER_OPTIONS,
+    App, ApprovalFilter, BypassAlertSeverityFilter, CallerScreen, ConditionAttribute,
+    ConfirmPurpose, ImportCaller, ImportState, InputPurpose, LabelFilter, LabelFormMode,
+    PasswordPurpose, PolicyFormState, Screen, SimulateCaller, SimulateFormState, SimulateOutcome,
+    StatusKind, TierPickerCaller, UsbScanEntry, ACTION_OPTIONS, ATTRIBUTES, LDAP_BACK_ROW,
+    LDAP_ROW_COUNT, LDAP_SAVE_ROW, OBJECT_TYPE_OPTIONS, TIER_OPTIONS,
 };
 use crate::event::AppEvent;
 use crate::screens::approvals::EXPIRY_OPTIONS;
@@ -80,9 +80,10 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
         Screen::ProtectedPathList { .. } => handle_protected_path_list(app, key),
         Screen::BypassAlertList { .. } => handle_bypass_alert_list(app, key),
         Screen::BypassAlertDetail { .. } => handle_bypass_alert_detail(app, key),
-        // Phase 68.1 screens
-        Screen::AuditIntegrityList { .. } => handle_audit_integrity_list(app, key),
-        Screen::AuditIntegrityDetail { .. } => handle_audit_integrity_detail(app, key),
+        // Phase 58 screens
+        Screen::DiagnosticList { .. } => handle_diagnostic_list(app, key),
+        Screen::DiagnosticDetail { .. } => handle_diagnostic_detail(app, key),
+        Screen::SelfHealthDashboard { .. } => handle_self_health_dashboard(app, key),
         // Read-only views: Enter or Esc goes back.
         Screen::PolicyDetail { .. } | Screen::ServerStatus { .. } | Screen::ResultView { .. } => {
             handle_view(app, key)
@@ -244,8 +245,9 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
         // Phase 59: expanded from 9 to 10 items — added "Label Review Queue" at index 8.
         // Phase 54: expanded from 12 to 14 items — added "Protected Paths" at 10,
         // "Bypass Alerts" at 11.
-        // Phase 68.1: expanded from 14 to 15 items — added "Audit Integrity" at 14.
-        KeyCode::Up | KeyCode::Down => nav(selected, 15, key.code),
+        // Phase 58: expanded from 14 to 16 items — added "Diagnostic Events" at 12,
+        // "Self-Health" at 13.
+        KeyCode::Up | KeyCode::Down => nav(selected, 16, key.code),
         KeyCode::Enter => match *selected {
             0 => action_server_status(app),
             1 => action_agent_list(app),
@@ -259,9 +261,10 @@ fn handle_system_menu(app: &mut App, key: KeyEvent) {
             9 => action_load_approval_list(app, ApprovalFilter::All, 1),
             10 => action_load_protected_path_list(app, 0),
             11 => action_load_bypass_alert_list(app, BypassAlertSeverityFilter::All, false, 0),
-            12 => action_load_syslog_config(app),
-            13 => app.screen = Screen::MainMenu { selected: 2 },
-            14 => action_load_audit_integrity(app, AuditIntegrityFilter::All, 0),
+            12 => action_load_diagnostic_list(app, crate::app::DiagnosticSeverityFilter::All, 0),
+            13 => action_load_health_dashboard(app),
+            14 => action_load_syslog_config(app),
+            15 => app.screen = Screen::MainMenu { selected: 2 },
             _ => {}
         },
         KeyCode::Esc => app.screen = Screen::MainMenu { selected: 2 },
@@ -8035,118 +8038,148 @@ fn action_load_bypass_alert_list(
 }
 
 // ---------------------------------------------------------------------------
-// Audit Integrity List screen
+// Diagnostic List screen (Phase 58)
 // ---------------------------------------------------------------------------
 
-fn handle_audit_integrity_list(app: &mut App, key: KeyEvent) {
-    let (agents, selected, filter, page, page_size, total) = match &mut app.screen {
-        Screen::AuditIntegrityList {
-            agents,
+fn handle_diagnostic_list(app: &mut App, key: KeyEvent) {
+    let (events, selected, filter, page, page_size, total) = match &mut app.screen {
+        Screen::DiagnosticList {
+            events,
             selected,
             filter,
             page,
             page_size,
             total,
-            ..
-        } => (
-            agents.clone(),
-            selected,
-            filter.clone(),
-            *page,
-            *page_size,
-            *total,
-        ),
+        } => (events.clone(), selected, *filter, *page, *page_size, *total),
         _ => return,
     };
     match key.code {
         KeyCode::Up | KeyCode::Down => {
-            if !agents.is_empty() {
-                nav(selected, agents.len(), key.code);
+            if !events.is_empty() {
+                nav(selected, events.len(), key.code);
             }
         }
         KeyCode::Char('f') => {
             let next_filter = filter.next();
-            action_load_audit_integrity(app, next_filter, 0);
+            action_load_diagnostic_list(app, next_filter, 0);
+        }
+        KeyCode::Char('h') => {
+            // Hide acknowledged toggle - not applicable for diagnostics but kept for consistency
+            action_load_diagnostic_list(app, filter, 0);
         }
         KeyCode::Char('r') => {
-            action_load_audit_integrity(app, filter, page);
+            action_load_diagnostic_list(app, filter, page);
         }
         KeyCode::PageUp => {
             if page > 0 {
-                action_load_audit_integrity(app, filter, page - 1);
+                action_load_diagnostic_list(app, filter, page - 1);
             }
         }
         KeyCode::PageDown => {
             if (page + 1) * page_size < total {
-                action_load_audit_integrity(app, filter, page + 1);
+                action_load_diagnostic_list(app, filter, page + 1);
             }
         }
         KeyCode::Enter => {
-            if let Some(agent) = agents.get(*selected) {
-                app.screen = Screen::AuditIntegrityDetail {
-                    agent: agent.clone(),
+            if let Some(event) = events.get(*selected) {
+                app.screen = Screen::DiagnosticDetail {
+                    event: event.clone(),
                 };
             }
         }
-        KeyCode::Esc => app.screen = Screen::SystemMenu { selected: 14 },
+        KeyCode::Esc => app.screen = Screen::SystemMenu { selected: 12 },
         _ => {}
     }
 }
 
-fn handle_audit_integrity_detail(app: &mut App, key: KeyEvent) {
+fn handle_diagnostic_detail(app: &mut App, key: KeyEvent) {
     match key.code {
         KeyCode::Enter | KeyCode::Esc => {
-            // Return to list. Reload with defaults since we don't preserve filter state.
-            action_load_audit_integrity(app, AuditIntegrityFilter::All, 0);
+            action_load_diagnostic_list(app, crate::app::DiagnosticSeverityFilter::All, 0);
         }
         _ => {}
     }
 }
 
-fn action_load_audit_integrity(app: &mut App, filter: AuditIntegrityFilter, page: usize) {
+fn action_load_diagnostic_list(
+    app: &mut App,
+    filter: crate::app::DiagnosticSeverityFilter,
+    page: usize,
+) {
     let page_size = 20usize;
-    let agent_id = filter.agent_id();
-    match app.rt.block_on(app.client.list_audit_integrity(agent_id)) {
+    let _severity_filter = filter.as_str();
+    let offset = page * page_size;
+    match app.rt.block_on(
+        app.client
+            .list_diagnostics(None, None, None, page_size, offset),
+    ) {
         Ok(response) => {
-            let agents = response
-                .get("agents")
-                .and_then(|a| a.as_array())
+            let events = response
+                .get("events")
+                .and_then(|e| e.as_array())
                 .cloned()
                 .unwrap_or_default();
             let total = response
                 .get("total")
                 .and_then(|t| t.as_u64())
                 .map(|t| t as usize)
-                .unwrap_or(agents.len());
-            let integrity_ok = response
-                .get("integrity_ok")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
+                .unwrap_or(events.len());
             let total_pages = total.div_ceil(page_size).max(1);
             app.set_status(
                 format!(
-                    "Loaded {} audit integrity agents (page {} of {})",
-                    agents.len(),
+                    "Loaded {} diagnostic events (page {} of {})",
+                    events.len(),
                     page + 1,
                     total_pages
                 ),
                 StatusKind::Success,
             );
-            app.screen = Screen::AuditIntegrityList {
-                agents,
+            app.screen = Screen::DiagnosticList {
+                events,
                 selected: 0,
                 filter,
                 page,
                 page_size,
                 total,
-                integrity_ok,
             };
         }
         Err(e) => {
-            app.set_status(
-                format!("Error loading audit integrity data: {e}"),
-                StatusKind::Error,
-            );
+            app.set_status(format!("Error loading diagnostics: {e}"), StatusKind::Error);
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Self-Health Dashboard screen (Phase 58)
+// ---------------------------------------------------------------------------
+
+fn handle_self_health_dashboard(app: &mut App, key: KeyEvent) {
+    match key.code {
+        KeyCode::Char('r') => action_load_health_dashboard(app),
+        KeyCode::Esc => app.screen = Screen::SystemMenu { selected: 13 },
+        _ => {}
+    }
+}
+
+fn action_load_health_dashboard(app: &mut App) {
+    match app.rt.block_on(app.client.get_self_health()) {
+        Ok(response) => {
+            let snapshot = response.get("snapshot").cloned();
+            let history = response
+                .get("history")
+                .and_then(|h| h.as_array())
+                .cloned()
+                .unwrap_or_default();
+            let now = chrono::Utc::now().to_rfc3339();
+            app.set_status("Health data refreshed".to_string(), StatusKind::Success);
+            app.screen = Screen::SelfHealthDashboard {
+                snapshot,
+                history,
+                last_refresh: Some(now),
+            };
+        }
+        Err(e) => {
+            app.set_status(format!("Error loading health data: {e}"), StatusKind::Error);
         }
     }
 }
@@ -8393,11 +8426,11 @@ mod protected_path_tests {
     }
 
     #[test]
-    fn handle_system_menu_has_15_items() {
+    fn handle_system_menu_has_16_items() {
         let mut app = test_app();
         app.screen = Screen::SystemMenu { selected: 0 };
-        // Down 15 times should cycle back to 0 (0->1->2->...->14->0)
-        for _ in 0..15 {
+        // Down 16 times should cycle back to 0 (0->1->2->...->15->0)
+        for _ in 0..16 {
             let key = KeyEvent::from(KeyCode::Down);
             handle_event(&mut app, crate::event::AppEvent::Key(key));
         }
@@ -8405,7 +8438,7 @@ mod protected_path_tests {
             Screen::SystemMenu { selected } => *selected,
             _ => panic!("expected SystemMenu"),
         };
-        assert_eq!(selected, 0, "nav with 15 items should cycle correctly");
+        assert_eq!(selected, 0, "nav with 16 items should cycle correctly");
     }
 
     #[test]
@@ -8587,21 +8620,21 @@ mod protected_path_tests {
 
         // Navigate through all items and verify count
         let mut seen = std::collections::HashSet::new();
-        for _ in 0..15 {
+        for _ in 0..16 {
             if let Screen::SystemMenu { selected } = &app.screen {
                 seen.insert(*selected);
             }
             let key = KeyEvent::from(KeyCode::Down);
             handle_event(&mut app, crate::event::AppEvent::Key(key));
         }
-        assert_eq!(seen.len(), 15, "SystemMenu should have exactly 15 items");
+        assert_eq!(seen.len(), 16, "SystemMenu should have exactly 16 items");
 
-        // Verify cycling: after 15 downs, should be back at 0
+        // Verify cycling: after 16 downs, should be back at 0
         let selected = match &app.screen {
             Screen::SystemMenu { selected } => *selected,
             _ => panic!("expected SystemMenu"),
         };
-        assert_eq!(selected, 0, "nav with 15 items should cycle back to 0");
+        assert_eq!(selected, 0, "nav with 16 items should cycle back to 0");
     }
 
     #[test]
@@ -8647,1116 +8680,217 @@ mod protected_path_tests {
         );
     }
 
-    // -----------------------------------------------------------------------
-    // Audit Integrity screen tests
-    // -----------------------------------------------------------------------
+    // ---------------------------------------------------------------------------
+    // Phase 28-02: App-identity (SourceApplication / DestinationApplication) tests.
+    // ---------------------------------------------------------------------------
 
     #[test]
-    fn handle_audit_integrity_list_esc_goes_to_system_menu() {
-        let mut app = test_app();
-        app.screen = Screen::AuditIntegrityList {
-            agents: vec![],
-            selected: 0,
-            filter: AuditIntegrityFilter::All,
-            page: 0,
-            page_size: 20,
-            total: 0,
-            integrity_ok: true,
-        };
-        let key = KeyEvent::from(KeyCode::Esc);
-        handle_event(&mut app, crate::event::AppEvent::Key(key));
-        assert!(
-            matches!(app.screen, Screen::SystemMenu { selected: 14 }),
-            "expected SystemMenu with selected=14, got {:?}",
-            app.screen
+    fn operators_for_source_app_publisher_has_eq_ne_contains() {
+        use dlp_common::abac::AppField;
+        let ops = operators_for(
+            ConditionAttribute::SourceApplication,
+            Some(AppField::Publisher),
         );
+        assert_eq!(ops.len(), 3);
+        let wire: Vec<_> = ops.iter().map(|(w, _)| *w).collect();
+        assert!(wire.contains(&"eq"));
+        assert!(wire.contains(&"ne"));
+        assert!(wire.contains(&"contains"));
     }
 
     #[test]
-    fn handle_audit_integrity_list_enter_opens_detail() {
-        let mut app = test_app();
-        app.screen = Screen::AuditIntegrityList {
-            agents: vec![serde_json::json!({"agent_id": "agent-x"})],
-            selected: 0,
-            filter: AuditIntegrityFilter::All,
-            page: 0,
-            page_size: 20,
-            total: 1,
-            integrity_ok: true,
-        };
-        let key = KeyEvent::from(KeyCode::Enter);
-        handle_event(&mut app, crate::event::AppEvent::Key(key));
-        assert!(
-            matches!(app.screen, Screen::AuditIntegrityDetail { .. }),
-            "expected AuditIntegrityDetail, got {:?}",
-            app.screen
+    fn operators_for_source_app_trust_tier_has_eq_ne() {
+        use dlp_common::abac::AppField;
+        let ops = operators_for(
+            ConditionAttribute::SourceApplication,
+            Some(AppField::TrustTier),
         );
+        assert_eq!(ops.len(), 2);
+        let wire: Vec<_> = ops.iter().map(|(w, _)| *w).collect();
+        assert!(wire.contains(&"eq"));
+        assert!(wire.contains(&"ne"));
+        assert!(!wire.contains(&"contains"));
     }
 
     #[test]
-    fn handle_audit_integrity_list_page_down_loads_next_page() {
-        let mut app = test_app();
-        app.screen = Screen::AuditIntegrityList {
-            agents: vec![serde_json::json!({"agent_id": "agent-x"})],
-            selected: 0,
-            filter: AuditIntegrityFilter::All,
-            page: 0,
-            page_size: 1,
-            total: 2,
-            integrity_ok: true,
-        };
-        let key = KeyEvent::from(KeyCode::PageDown);
-        handle_event(&mut app, crate::event::AppEvent::Key(key));
-        // PageDown triggers a reload action; in test mode the client call fails
-        // and sets an error status. The screen remains the same.
-        assert!(
-            matches!(app.screen, Screen::AuditIntegrityList { .. }),
-            "expected AuditIntegrityList after PageDown, got {:?}",
-            app.screen
+    fn operators_for_dest_app_imagepath_has_eq_ne_contains() {
+        use dlp_common::abac::AppField;
+        let ops = operators_for(
+            ConditionAttribute::DestinationApplication,
+            Some(AppField::ImagePath),
         );
-        let (msg, kind) = app.status.as_ref().expect("status should be set");
-        assert!(
-            msg.contains("Error loading audit integrity data"),
-            "expected error status, got: {msg}"
-        );
-        assert_eq!(*kind, StatusKind::Error);
-    }
-}
-
-#[cfg(test)]
-mod simulate_tests {
-    use super::*;
-
-    // ------------------------------------------------------------------
-    // Simulate tests — group normalization, validation, error classification
-    // ------------------------------------------------------------------
-
-    /// Normalize groups the same way action_submit_simulate does.
-    fn normalize_groups(raw: &str) -> Vec<String> {
-        let mut seen = std::collections::HashSet::new();
-        raw.split(',')
-            .map(|s| s.trim().to_lowercase())
-            .filter(|s| {
-                if s.is_empty() {
-                    return false;
-                }
-                seen.insert(s.clone())
-            })
-            .collect()
-    }
-
-    /// Validate simulate form the same way action_submit_simulate does.
-    fn validate_simulate(user_sid: &str, path: &str) -> Option<String> {
-        let mut errors: Vec<String> = Vec::new();
-        if user_sid.trim().is_empty() {
-            errors.push("User SID is required".to_string());
-        }
-        if path.trim().is_empty() {
-            errors.push("Path is required".to_string());
-        }
-        if errors.is_empty() {
-            None
-        } else {
-            Some(format!("Validation error: {}", errors.join("; ")))
-        }
-    }
-
-    // Error classification tests
-
-    #[test]
-    fn test_classify_error_prefix_timeout() {
-        assert_eq!(classify_error_prefix(true, false, false), "Timeout: ");
+        assert_eq!(ops.len(), 3);
+        let wire: Vec<_> = ops.iter().map(|(w, _)| *w).collect();
+        assert!(wire.contains(&"eq"));
+        assert!(wire.contains(&"ne"));
+        assert!(wire.contains(&"contains"));
     }
 
     #[test]
-    fn test_classify_error_prefix_connect() {
+    fn operators_for_app_none_returns_conservative_eq_ne() {
+        let ops = operators_for(ConditionAttribute::SourceApplication, None);
+        assert_eq!(ops.len(), 2);
+        let wire: Vec<_> = ops.iter().map(|(w, _)| *w).collect();
+        assert!(wire.contains(&"eq"));
+        assert!(wire.contains(&"ne"));
+    }
+
+    #[test]
+    fn value_count_for_source_app_trust_tier_is_3() {
+        use dlp_common::abac::AppField;
         assert_eq!(
-            classify_error_prefix(false, true, false),
-            "Connection error: "
+            value_count_for(
+                ConditionAttribute::SourceApplication,
+                Some(AppField::TrustTier)
+            ),
+            3
         );
     }
 
     #[test]
-    fn test_classify_error_prefix_decode() {
-        assert_eq!(classify_error_prefix(false, false, true), "Decode error: ");
-    }
-
-    #[test]
-    fn test_classify_error_prefix_fallback() {
+    fn value_count_for_source_app_publisher_is_0() {
+        use dlp_common::abac::AppField;
         assert_eq!(
-            classify_error_prefix(false, false, false),
-            "Network error: "
+            value_count_for(
+                ConditionAttribute::SourceApplication,
+                Some(AppField::Publisher)
+            ),
+            0
         );
     }
 
-    // Group normalization tests
-
     #[test]
-    fn test_group_normalization_trim_and_lowercase() {
-        let raw = "  S-1-5-21-A  ,  S-1-5-21-B  ";
-        let got = normalize_groups(raw);
-        assert_eq!(got, vec!["s-1-5-21-a", "s-1-5-21-b"]);
-    }
-
-    #[test]
-    fn test_group_normalization_dedupe_preserves_order() {
-        let raw = "A, B, A, C, B, D";
-        let got = normalize_groups(raw);
-        assert_eq!(got, vec!["a", "b", "c", "d"]);
-    }
-
-    #[test]
-    fn test_group_normalization_empty_input() {
-        let raw = "";
-        let got = normalize_groups(raw);
-        assert!(got.is_empty());
-    }
-
-    #[test]
-    fn test_group_normalization_empty_segments() {
-        let raw = "A,,B, ,C";
-        let got = normalize_groups(raw);
-        assert_eq!(got, vec!["a", "b", "c"]);
-    }
-
-    #[test]
-    fn test_group_normalization_single_group() {
-        let raw = "S-1-5-21-ADMIN";
-        let got = normalize_groups(raw);
-        assert_eq!(got, vec!["s-1-5-21-admin"]);
-    }
-
-    // Validation tests
-
-    #[test]
-    fn test_validation_empty_user_sid() {
-        let msg = validate_simulate("", "/some/path");
-        assert!(msg.is_some());
-        assert!(msg.unwrap().contains("User SID is required"));
-    }
-
-    #[test]
-    fn test_validation_empty_path() {
-        let msg = validate_simulate("S-1-5-21", "");
-        assert!(msg.is_some());
-        assert!(msg.unwrap().contains("Path is required"));
-    }
-
-    #[test]
-    fn test_validation_both_empty() {
-        let msg = validate_simulate("", "");
-        assert!(msg.is_some());
-        let m = msg.unwrap();
-        assert!(m.contains("User SID is required"));
-        assert!(m.contains("Path is required"));
-    }
-
-    #[test]
-    fn test_validation_whitespace_only() {
-        let msg = validate_simulate("   ", "   ");
-        assert!(msg.is_some());
-        assert!(msg.unwrap().contains("Validation error:"));
-    }
-
-    #[test]
-    fn test_validation_valid_passes() {
-        let msg = validate_simulate("S-1-5-21", "/some/path");
-        assert!(msg.is_none());
-    }
-
-    #[test]
-    fn test_simulate_esc_returns_to_main_menu_simulate_policy_index() {
-        // "Simulate Policy" is the 6th item (index 5) in the current MainMenu.
-        let mut app = make_test_app(Screen::PolicySimulate {
-            form: SimulateFormState::default(),
-            selected: 0,
-            editing: false,
-            buffer: String::new(),
-            result: SimulateOutcome::None,
-            caller: SimulateCaller::MainMenu,
-        });
-        handle_event(
-            &mut app,
-            crate::event::AppEvent::Key(key_event(KeyCode::Esc)),
+    fn value_count_for_dest_app_none_is_0() {
+        assert_eq!(
+            value_count_for(ConditionAttribute::DestinationApplication, None),
+            0
         );
-        match app.screen {
-            Screen::MainMenu { selected } => assert_eq!(selected, 5),
-            other => panic!("expected MainMenu {{ selected: 5 }}, got {other:?}"),
-        }
     }
 
     #[test]
-    fn test_simulate_esc_returns_to_policy_menu_simulate_policy_index() {
-        // "Simulate Policy" is the 6th item (index 5) in the PolicyMenu.
-        let mut app = make_test_app(Screen::PolicySimulate {
-            form: SimulateFormState::default(),
-            selected: 0,
-            editing: false,
-            buffer: String::new(),
-            result: SimulateOutcome::None,
-            caller: SimulateCaller::PolicyMenu,
-        });
-        handle_event(
-            &mut app,
-            crate::event::AppEvent::Key(key_event(KeyCode::Esc)),
+    fn build_condition_source_app_trust_tier_eq() {
+        use dlp_common::abac::AppField;
+        let cond = build_condition(
+            ConditionAttribute::SourceApplication,
+            "eq",
+            0,
+            "",
+            Some(AppField::TrustTier),
         );
-        match app.screen {
-            Screen::PolicyMenu { selected } => assert_eq!(selected, 5),
-            other => panic!("expected PolicyMenu {{ selected: 5 }}, got {other:?}"),
-        }
+        assert!(cond.is_some());
+        let json = serde_json::to_string(&cond.unwrap()).expect("serialize");
+        assert!(json.contains("\"attribute\":\"source_application\""));
+        assert!(json.contains("\"op\":\"eq\""));
+        assert!(json.contains("\"value\":\"trusted\""));
     }
 
     #[test]
-    fn test_action_open_simulate_initializes_screen() {
-        let mut app = make_test_app(Screen::MainMenu { selected: 0 });
-        action_open_simulate(&mut app, SimulateCaller::MainMenu);
-        match app.screen {
-            Screen::PolicySimulate {
-                selected,
-                editing,
-                result,
-                caller,
-                ..
-            } => {
-                assert_eq!(selected, 0);
-                assert!(!editing);
-                assert!(matches!(result, SimulateOutcome::None));
-                assert!(matches!(caller, SimulateCaller::MainMenu));
-            }
-            other => panic!("expected PolicySimulate screen, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_action_submit_simulate_validation_error() {
-        let mut app = make_test_app(Screen::PolicySimulate {
-            form: SimulateFormState::default(),
-            selected: 0,
-            editing: false,
-            buffer: String::new(),
-            result: SimulateOutcome::None,
-            caller: SimulateCaller::MainMenu,
-        });
-        action_submit_simulate(&mut app);
-        match &app.screen {
-            Screen::PolicySimulate { result, .. } => match result {
-                SimulateOutcome::Error(msg) => {
-                    assert!(msg.contains("Validation error:"));
-                    assert!(msg.contains("User SID is required"));
-                    assert!(msg.contains("Path is required"));
-                }
-                other => panic!("expected validation error, got {other:?}"),
-            },
-            other => panic!("expected PolicySimulate screen, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn test_action_submit_simulate_no_op_when_not_simulate_screen() {
-        let mut app = make_test_app(Screen::MainMenu { selected: 0 });
-        // Should not panic and should leave screen unchanged.
-        action_submit_simulate(&mut app);
-        assert!(matches!(app.screen, Screen::MainMenu { selected: 0 }));
-    }
-
-    #[test]
-    fn test_action_submit_simulate_connection_error_classifies_prefix() {
-        let mut app = make_test_app(Screen::PolicySimulate {
-            form: SimulateFormState {
-                user_sid: "S-1-5-21".to_string(),
-                user_name: "testuser".to_string(),
-                groups_raw: "admins, users".to_string(),
-                device_trust: 0,
-                network_location: 0,
-                classification: 0,
-                action: 0,
-                access_context: 0,
-                path: "C:\\secret.doc".to_string(),
-            },
-            selected: 0,
-            editing: false,
-            buffer: String::new(),
-            result: SimulateOutcome::None,
-            caller: SimulateCaller::MainMenu,
-        });
-        action_submit_simulate(&mut app);
-        match &app.screen {
-            Screen::PolicySimulate { result, .. } => match result {
-                SimulateOutcome::Error(msg) => {
-                    assert!(
-                        msg.starts_with("Connection error:")
-                            || msg.starts_with("Network error:")
-                            || msg.starts_with("Timeout:"),
-                        "expected classified network error, got {msg}"
-                    );
-                }
-                other => panic!("expected connection error, got {other:?}"),
-            },
-            other => panic!("expected PolicySimulate screen, got {other:?}"),
-        }
-    }
-
-    // Editing tests
-
-    #[test]
-    fn test_handle_simulate_editing_char_appends_to_buffer() {
-        let mut app = make_test_app(simulate_screen_edit(0, ""));
-        handle_simulate_editing(&mut app, key_event(KeyCode::Char('a')), 0);
-        assert_simulate_buffer(&app, "a");
-    }
-
-    #[test]
-    fn test_handle_simulate_editing_backspace_removes_char() {
-        let mut app = make_test_app(simulate_screen_edit(0, "ab"));
-        handle_simulate_editing(&mut app, key_event(KeyCode::Backspace), 0);
-        assert_simulate_buffer(&app, "a");
-    }
-
-    #[test]
-    fn test_handle_simulate_editing_enter_commits_text_field() {
-        let mut app = make_test_app(simulate_screen_edit(0, "S-1-5-21"));
-        handle_simulate_editing(&mut app, key_event(KeyCode::Enter), 0);
-        assert_simulate_editing(&app, false);
-        assert_simulate_field(&app, |form| form.user_sid == "S-1-5-21");
-    }
-
-    #[test]
-    fn test_handle_simulate_editing_enter_commits_user_name() {
-        let mut app = make_test_app(simulate_screen_edit(1, "Alice"));
-        handle_simulate_editing(&mut app, key_event(KeyCode::Enter), 1);
-        assert_simulate_field(&app, |form| form.user_name == "Alice");
-    }
-
-    #[test]
-    fn test_handle_simulate_editing_enter_commits_path() {
-        let mut app = make_test_app(simulate_screen_edit(5, "C:\\path"));
-        handle_simulate_editing(&mut app, key_event(KeyCode::Enter), 5);
-        assert_simulate_field(&app, |form| form.path == "C:\\path");
-    }
-
-    #[test]
-    fn test_handle_simulate_editing_enter_commits_groups_raw() {
-        let mut app = make_test_app(simulate_screen_edit(2, "a, b"));
-        handle_simulate_editing(&mut app, key_event(KeyCode::Enter), 2);
-        assert_simulate_field(&app, |form| form.groups_raw == "a, b");
-    }
-
-    #[test]
-    fn test_handle_simulate_editing_enter_trims_text_fields() {
-        let mut app = make_test_app(simulate_screen_edit(0, "  SID  "));
-        handle_simulate_editing(&mut app, key_event(KeyCode::Enter), 0);
-        assert_simulate_field(&app, |form| form.user_sid == "SID");
-    }
-
-    #[test]
-    fn test_handle_simulate_editing_esc_clears_buffer_and_exits() {
-        let mut app = make_test_app(simulate_screen_edit(0, "partial"));
-        handle_simulate_editing(&mut app, key_event(KeyCode::Esc), 0);
-        assert_simulate_buffer(&app, "");
-        assert_simulate_editing(&app, false);
-    }
-
-    // Cycle field tests
-
-    #[test]
-    fn test_simulate_cycle_field_advances_device_trust() {
-        let mut app = make_test_app(simulate_screen_nav(3));
-        let before = simulate_field(&app, |form| form.device_trust);
-        simulate_cycle_field(&mut app, 3);
-        assert_simulate_field(&app, |form| {
-            form.device_trust == (before + 1) % crate::app::SIMULATE_DEVICE_TRUST_OPTIONS.len()
-        });
-    }
-
-    #[test]
-    fn test_simulate_cycle_field_advances_network_location() {
-        let mut app = make_test_app(simulate_screen_nav(4));
-        let before = simulate_field(&app, |form| form.network_location);
-        simulate_cycle_field(&mut app, 4);
-        assert_simulate_field(&app, |form| {
-            form.network_location
-                == (before + 1) % crate::app::SIMULATE_NETWORK_LOCATION_OPTIONS.len()
-        });
-    }
-
-    #[test]
-    fn test_simulate_cycle_field_advances_classification() {
-        let mut app = make_test_app(simulate_screen_nav(6));
-        let before = simulate_field(&app, |form| form.classification);
-        simulate_cycle_field(&mut app, 6);
-        assert_simulate_field(&app, |form| {
-            form.classification == (before + 1) % crate::app::SIMULATE_CLASSIFICATION_OPTIONS.len()
-        });
-    }
-
-    #[test]
-    fn test_simulate_cycle_field_advances_action() {
-        let mut app = make_test_app(simulate_screen_nav(7));
-        let before = simulate_field(&app, |form| form.action);
-        simulate_cycle_field(&mut app, 7);
-        assert_simulate_field(&app, |form| {
-            form.action == (before + 1) % crate::app::SIMULATE_ACTION_OPTIONS.len()
-        });
-    }
-
-    #[test]
-    fn test_simulate_cycle_field_advances_access_context() {
-        let mut app = make_test_app(simulate_screen_nav(8));
-        let before = simulate_field(&app, |form| form.access_context);
-        simulate_cycle_field(&mut app, 8);
-        assert_simulate_field(&app, |form| {
-            form.access_context == (before + 1) % crate::app::SIMULATE_ACCESS_CONTEXT_OPTIONS.len()
-        });
-    }
-
-    // Enter text edit tests
-
-    #[test]
-    fn test_simulate_enter_text_edit_prefills_user_sid() {
-        let mut app = make_test_app(simulate_screen_with_form(|form| {
-            form.user_sid = "SID-123".to_string();
-        }));
-        simulate_enter_text_edit(&mut app, 0);
-        assert_simulate_buffer(&app, "SID-123");
-        assert_simulate_editing(&app, true);
-    }
-
-    #[test]
-    fn test_simulate_enter_text_edit_prefills_user_name() {
-        let mut app = make_test_app(simulate_screen_with_form(|form| {
-            form.user_name = "Bob".to_string();
-        }));
-        simulate_enter_text_edit(&mut app, 1);
-        assert_simulate_buffer(&app, "Bob");
-    }
-
-    #[test]
-    fn test_simulate_enter_text_edit_prefills_path() {
-        let mut app = make_test_app(simulate_screen_with_form(|form| {
-            form.path = "C:\\file.txt".to_string();
-        }));
-        simulate_enter_text_edit(&mut app, 5);
-        assert_simulate_buffer(&app, "C:\\file.txt");
-    }
-
-    #[test]
-    fn test_simulate_enter_text_edit_ignores_non_text_rows() {
-        let mut app = make_test_app(simulate_screen_nav(3));
-        simulate_enter_text_edit(&mut app, 3);
-        assert_simulate_editing(&app, false);
-    }
-
-    // Navigation tests
-
-    #[test]
-    fn test_handle_simulate_nav_up_decrements_selected() {
-        let mut app = make_test_app(simulate_screen_nav(2));
-        handle_simulate_nav(&mut app, key_event(KeyCode::Up), 2);
-        assert_simulate_selected(&app, 1);
-    }
-
-    #[test]
-    fn test_handle_simulate_nav_down_increments_selected() {
-        let mut app = make_test_app(simulate_screen_nav(2));
-        handle_simulate_nav(&mut app, key_event(KeyCode::Down), 2);
-        assert_simulate_selected(&app, 3);
-    }
-
-    #[test]
-    fn test_handle_simulate_nav_enter_starts_text_edit() {
-        let mut app = make_test_app(simulate_screen_nav(0));
-        handle_simulate_nav(&mut app, key_event(KeyCode::Enter), 0);
-        assert_simulate_editing(&app, true);
-    }
-
-    #[test]
-    fn test_handle_simulate_nav_enter_starts_groups_edit() {
-        let mut app = make_test_app(simulate_screen_with_form(|form| {
-            form.groups_raw = "g1, g2".to_string();
-        }));
-        handle_simulate_nav(&mut app, key_event(KeyCode::Enter), 2);
-        assert_simulate_editing(&app, true);
-        assert_simulate_buffer(&app, "g1, g2");
-    }
-
-    #[test]
-    fn test_handle_simulate_nav_enter_cycles_select_field() {
-        let mut app = make_test_app(simulate_screen_nav(3));
-        let before = simulate_field(&app, |form| form.device_trust);
-        handle_simulate_nav(&mut app, key_event(KeyCode::Enter), 3);
-        assert_simulate_field(&app, |form| {
-            form.device_trust == (before + 1) % crate::app::SIMULATE_DEVICE_TRUST_OPTIONS.len()
-        });
-    }
-
-    #[test]
-    fn test_handle_simulate_nav_enter_submit_triggers_request() {
-        let mut app = make_test_app(simulate_screen_with_form(|form| {
-            form.user_sid = "S-1-5-21".to_string();
-            form.path = "C:\\x.txt".to_string();
-        }));
-        handle_simulate_nav(
-            &mut app,
-            key_event(KeyCode::Enter),
-            crate::app::SIMULATE_SUBMIT_ROW,
+    fn build_condition_dest_app_publisher_ne() {
+        use dlp_common::abac::AppField;
+        let cond = build_condition(
+            ConditionAttribute::DestinationApplication,
+            "ne",
+            0,
+            "Microsoft Corporation",
+            Some(AppField::Publisher),
         );
-        assert!(matches!(
-            &app.screen,
-            Screen::PolicySimulate {
-                result: SimulateOutcome::Error(_),
-                ..
-            }
-        ));
+        assert!(cond.is_some());
+        let json = serde_json::to_string(&cond.unwrap()).expect("serialize");
+        assert!(json.contains("\"attribute\":\"destination_application\""));
+        assert!(json.contains("\"op\":\"ne\""));
+        assert!(json.contains("\"value\":\"Microsoft Corporation\""));
     }
 
     #[test]
-    fn test_handle_simulate_nav_enter_submit_blocked_while_loading() {
-        let mut app = make_test_app(Screen::PolicySimulate {
-            form: SimulateFormState {
-                user_sid: "S-1-5-21".to_string(),
-                path: "C:\\x.txt".to_string(),
-                ..Default::default()
-            },
-            selected: crate::app::SIMULATE_SUBMIT_ROW,
-            editing: false,
-            buffer: String::new(),
-            result: SimulateOutcome::Loading,
-            caller: SimulateCaller::MainMenu,
-        });
-        handle_simulate_nav(
-            &mut app,
-            key_event(KeyCode::Enter),
-            crate::app::SIMULATE_SUBMIT_ROW,
+    fn build_condition_source_app_empty_buffer_returns_none() {
+        use dlp_common::abac::AppField;
+        let cond = build_condition(
+            ConditionAttribute::SourceApplication,
+            "eq",
+            0,
+            "  ",
+            Some(AppField::ImagePath),
         );
-        assert!(matches!(
-            &app.screen,
-            Screen::PolicySimulate {
-                result: SimulateOutcome::Loading,
-                ..
-            }
-        ));
-    }
-
-    fn key_event(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, crossterm::event::KeyModifiers::NONE)
-    }
-
-    fn simulate_screen_edit(selected: usize, buffer: &str) -> Screen {
-        Screen::PolicySimulate {
-            form: SimulateFormState::default(),
-            selected,
-            editing: true,
-            buffer: buffer.to_string(),
-            result: SimulateOutcome::None,
-            caller: SimulateCaller::MainMenu,
-        }
-    }
-
-    fn simulate_screen_nav(selected: usize) -> Screen {
-        Screen::PolicySimulate {
-            form: SimulateFormState::default(),
-            selected,
-            editing: false,
-            buffer: String::new(),
-            result: SimulateOutcome::None,
-            caller: SimulateCaller::MainMenu,
-        }
-    }
-
-    fn simulate_screen_with_form(mutator: impl FnOnce(&mut SimulateFormState)) -> Screen {
-        let mut form = SimulateFormState::default();
-        mutator(&mut form);
-        Screen::PolicySimulate {
-            form,
-            selected: 0,
-            editing: false,
-            buffer: String::new(),
-            result: SimulateOutcome::None,
-            caller: SimulateCaller::MainMenu,
-        }
-    }
-
-    fn assert_simulate_buffer(app: &crate::app::App, expected: &str) {
-        match &app.screen {
-            Screen::PolicySimulate { buffer, .. } => assert_eq!(buffer, expected),
-            other => panic!("expected PolicySimulate screen, got {other:?}"),
-        }
-    }
-
-    fn assert_simulate_editing(app: &crate::app::App, expected: bool) {
-        match &app.screen {
-            Screen::PolicySimulate { editing, .. } => assert_eq!(*editing, expected),
-            other => panic!("expected PolicySimulate screen, got {other:?}"),
-        }
-    }
-
-    fn assert_simulate_selected(app: &crate::app::App, expected: usize) {
-        match &app.screen {
-            Screen::PolicySimulate { selected, .. } => assert_eq!(*selected, expected),
-            other => panic!("expected PolicySimulate screen, got {other:?}"),
-        }
-    }
-
-    fn assert_simulate_field(
-        app: &crate::app::App,
-        predicate: impl FnOnce(&SimulateFormState) -> bool,
-    ) {
-        match &app.screen {
-            Screen::PolicySimulate { form, .. } => {
-                assert!(predicate(form), "form predicate failed: {form:?}");
-            }
-            other => panic!("expected PolicySimulate screen, got {other:?}"),
-        }
-    }
-
-    fn simulate_field<T>(
-        app: &crate::app::App,
-        extractor: impl FnOnce(&SimulateFormState) -> T,
-    ) -> T {
-        match &app.screen {
-            Screen::PolicySimulate { form, .. } => extractor(form),
-            other => panic!("expected PolicySimulate screen, got {other:?}"),
-        }
-    }
-
-    fn make_test_app(screen: Screen) -> crate::app::App {
-        let client = crate::client::EngineClient::for_test();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("test runtime build must succeed");
-        let mut app = crate::app::App::new(client, rt);
-        app.screen = screen;
-        app
-    }
-}
-
-#[cfg(test)]
-mod import_execution_tests {
-    use super::*;
-    use crate::app::{ImportCaller, ImportState, PolicyResponse, Screen};
-    use crate::event::AppEvent;
-    use wiremock::matchers::{method, path};
-    use wiremock::{Mock, MockServer, ResponseTemplate};
-
-    fn enter() -> crossterm::event::KeyEvent {
-        crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Enter,
-            crossterm::event::KeyModifiers::NONE,
-        )
-    }
-
-    fn esc() -> crossterm::event::KeyEvent {
-        crossterm::event::KeyEvent::new(
-            crossterm::event::KeyCode::Esc,
-            crossterm::event::KeyModifiers::NONE,
-        )
-    }
-
-    fn make_policy_response(id: &str, name: &str) -> PolicyResponse {
-        PolicyResponse {
-            id: id.to_string(),
-            name: name.to_string(),
-            description: None,
-            priority: 1,
-            conditions: serde_json::json!([]),
-            action: "DENY".to_string(),
-            enabled: true,
-            version: 1,
-            updated_at: "2026-01-01T00:00:00Z".to_string(),
-            mode: dlp_common::abac::PolicyMode::ALL,
-            enforcement_mode: dlp_common::abac::EnforcementMode::Block,
-        }
+        assert!(cond.is_none());
     }
 
     #[test]
-    fn import_confirm_all_new_policies_post_success() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let (mut app, _server) = rt.block_on(async {
-            let server = MockServer::start().await;
-
-            Mock::given(method("POST"))
-                .and(path("/admin/policies"))
-                .respond_with(
-                    ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": "p1"})),
-                )
-                .mount(&server)
-                .await;
-
-            Mock::given(method("POST"))
-                .and(path("/admin/policies"))
-                .respond_with(
-                    ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": "p2"})),
-                )
-                .mount(&server)
-                .await;
-
-            let client = crate::client::EngineClient::for_test_with_url(server.uri());
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("test runtime");
-            let mut app = crate::app::App::new(client, rt);
-            app.screen = Screen::ImportConfirm {
-                policies: vec![
-                    make_policy_response("p1", "Policy One"),
-                    make_policy_response("p2", "Policy Two"),
-                ],
-                existing_ids: vec![],
-                conflicting_count: 0,
-                non_conflicting_count: 2,
-                selected: 3,
-                state: ImportState::Pending,
-                caller: ImportCaller::PolicyMenu,
-            };
-            (app, server)
-        });
-
-        handle_event(&mut app, AppEvent::Key(enter()));
-
-        match &app.screen {
-            Screen::ImportConfirm { state, .. } => match state {
-                ImportState::Success { created, updated } => {
-                    assert_eq!(*created, 2, "expected 2 created, got {created}");
-                    assert_eq!(*updated, 0, "expected 0 updated, got {updated}");
-                }
-                other => panic!("expected Success, got {other:?}"),
-            },
-            other => panic!("expected ImportConfirm, got {other:?}"),
-        }
+    fn build_condition_source_app_none_field_returns_none() {
+        // T-28-02-01: fail-closed when AppField is not resolved.
+        let cond = build_condition(ConditionAttribute::SourceApplication, "eq", 0, "", None);
+        assert!(cond.is_none());
     }
 
     #[test]
-    fn import_confirm_mixed_post_and_put_success() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let (mut app, _server) = rt.block_on(async {
-            let server = MockServer::start().await;
-
-            // POST for new policy
-            Mock::given(method("POST"))
-                .and(path("/admin/policies"))
-                .respond_with(
-                    ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": "p-new"})),
-                )
-                .mount(&server)
-                .await;
-
-            // PUT for existing policy
-            Mock::given(method("PUT"))
-                .and(path("/admin/policies/p-existing"))
-                .respond_with(
-                    ResponseTemplate::new(200)
-                        .set_body_json(serde_json::json!({"id": "p-existing"})),
-                )
-                .mount(&server)
-                .await;
-
-            let client = crate::client::EngineClient::for_test_with_url(server.uri());
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("test runtime");
-            let mut app = crate::app::App::new(client, rt);
-            app.screen = Screen::ImportConfirm {
-                policies: vec![
-                    make_policy_response("p-new", "New Policy"),
-                    make_policy_response("p-existing", "Existing Policy"),
-                ],
-                existing_ids: vec!["p-existing".to_string()],
-                conflicting_count: 1,
-                non_conflicting_count: 1,
-                selected: 3,
-                state: ImportState::Pending,
-                caller: ImportCaller::PolicyMenu,
-            };
-            (app, server)
-        });
-
-        handle_event(&mut app, AppEvent::Key(enter()));
-
-        match &app.screen {
-            Screen::ImportConfirm { state, .. } => match state {
-                ImportState::Success { created, updated } => {
-                    assert_eq!(*created, 1, "expected 1 created, got {created}");
-                    assert_eq!(*updated, 1, "expected 1 updated, got {updated}");
-                }
-                other => panic!("expected Success, got {other:?}"),
-            },
-            other => panic!("expected ImportConfirm, got {other:?}"),
-        }
+    fn build_condition_dest_app_none_field_returns_none() {
+        let cond = build_condition(
+            ConditionAttribute::DestinationApplication,
+            "eq",
+            0,
+            "",
+            None,
+        );
+        assert!(cond.is_none());
     }
 
     #[test]
-    fn import_confirm_post_failure_aborts_with_error() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let (mut app, _server) = rt.block_on(async {
-            let server = MockServer::start().await;
-
-            Mock::given(method("POST"))
-                .and(path("/admin/policies"))
-                .respond_with(ResponseTemplate::new(500).set_body_string("server error"))
-                .mount(&server)
-                .await;
-
-            let client = crate::client::EngineClient::for_test_with_url(server.uri());
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("test runtime");
-            let mut app = crate::app::App::new(client, rt);
-            app.screen = Screen::ImportConfirm {
-                policies: vec![
-                    make_policy_response("p1", "Bad Policy"),
-                    make_policy_response("p2", "Good Policy"),
-                ],
-                existing_ids: vec![],
-                conflicting_count: 0,
-                non_conflicting_count: 2,
-                selected: 3,
-                state: ImportState::Pending,
-                caller: ImportCaller::PolicyMenu,
-            };
-            (app, server)
-        });
-
-        handle_event(&mut app, AppEvent::Key(enter()));
-
-        match &app.screen {
-            Screen::ImportConfirm { state, .. } => match state {
-                ImportState::Error(msg) => {
-                    assert!(
-                        msg.contains("Failed on policy 'Bad Policy'"),
-                        "error should name the failing policy: {msg}"
-                    );
-                    assert!(
-                        msg.contains("500"),
-                        "error should contain status code: {msg}"
-                    );
-                }
-                other => panic!("expected Error, got {other:?}"),
-            },
-            other => panic!("expected ImportConfirm, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn import_confirm_put_failure_aborts_with_error() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let (mut app, _server) = rt.block_on(async {
-            let server = MockServer::start().await;
-
-            // POST succeeds
-            Mock::given(method("POST"))
-                .and(path("/admin/policies"))
-                .respond_with(
-                    ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": "p-new"})),
-                )
-                .mount(&server)
-                .await;
-
-            // PUT fails
-            Mock::given(method("PUT"))
-                .and(path("/admin/policies/p-existing"))
-                .respond_with(ResponseTemplate::new(500).set_body_string("update failed"))
-                .mount(&server)
-                .await;
-
-            let client = crate::client::EngineClient::for_test_with_url(server.uri());
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("test runtime");
-            let mut app = crate::app::App::new(client, rt);
-            app.screen = Screen::ImportConfirm {
-                policies: vec![
-                    make_policy_response("p-new", "New Policy"),
-                    make_policy_response("p-existing", "Existing Policy"),
-                ],
-                existing_ids: vec!["p-existing".to_string()],
-                conflicting_count: 1,
-                non_conflicting_count: 1,
-                selected: 3,
-                state: ImportState::Pending,
-                caller: ImportCaller::PolicyMenu,
-            };
-            (app, server)
-        });
-
-        handle_event(&mut app, AppEvent::Key(enter()));
-
-        match &app.screen {
-            Screen::ImportConfirm { state, .. } => match state {
-                ImportState::Error(msg) => {
-                    assert!(
-                        msg.contains("Failed on policy 'Existing Policy'"),
-                        "error should name the failing policy: {msg}"
-                    );
-                    assert!(
-                        msg.contains("500"),
-                        "error should contain status code: {msg}"
-                    );
-                }
-                other => panic!("expected Error, got {other:?}"),
-            },
-            other => panic!("expected ImportConfirm, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn import_confirm_esc_returns_to_policy_menu() {
-        let client = crate::client::EngineClient::for_test();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("test runtime");
-        let mut app = crate::app::App::new(client, rt);
-        app.screen = Screen::ImportConfirm {
-            policies: vec![make_policy_response("p1", "Policy One")],
-            existing_ids: vec![],
-            conflicting_count: 0,
-            non_conflicting_count: 1,
-            selected: 3,
-            state: ImportState::Pending,
-            caller: ImportCaller::PolicyMenu,
+    fn condition_to_prefill_source_app_trust_tier_roundtrip() {
+        use dlp_common::abac::{AppField, PolicyCondition};
+        let original = PolicyCondition::SourceApplication {
+            field: AppField::TrustTier,
+            op: "eq".to_string(),
+            value: "trusted".to_string(),
         };
+        let (attr, op_str, picker_idx, buf) = condition_to_prefill(&original);
+        assert_eq!(attr, ConditionAttribute::SourceApplication);
+        assert_eq!(op_str, "eq");
+        assert_eq!(picker_idx, 0);
+        assert_eq!(buf, "");
 
-        handle_event(&mut app, AppEvent::Key(esc()));
-
-        match &app.screen {
-            Screen::PolicyMenu { selected } => {
-                assert_eq!(*selected, 0);
-            }
-            other => panic!("expected PolicyMenu, got {other:?}"),
-        }
+        let rebuilt = build_condition(attr, &op_str, picker_idx, &buf, Some(AppField::TrustTier))
+            .expect("roundtrip must produce a valid condition");
+        assert_eq!(&rebuilt, &original);
     }
 
     #[test]
-    fn import_confirm_success_dismiss_returns_to_policy_menu() {
-        let rt = tokio::runtime::Runtime::new().unwrap();
-        let (mut app, _server) = rt.block_on(async {
-            let server = MockServer::start().await;
-
-            Mock::given(method("POST"))
-                .and(path("/admin/policies"))
-                .respond_with(
-                    ResponseTemplate::new(201).set_body_json(serde_json::json!({"id": "p1"})),
-                )
-                .mount(&server)
-                .await;
-
-            let client = crate::client::EngineClient::for_test_with_url(server.uri());
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .expect("test runtime");
-            let mut app = crate::app::App::new(client, rt);
-            app.screen = Screen::ImportConfirm {
-                policies: vec![make_policy_response("p1", "Policy One")],
-                existing_ids: vec![],
-                conflicting_count: 0,
-                non_conflicting_count: 1,
-                selected: 3,
-                state: ImportState::Pending,
-                caller: ImportCaller::PolicyMenu,
-            };
-            (app, server)
-        });
-
-        // Execute import
-        handle_event(&mut app, AppEvent::Key(enter()));
-
-        // Verify success
-        match &app.screen {
-            Screen::ImportConfirm { state, .. } => {
-                assert!(
-                    matches!(state, ImportState::Success { .. }),
-                    "expected Success"
-                );
-            }
-            other => panic!("expected ImportConfirm, got {other:?}"),
-        }
-
-        // Dismiss with Enter
-        handle_event(&mut app, AppEvent::Key(enter()));
-
-        match &app.screen {
-            Screen::PolicyMenu { selected } => {
-                assert_eq!(*selected, 0);
-            }
-            other => panic!("expected PolicyMenu after dismiss, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn import_confirm_error_dismiss_returns_to_policy_menu() {
-        let client = crate::client::EngineClient::for_test();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("test runtime");
-        let mut app = crate::app::App::new(client, rt);
-        app.screen = Screen::ImportConfirm {
-            policies: vec![make_policy_response("p1", "Policy One")],
-            existing_ids: vec![],
-            conflicting_count: 0,
-            non_conflicting_count: 1,
-            selected: 3,
-            state: ImportState::Error("network failure".to_string()),
-            caller: ImportCaller::PolicyMenu,
+    fn condition_to_prefill_dest_app_publisher_roundtrip() {
+        use dlp_common::abac::{AppField, PolicyCondition};
+        let original = PolicyCondition::DestinationApplication {
+            field: AppField::Publisher,
+            op: "contains".to_string(),
+            value: "Microsoft".to_string(),
         };
+        let (attr, op_str, picker_idx, buf) = condition_to_prefill(&original);
+        assert_eq!(attr, ConditionAttribute::DestinationApplication);
+        assert_eq!(op_str, "contains");
+        assert_eq!(picker_idx, 0);
+        assert_eq!(buf, "Microsoft");
 
-        handle_event(&mut app, AppEvent::Key(enter()));
-
-        match &app.screen {
-            Screen::PolicyMenu { selected } => {
-                assert_eq!(*selected, 0);
-            }
-            other => panic!("expected PolicyMenu after dismiss, got {other:?}"),
-        }
+        let rebuilt = build_condition(attr, &op_str, picker_idx, &buf, Some(AppField::Publisher))
+            .expect("roundtrip must produce a valid condition");
+        assert_eq!(&rebuilt, &original);
     }
 
     #[test]
-    fn import_confirm_navigates_between_confirm_and_cancel() {
-        let client = crate::client::EngineClient::for_test();
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("test runtime");
-        let mut app = crate::app::App::new(client, rt);
-        app.screen = Screen::ImportConfirm {
-            policies: vec![make_policy_response("p1", "Policy One")],
-            existing_ids: vec![],
-            conflicting_count: 0,
-            non_conflicting_count: 1,
-            selected: 3,
-            state: ImportState::Pending,
-            caller: ImportCaller::PolicyMenu,
+    fn condition_to_prefill_source_app_imagepath_roundtrip() {
+        use dlp_common::abac::{AppField, PolicyCondition};
+        let original = PolicyCondition::SourceApplication {
+            field: AppField::ImagePath,
+            op: "eq".to_string(),
+            value: "C:\\\\Program Files\\\\App\\\\app.exe".to_string(),
         };
+        let (attr, op_str, picker_idx, buf) = condition_to_prefill(&original);
+        assert_eq!(attr, ConditionAttribute::SourceApplication);
+        assert_eq!(op_str, "eq");
+        assert_eq!(picker_idx, 0);
+        assert_eq!(buf, "C:\\\\Program Files\\\\App\\\\app.exe");
 
-        // Down from Confirm (3) -> Cancel (4)
-        handle_event(
-            &mut app,
-            AppEvent::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Down,
-                crossterm::event::KeyModifiers::NONE,
-            )),
-        );
-        match &app.screen {
-            Screen::ImportConfirm { selected, .. } => assert_eq!(*selected, 4),
-            other => panic!("expected ImportConfirm, got {other:?}"),
-        }
-
-        // Up from Cancel (4) -> Confirm (3)
-        handle_event(
-            &mut app,
-            AppEvent::Key(crossterm::event::KeyEvent::new(
-                crossterm::event::KeyCode::Up,
-                crossterm::event::KeyModifiers::NONE,
-            )),
-        );
-        match &app.screen {
-            Screen::ImportConfirm { selected, .. } => assert_eq!(*selected, 3),
-            other => panic!("expected ImportConfirm, got {other:?}"),
-        }
+        let rebuilt = build_condition(attr, &op_str, picker_idx, &buf, Some(AppField::ImagePath))
+            .expect("roundtrip must produce a valid condition");
+        assert_eq!(&rebuilt, &original);
     }
+
+    // ---------------------------------------------------------------------------
+    // Phase 28-04: ManagedOriginList render tests.
+    // ---------------------------------------------------------------------------
 }

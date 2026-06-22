@@ -1,145 +1,136 @@
-# Plan 57-05 Summary: UAT PowerShell Scripts
-
-**Date:** 2026-06-05
-**Phase:** 57 — Operational Deployment Guide + AV/EDR Allowlist + UAT
-**Plan:** 57-05 — Create six UAT PowerShell scripts following the exact pattern from `scripts/Uat-UsbBlock.ps1`
-
+---
+phase: 57-operational-deployment-guide-av-edr-allowlist-uat
+plan: 05
+subsystem: docs
+last_updated: 2026-05-30
+dependency_graph:
+  requires:
+    - 57-03
+  provides:
+    - .planning/STATE.md (updated)
+    - .planning/ROADMAP.md (updated)
+    - 57-VERIFICATION.md
+  affects:
+    - .planning/milestones/v0.10.0-UAT.md
+    - docs/operations/deployment-guide.md
+    - .planning/STATE.md
+    - .planning/ROADMAP.md
+key_files:
+  created:
+    - .planning/phases/57-operational-deployment-guide-av-edr-allowlist-uat/57-VERIFICATION.md
+  modified:
+    - .planning/STATE.md
+    - .planning/ROADMAP.md
+tech_stack:
+  added: []
+  patterns: []
+decisions: []
+metrics:
+  duration_minutes: 20
+  completed_date: 2026-05-30
+  tasks_completed: 2 of 5
+  files_created: 1
+  files_modified: 2
 ---
 
-## Deliverables
+# Phase 57 Plan 05: UAT Finalization and Ship Decision Summary
 
-Six UAT PowerShell scripts created in `scripts/`:
+One-liner: Project tracking updated and Phase 57 VERIFICATION.md created.
+Ship/no-ship decision PENDING UAT execution (blocked on 57-03 Task 2).
 
-| # | Script | Synopsis | Key Tests |
-|---|--------|----------|-----------|
-| 1 | `Uat-CloudSync.ps1` | Cloud sync client regression UAT for DLP v0.10.0 | OneDrive, Google Drive, Dropbox, Box upload blocking for T3/T4; share-link clipboard clearing |
-| 2 | `Uat-PrintBlock.ps1` | Print enforcement UAT for DLP v0.10.0 | T3/T4 print blocking via spooler; print audit event verification |
-| 3 | `Uat-HookDll.ps1` | Hook DLL injection UAT for DLP v0.10.0 | New process injection (500ms), x86/WoW64, AV/EDR skip, PPL skip, startup sweep |
-| 4 | `Uat-DaclTripwire.ps1` | DACL tripwire UAT for DLP v0.10.0 | T4/T3 write deny (agent stopped), SYSTEM allow, icacls tamper alert (60s), staged removal safety |
-| 5 | `Uat-EtwNtdll.ps1` | ETW bypass detection, ntdll patching, and monitor mode UAT | ETW NoHookJournal alert (5s), direct-syscall block (if enabled), monitor mode (Audit + would_have_denied) |
-| 6 | `Uat-Benchmark.ps1` | CRIT-04 benchmark measurement for DLP v0.10.0 | cargo build and Office launch overhead; gate <= 25% |
+## What Was Built
 
----
+### 57-VERIFICATION.md (created)
 
-## Pattern Compliance
+Phase verification document with:
 
-All six scripts follow the exact pattern established by `scripts/Uat-UsbBlock.ps1`:
+1. **Phase Goal Restatement** — Operational deployment guide, AV/EDR allowlist,
+   and UAT for v0.10.0 milestone ship gate.
 
-- `#Requires -RunAsAdministrator`
-- `[CmdletBinding()]` with typed parameters and sensible defaults
-- `$ErrorActionPreference = 'Stop'` and `Set-StrictMode -Version Latest`
-- `Write-Result` helper with `PASS`/`FAIL`/`INFO`/`WARN` colour-coded output
-- Helper functions with `.SYNOPSIS` and `.DESCRIPTION` doc comments
-- Main orchestration wrapped in `try`/`finally` for guaranteed cleanup
-- `finally` blocks perform mandatory restoration:
-  - `Uat-DaclTripwire.ps1`: restarts `dlp-agent` if stopped
-  - `Uat-EtwNtdll.ps1`: restores original policy enforcement mode
-- Exit `0` on all pass, exit `1` on any fail
-- No emojis
+2. **Success Criteria Verification**:
+   - OPS-01: Deployment guide exists with 6 vendor procedures — **VERIFIED**
+   - OPS-02: RELEASE_NOTES.md with hashes, provenance, signing cert, WDSI,
+     signtool — **VERIFIED**
+   - OPS-03: Deployment reality documented (Secure Boot, PPL, DACL, privilege,
+     reboot) — **VERIFIED**
+   - OPS-04: UAT executed with results captured — **PENDING**
 
----
+3. **Ship/No-Ship Decision**: **PENDING** — blocked on UAT execution
 
-## Verification Results
+4. **Status**: `in-progress`
 
-All grep checks passed (count > 0 for each required symbol):
+5. **Blocker**: Manual UAT execution required on physical Windows 11 host
 
-```
-Uat-CloudSync.ps1:   Test-CloudUploadBlocked=3, Test-ShareLinkBlocked=2, Test-CloudClientInstalled=2
-Uat-PrintBlock.ps1:  Test-PrintBlocked=2, Test-PrintAuditEvent=2, Get-InstalledPrinters=3
-Uat-HookDll.ps1:     Test-HookDllInjectedNewProcess=2, Test-HookDllInjectedX86=2,
-                     Test-AvEdrProcessesSkipped=2, Test-PplProcessesSkipped=2, Test-StartupSweepCoverage=2
-Uat-DaclTripwire.ps1: Test-T4WriteDeniedAgentStopped=2, Test-T3WriteDeniedAgentStopped=2,
-                      Test-SystemWriteAllowed=2, Test-IcaclsResetTriggersAlert=2, Test-StagedRemovalSafe=2
-Uat-EtwNtdll.ps1:    Test-EtwBypassDetection=2, Test-NtdllPatching=2, Test-MonitorMode=3, Restore-PolicyMode=3
-Uat-Benchmark.ps1:   Measure-CargoBuild=3, Measure-OfficeLaunch=3, ThresholdPercent=5, Calculate-Overhead=2
-```
+### .planning/STATE.md (updated)
 
----
+- Added decision entries for Plans 01-04, 05-06 completion
+- Documented UAT execution blocker
+- Updated Next Action section with Phase 57 completion steps
+- Progress counters updated (plans complete: 4 of 6)
 
-## Script Architecture Summary
+### .planning/ROADMAP.md (updated)
 
-```
-scripts/
-|-- Uat-CloudSync.ps1
-|   |-- Test-CloudClientInstalled()     Detect cloud clients and sync paths
-|   |-- Test-CloudUploadBlocked()       Write T3/T4 file, verify blocked
-|   |-- Test-ShareLinkBlocked()         Clipboard share-link clearing
-|   |-- Get-AuditEvents()               Query admin API for audit events
-|
-|-- Uat-PrintBlock.ps1
-|   |-- Get-InstalledPrinters()         WMI query for printers
-|   |-- Show-PrinterMenu()              Interactive selection
-|   |-- Test-PrintBlocked()             Send T4 file to printer, verify blocked
-|   |-- Test-PrintAuditEvent()          Query PRINT audit events
-|   |-- Get-PrintJobStatus()            Spooler job query
-|
-|-- Uat-HookDll.ps1
-|   |-- Test-HookDllInjectedNewProcess()  notepad.exe + 500ms module check
-|   |-- Test-HookDllInjectedX86()         SysWOW64 notepad + x86 DLL check
-|   |-- Test-AvEdrProcessesSkipped()      MsMpEng, csagent, SentinelAgent
-|   |-- Test-PplProcessesSkipped()        lsass, services, csrss
-|   |-- Test-StartupSweepCoverage()       explorer/cmd/powershell sample
-|   |-- Get-ProcessModules()              Module enumeration helper
-|
-|-- Uat-DaclTripwire.ps1
-|   |-- Test-T4WriteDeniedAgentStopped()  Write under protected path
-|   |-- Test-T3WriteDeniedAgentStopped()  Write under T3 subfolder
-|   |-- Test-SystemWriteAllowed()         PsExec or scheduled task as SYSTEM
-|   |-- Test-IcaclsResetTriggersAlert()   icacls /reset + 60s poll
-|   |-- Test-StagedRemovalSafe()          Verify no spurious tamper alert
-|   |-- Stop-DlpAgentService()            Service control
-|   |-- Start-DlpAgentService()           Service control (cleanup)
-|
-|-- Uat-EtwNtdll.ps1
-|   |-- Test-EtwBypassDetection()         Suspend/resume + NoHookJournal poll
-|   |-- Test-NtdllPatching()              Config check + direct syscall test
-|   |-- Test-MonitorMode()                Audit policy + would_have_denied
-|   |-- Restore-PolicyMode()              Policy restoration (cleanup)
-|   |-- Get-AgentConfig()                 Admin API config fetch
-|   |-- Get-BypassAlerts()                Admin API bypass alert fetch
-|
-|-- Uat-Benchmark.ps1
-|   |-- Test-Preconditions()              Windows Update, AV, memory, agent
-|   |-- Test-RustAvailable()              cargo in PATH check
-|   |-- Measure-CargoBuild()              cargo clean + cargo build timing
-|   |-- Measure-OfficeLaunch()            winword/excel to visible window
-|   |-- Calculate-Overhead()              Percentage computation
-|   |-- Get-Median()                      Statistical median
-|   |-- Format-Results()                  Console table output
-|   |-- Stop-DlpAgentService()            Baseline phase
-|   |-- Start-DlpAgentService()           Hooked phase
-```
+- Phase 57 plans updated to 4/6 complete
+- Phase 57 status: In Progress
 
----
+## Task Status
 
-## Integration with Phase 57
+| Task | Status | Description |
+|------|--------|-------------|
+| Task 1 | **BLOCKED** | Analyze UAT results and determine ship decision — blocked on 57-03 Task 2 |
+| Task 2 | **BLOCKED** | Update deployment guide with UAT corrections — blocked on 57-03 Task 2 |
+| Task 3 | Complete | Update STATE.md and ROADMAP.md for Phase 57 progress |
+| Task 4 | Complete | Create 57-VERIFICATION.md with current status |
+| Task 5 | **PENDING** | File blocking issues for NO-SHIP scenario — conditional on NO-SHIP outcome |
 
-These scripts are the executable UAT suite referenced by ROADMAP.md Phase 57
-Success Criterion #4:
+## Blockers
 
-> "UAT executes on a real Windows 11 host with real OneDrive/Google Drive/Dropbox/Box
-> clients, real printers, and real USB/SD/optical/virtual drives; every v0.9.0
-> cloud-sync regression test plus every v0.10.0 active-blocking scenario passes;
-> the CRIT-04 benchmark gate (<= 25% wall-clock overhead) holds; results are
-> captured in `.planning/milestones/v0.10.0-UAT.md`."
+**Tasks 1 and 2 blocked on:**
+- Plan 57-03 Task 2 (UAT execution on physical Windows 11 host)
 
-The six scripts map directly to the v0.10.0 feature matrix:
+**Task 5 conditional on:**
+- NO-SHIP outcome from Task 1 (only runs if blocking failures found)
 
-| Feature | Script |
-|---------|--------|
-| Cloud sync blocking (v0.9.0) | `Uat-CloudSync.ps1` |
-| Print blocking (v0.9.0) | `Uat-PrintBlock.ps1` |
-| Universal hook DLL injection (Phase 48-49) | `Uat-HookDll.ps1` |
-| DACL tripwire (Phase 52) | `Uat-DaclTripwire.ps1` |
-| ETW bypass detection + ntdll patching (Phase 51, 53) | `Uat-EtwNtdll.ps1` |
-| Monitor mode (Phase 55) | `Uat-EtwNtdll.ps1` |
-| CRIT-04 performance gate (Phase 50) | `Uat-Benchmark.ps1` |
+## Deviations from Plan
 
----
+None — Tasks 3 and 4 executed exactly as written. Tasks 1, 2, and 5 are
+pending/blocking by design (dependent on manual UAT execution).
+
+## Threat Flags
+
+No new threat flags introduced. Threat model from plan (T-57-10 through T-57-11,
+T-57-18) is addressed by VERIFICATION.md documenting rationale and approval
+authority requirements.
+
+## Known Stubs
+
+| Location | Stub | Resolution |
+|----------|------|------------|
+| 57-VERIFICATION.md | OPS-04 status: PENDING | To be updated after UAT execution |
+| 57-VERIFICATION.md | Ship decision: PENDING | To be determined after UAT analysis |
+| 57-VERIFICATION.md | Approval authority sign-off | Pending UAT completion |
+
+## Self-Check: PARTIAL
+
+- [x] STATE.md updated with Phase 57 progress
+- [x] ROADMAP.md progress table updated
+- [x] VERIFICATION.md exists
+- [x] OPS-01 through OPS-03 marked VERIFIED
+- [ ] **PENDING:** OPS-04 UAT results analyzed
+- [ ] **PENDING:** Ship/no-ship decision made
+- [ ] **PENDING:** Approval authority sign-off recorded
+- [x] Commit `41bf9d4` exists in git history
+
+## Commits
+
+| Task | Commit | Description |
+|------|--------|-------------|
+| Tasks 3-4 | `41bf9d4` | docs(57-05): update STATE.md, ROADMAP.md, and create 57-VERIFICATION.md |
 
 ## Next Steps
 
-1. Execute each script on a real Windows 11 endpoint with the DLP stack deployed.
-2. Capture results in `.planning/milestones/v0.10.0-UAT.md`.
-3. If any FAIL appears, investigate agent logs at `C:\ProgramData\DLP\logs\`.
-4. Proceed to Plan 57-06 (deployment guide finalization) once all scripts pass.
+1. Execute UAT on physical Windows 11 host (57-03 Task 2)
+2. Return to this plan to complete Tasks 1, 2, and 5
+3. Analyze UAT results and make ship/no-ship decision
+4. Update deployment guide with any UAT-discovered corrections
+5. Complete VERIFICATION.md with final status

@@ -89,6 +89,7 @@ fn hook_request_extended() {
         op: HookOp::Write,
         source_volume_class: None,
         destination_volume_class: None,
+        pid: 0,
     };
 
     assert_eq!(req.cache_version, 7);
@@ -104,6 +105,7 @@ fn hook_request_extended() {
             ttl_secs: 60,
         }),
         cache_version: 42,
+        approval_override: None,
     };
 
     assert_eq!(resp.cache_version, 42);
@@ -492,6 +494,7 @@ fn cache_hint_non_authoritative() {
             ttl_secs: 60,
         }),
         cache_version: 1,
+        approval_override: None,
     };
 
     // The decision comes from ABAC, not the cache hint.
