@@ -38,7 +38,6 @@ use dlp_common::hook_ipc::{
 };
 use dlp_common::{Classification, HookRequest, HookResponse};
 
-use crate::interception::policy_mapper::PolicyMapper;
 use crate::ipc::frame::{read_frame, write_frame};
 use crate::ipc::pipe_security::PipeSecurity;
 
@@ -182,7 +181,6 @@ impl HookIpcServer {
             self.diagnostics_handler,
             self.health_handler,
             self.override_handler,
-            rt,
         )
     }
 }
@@ -223,7 +221,6 @@ fn accept_loop(
     diagnostics_handler: Option<DiagnosticsHandler>,
     health_handler: Option<HealthHandler>,
     override_handler: Option<OverrideHandler>,
-    rt: Option<tokio::runtime::Handle>,
 ) -> Result<()> {
     let mut pipe = first_pipe;
     loop {
@@ -251,33 +248,14 @@ fn accept_loop(
 
         info!("Hook IPC: client connected");
 
-        match rt {
-            Some(ref _h) => {
-                if let Err(e) = handle_connection(
-                    pipe,
-                    &handler,
-                    diagnostics_handler.as_ref(),
-                    health_handler.as_ref(),
-                    override_handler.as_ref(),
-                ) {
-                    warn!(error = %e, "Hook IPC: connection handler error");
-                }
-                let _ = unsafe { DisconnectNamedPipe(pipe) };
-                let _ = unsafe { CloseHandle(pipe) };
-            }
-            None => {
-                if let Err(e) = handle_connection(
-                    pipe,
-                    &handler,
-                    diagnostics_handler.as_ref(),
-                    health_handler.as_ref(),
-                    override_handler.as_ref(),
-                ) {
-                    warn!(error = %e, "Hook IPC: connection handler error");
-                }
-                let _ = unsafe { DisconnectNamedPipe(pipe) };
-                let _ = unsafe { CloseHandle(pipe) };
-            }
+        if let Err(e) = handle_connection(
+            pipe,
+            &handler,
+            diagnostics_handler.as_ref(),
+            health_handler.as_ref(),
+            override_handler.as_ref(),
+        ) {
+            warn!(error = %e, "Hook IPC: connection handler error");
         }
         let _ = unsafe { DisconnectNamedPipe(pipe) };
         let _ = unsafe { CloseHandle(pipe) };
@@ -339,6 +317,10 @@ fn handle_connection(
                     let response = health_handler.map(|hh| hh(req)).unwrap_or_default();
                     IpcPayloadV1::HealthResponse(response)
                 }
+                IpcPayloadV1::BypassAlert(ref alert) => {
+                    debug!(reason = ?alert.reason, stub = %alert.stub_name, "Hook IPC: bypass alert received");
+                    continue;
+                }
                 // Agent-to-DLL responses should not arrive on the server.
                 other => {
                     warn!(payload = ?other, "Hook IPC: unexpected payload from DLL");
@@ -359,28 +341,22 @@ fn handle_connection(
         }
 
         // Fall back to legacy raw HookRequest (pre-Phase 58 DLLs).
-        let request: HookRequest = match bincode::deserialize(&frame) {
-            Ok(r) => r,
+        match bincode::deserialize::<HookRequest>(&frame) {
+            Ok(request) => {
+                debug!(path = %request.path, action = %request.action, "Hook IPC: classifying (legacy)");
+                let response = handler(request);
+                debug!(decision = ?response.decision, "Hook IPC: classification complete (legacy)");
+
+                let payload = bincode::serialize(&response).context("serialize response")?;
+                if let Err(e) = write_frame(pipe, &payload) {
+                    warn!(error = %e, "Hook IPC: write response failed — disconnecting");
+                    break;
+                }
+            }
             Err(e) => {
                 warn!(error = %e, "Hook IPC: malformed request — bincode deserialization failed");
                 continue;
             }
-            Err(_envelope_err) => {
-                // Fall back to legacy HookRequest deserialization (backward compat).
-                match bincode::deserialize::<HookRequest>(&frame) {
-                    Ok(req) => {
-                        debug!(path = %req.path, action = %req.action, "Hook IPC: classifying legacy request");
-                        let response = handler(req);
-                        debug!(decision = ?response.decision, "Hook IPC: classification complete");
-
-        debug!(path = %request.path, action = %request.action, "Hook IPC: classifying (legacy)");
-        let response = handler(request);
-        debug!(decision = ?response.decision, "Hook IPC: classification complete (legacy)");
-
-        let payload = bincode::serialize(&response).context("serialize response")?;
-        if let Err(e) = write_frame(pipe, &payload) {
-            warn!(error = %e, "Hook IPC: write response failed — disconnecting");
-            break;
         }
     }
 

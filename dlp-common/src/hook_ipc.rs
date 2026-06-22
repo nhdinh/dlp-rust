@@ -112,6 +112,11 @@ pub enum IpcPayloadV1 {
     ///
     /// Contains a health snapshot of the hook DLL state.
     HealthResponse(HealthResponse),
+    /// A bypass alert from the hook DLL to the agent.
+    ///
+    /// Sent when the hook DLL detects a bypass attempt (e.g., EDR overwriting
+    /// the trampoline, patch race condition). Fire-and-forget; no response expected.
+    BypassAlert(BypassAlert),
 }
 
 /// Request sent by the hook DLL to the agent for classification.

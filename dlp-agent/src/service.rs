@@ -27,7 +27,6 @@ use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
 
-use crate::hook_ipc::{HookIpcServer, DEFAULT_PIPE_NAME};
 use anyhow::{Context, Result};
 use dlp_common::hook_ipc::BypassAlert;
 use dlp_common::usb::{
@@ -1224,12 +1223,51 @@ fn emit_ntdll_patching_enabled_event() {
 /// failure. The handle is stored in [`BlockingThreads::hook_ipc`] and joined
 /// during service shutdown.
 fn spawn_hook_ipc_server(
-    cache: Arc<dyn crate::hook_ipc::CacheAccessor>,
+    _cache: Arc<dyn crate::hook_ipc::CacheAccessor>,
     offline: Arc<crate::offline::OfflineManager>,
-    bypass_tx: crossbeam_channel::Sender<BypassAlert>,
+    _bypass_tx: crossbeam_channel::Sender<BypassAlert>,
 ) -> Option<std::thread::JoinHandle<()>> {
-    let server =
-        HookIpcServer::with_cache_offline_and_bypass(DEFAULT_PIPE_NAME, cache, offline, bypass_tx);
+    let server = crate::hook_ipc::HookIpcServer::new(
+        crate::hook_ipc::DEFAULT_PIPE_NAME,
+        Arc::new(move |req: dlp_common::HookRequest| {
+            // Map hook action string to ABAC Action enum.
+            let action = match req.action.as_str() {
+                "READ" => dlp_common::Action::READ,
+                "WRITE" | "CREATE" => dlp_common::Action::WRITE,
+                "COPY" => dlp_common::Action::COPY,
+                "DELETE" => dlp_common::Action::DELETE,
+                "MOVE" | "RENAME" => dlp_common::Action::MOVE,
+                _ => dlp_common::Action::READ,
+            };
+            let evaluate_req = dlp_common::EvaluateRequest {
+                subject: dlp_common::Subject {
+                    user_sid: "S-1-5-18".to_string(),
+                    ..Default::default()
+                },
+                resource: dlp_common::Resource {
+                    path: req.path,
+                    ..Default::default()
+                },
+                environment: dlp_common::Environment::default(),
+                action,
+                agent: None,
+                source_application: None,
+                destination_application: None,
+                source_origin: None,
+                destination_origin: None,
+                source_volume_class: None,
+                destination_volume_class: None,
+            };
+            let eval_resp = offline.offline_decision(&evaluate_req);
+            dlp_common::HookResponse {
+                decision: eval_resp.decision,
+                reason: eval_resp.reason,
+                cache_hint: None,
+                cache_version: 0,
+                approval_override: None,
+            }
+        }),
+    );
 
     match std::thread::Builder::new()
         .name("hook-ipc-server".to_string())
