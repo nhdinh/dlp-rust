@@ -362,7 +362,6 @@ fn classify_and_log_path(
                         Some(crate::fail_closed::DenyReturn::BoolFalse)
                     }
                 }
-                decision
             }
         };
 
@@ -498,9 +497,7 @@ fn classify_and_log_handle(
             crate::debug_log(&msg);
             None
         }
-        Ok(ref resp)
-            if resp.decision.is_denied() && resp.approval_override == Some(true) =>
-        {
+        Ok(ref resp) if resp.decision.is_denied() && resp.approval_override == Some(true) => {
             // DIFF-01: Approval override granted — allow the operation.
             let msg = format!(
                 "[dlp-hook] ALLOW(override) {} handle={} latency={}us\0",
