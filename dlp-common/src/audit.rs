@@ -461,6 +461,18 @@ pub struct AuditEvent {
     /// `true` when the hash computation thread pool was unavailable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hash_skipped: Option<bool>,
+    /// The `prev_hash` value for this event in the tamper-evident audit chain.
+    ///
+    /// `None` for events that are not part of the chain (pre-Phase 63 agents).
+    /// Populated by the agent's `AuditEmitter` before sending to the server.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prev_hash: Option<String>,
+    /// The `chain_hash` (SHA-256) for this event in the tamper-evident audit chain.
+    ///
+    /// `None` for events that are not part of the chain (pre-Phase 63 agents).
+    /// Computed as `SHA256(prev_hash || canonical_json(event))`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chain_hash: Option<String>,
 }
 
 impl AuditEvent {
@@ -526,6 +538,8 @@ impl AuditEvent {
             content_sha256: None,
             hash_truncated: None,
             hash_skipped: None,
+            prev_hash: None,
+            chain_hash: None,
         }
     }
 

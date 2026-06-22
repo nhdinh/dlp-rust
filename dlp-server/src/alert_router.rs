@@ -372,6 +372,8 @@ impl AlertRouter {
             content_sha256: None,
             hash_truncated: None,
             hash_skipped: None,
+            prev_hash: None,
+            chain_hash: None,
         };
         self.send_alert(&event).await
     }

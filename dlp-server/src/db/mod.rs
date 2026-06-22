@@ -100,7 +100,9 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
                 session_id       INTEGER NOT NULL,
                 access_context   TEXT NOT NULL DEFAULT 'local',
                 correlation_id   TEXT UNIQUE,
-                content_sha256   TEXT
+                content_sha256   TEXT,
+                prev_hash        TEXT,
+                chain_hash       TEXT
             );
 
             -- Partial index for chain-verified events only (efficient integrity queries)

@@ -59,6 +59,10 @@ pub struct AuditEventRow {
     pub correlation_id: Option<String>,
     /// Optional SHA-256 hash of the accessed file content (evidence integrity).
     pub content_sha256: Option<String>,
+    /// The `prev_hash` for this event in the tamper-evident audit chain.
+    pub prev_hash: Option<String>,
+    /// The `chain_hash` (SHA-256) for this event in the tamper-evident audit chain.
+    pub chain_hash: Option<String>,
 }
 
 /// Stateless repository for the `audit_events` table.
@@ -99,8 +103,9 @@ impl AuditEventRepository {
                 "INSERT OR IGNORE INTO audit_events (
                     timestamp, event_type, user_sid, user_name, resource_path,
                     classification, action_attempted, decision, policy_id, policy_name,
-                    agent_id, session_id, access_context, correlation_id, content_sha256
-                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15)",
+                    agent_id, session_id, access_context, correlation_id, content_sha256,
+                    prev_hash, chain_hash
+                 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
                 params![
                     row.timestamp,
                     row.event_type,
@@ -117,6 +122,8 @@ impl AuditEventRepository {
                     row.access_context,
                     row.correlation_id,
                     row.content_sha256,
+                    row.prev_hash,
+                    row.chain_hash,
                 ],
             )?;
         }
