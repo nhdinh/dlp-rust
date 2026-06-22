@@ -96,6 +96,20 @@ impl DiagnosticSnapshotStore {
         let key = format!("{pid}_{agent_id}");
         let is_new_key = !self.snapshots.contains_key(&key);
 
+        // Validate and filter snapshots before ingestion.
+        new_snapshots.retain(|snap| {
+            if let Some(reason) = Self::validate_snapshot(snap) {
+                tracing::warn!(user_sid = %snap.user_sid, reason = %reason, "Dropping invalid diagnostic snapshot");
+                false
+            } else {
+                true
+            }
+        });
+
+        if new_snapshots.is_empty() {
+            return;
+        }
+
         {
             let mut entry = self.snapshots.entry(key.clone()).or_default();
             entry.append(&mut new_snapshots);
@@ -205,6 +219,72 @@ impl DiagnosticSnapshotStore {
         }
 
         true
+    }
+
+    /// Validates a single diagnostic snapshot for well-formedness.
+    ///
+    /// Returns `None` if the snapshot is valid, or `Some(reason)` describing
+    /// the first validation failure encountered.
+    fn validate_snapshot(snap: &DiagnosticSnapshot) -> Option<String> {
+        const MAX_STRING_LEN: usize = 1024;
+        const MAX_SID_LEN: usize = 256;
+
+        // Validate string lengths.
+        if snap.hook_function.len() > MAX_STRING_LEN {
+            return Some(format!("hook_function exceeds {MAX_STRING_LEN} chars"));
+        }
+        if snap.abac_resource.len() > MAX_STRING_LEN {
+            return Some(format!("abac_resource exceeds {MAX_STRING_LEN} chars"));
+        }
+        if snap.abac_action.len() > MAX_STRING_LEN {
+            return Some(format!("abac_action exceeds {MAX_STRING_LEN} chars"));
+        }
+        if snap.abac_environment.len() > MAX_STRING_LEN {
+            return Some(format!("abac_environment exceeds {MAX_STRING_LEN} chars"));
+        }
+        if snap.user_sid.len() > MAX_SID_LEN {
+            return Some(format!("user_sid exceeds {MAX_SID_LEN} chars"));
+        }
+        if snap.abac_subject.len() > MAX_SID_LEN {
+            return Some(format!("abac_subject exceeds {MAX_SID_LEN} chars"));
+        }
+        if let Some(ref policy_id) = snap.matched_policy_id {
+            if policy_id.len() > MAX_STRING_LEN {
+                return Some(format!("matched_policy_id exceeds {MAX_STRING_LEN} chars"));
+            }
+        }
+        if let Some(ref mode) = snap.enforcement_mode {
+            if mode.len() > MAX_STRING_LEN {
+                return Some(format!("enforcement_mode exceeds {MAX_STRING_LEN} chars"));
+            }
+        }
+
+        // Validate no path traversal in abac_resource.
+        if snap.abac_resource.contains("..") {
+            return Some("abac_resource contains path traversal (..)".to_string());
+        }
+
+        // Validate SID format (basic check: starts with "S-1-" and contains only valid chars).
+        if !snap.user_sid.is_empty() && !Self::is_valid_sid(&snap.user_sid) {
+            return Some(format!("user_sid has invalid format: {}", snap.user_sid));
+        }
+        if !snap.abac_subject.is_empty() && !Self::is_valid_sid(&snap.abac_subject) {
+            return Some(format!("abac_subject has invalid format: {}", snap.abac_subject));
+        }
+
+        None
+    }
+
+    /// Basic SID format validation.
+    ///
+    /// A valid Windows SID starts with "S-1-" followed by hyphen-separated
+    /// decimal revision and identifier authority values, then sub-authorities.
+    fn is_valid_sid(sid: &str) -> bool {
+        if !sid.starts_with("S-1-") {
+            return false;
+        }
+        // Allow only ASCII digits, hyphens, and the "S-1-" prefix.
+        sid.chars().all(|c| c.is_ascii_digit() || c == '-' || c == 'S')
     }
 }
 
