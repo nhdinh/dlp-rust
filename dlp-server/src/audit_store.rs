@@ -60,6 +60,17 @@ pub struct EventCount {
 /// call the async `ingest_events` from within a blocking thread without
 /// deadlocking the async runtime. JSON serialization of enum fields stays here.
 pub fn store_events_sync(uow: &UnitOfWork<'_>, events: &[AuditEvent]) -> Result<(), AppError> {
+    // Validate content_sha256 for all events before storing.
+    for event in events {
+        if let Some(ref hash) = event.content_sha256 {
+            if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                return Err(AppError::BadRequest(
+                    "invalid content_sha256: must be 64 hex chars".to_string(),
+                ));
+            }
+        }
+    }
+
     let rows: Vec<AuditEventRow> = events
         .iter()
         .map(|event| {
@@ -129,6 +140,18 @@ pub async fn ingest_events(
             return Err(AppError::BadRequest(
                 "audit event missing destination_application".to_string(),
             ));
+        }
+        // Validate content_sha256 is a valid 64-character hex string when present.
+        if let Some(ref hash) = event.content_sha256 {
+            if hash.len() != 64 || !hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                tracing::warn!(
+                    correlation_id = %event.correlation_id.as_deref().unwrap_or("none"),
+                    "Rejecting audit event with invalid content_sha256"
+                );
+                return Err(AppError::BadRequest(
+                    "invalid content_sha256: must be 64 hex chars".to_string(),
+                ));
+            }
         }
     }
 
