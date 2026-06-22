@@ -86,7 +86,10 @@ impl std::fmt::Debug for HealthAggregator {
         f.debug_struct("HealthAggregator")
             .field("history_len", &self.history_len())
             .field("last_status", &self.last_status.lock().expect("poisoned"))
-            .field("consecutive_degraded", &self.consecutive_degraded.lock().expect("poisoned"))
+            .field(
+                "consecutive_degraded",
+                &self.consecutive_degraded.lock().expect("poisoned"),
+            )
             .finish()
     }
 }
@@ -395,9 +398,9 @@ mod tests {
         assert_eq!(count2.load(Ordering::SeqCst), 0);
 
         agg2.ingest_snapshot(make_snapshot(0.65, 0, 100)); // Degraded #2
-        // After 2 consecutive degraded from healthy, warn event is emitted.
-        // The warn event does NOT call alert_router (only crit does).
-        // So count stays 0 for warn.
+                                                           // After 2 consecutive degraded from healthy, warn event is emitted.
+                                                           // The warn event does NOT call alert_router (only crit does).
+                                                           // So count stays 0 for warn.
         assert_eq!(count2.load(Ordering::SeqCst), 0);
     }
 
