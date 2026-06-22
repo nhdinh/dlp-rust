@@ -148,6 +148,12 @@ pub struct HookRequest {
     /// `None` for single-path operations or when undetermined.
     #[serde(default)]
     pub destination_volume_class: Option<VolumeClass>,
+    /// Process ID of the hooked process making this request.
+    ///
+    /// Used by the agent to look up the real user SID from the process token
+    /// for ABAC evaluation. A value of `0` means the PID was not provided.
+    #[serde(default)]
+    pub pid: u32,
 }
 
 fn default_protocol_version() -> u8 {
@@ -509,6 +515,7 @@ mod tests {
             op: HookOp::Write,
             source_volume_class: None,
             destination_volume_class: None,
+            pid: 0,
         };
         let envelope = IpcEnvelope::V1(IpcMessageV1 {
             payload: IpcPayloadV1::Request(req),
@@ -543,6 +550,7 @@ mod tests {
             op: HookOp::Write,
             source_volume_class: None,
             destination_volume_class: None,
+            pid: 0,
         };
         let bytes = bincode::serialize(&req).unwrap();
         let round_trip: HookRequest = bincode::deserialize(&bytes).unwrap();

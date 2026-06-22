@@ -56,6 +56,7 @@ fn new_request_roundtrips() {
         op: HookOp::Write,
         source_volume_class: None,
         destination_volume_class: None,
+        pid: 0,
     };
 
     let bytes = bincode::serialize(&req).unwrap();
@@ -143,6 +144,7 @@ fn envelope_v1_roundtrip() {
         op: HookOp::Write,
         source_volume_class: None,
         destination_volume_class: None,
+        pid: 0,
     };
 
     let envelope = IpcEnvelope::V1(IpcMessageV1 {
