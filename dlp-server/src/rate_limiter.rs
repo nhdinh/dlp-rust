@@ -153,6 +153,21 @@ pub fn policy_config() -> GovernorLayer<AgentIdOrIpKeyExtractor, NoOpMiddleware,
     .error_handler(rate_limit_error_handler)
 }
 
+/// Diagnostics route limit: 30 requests per 60 seconds. Used for /admin/diagnostics.
+/// Diagnostic queries can be expensive (sorting all snapshots across all DLLs),
+/// so this is tighter than the default admin limit.
+pub fn diagnostics_config() -> GovernorLayer<AgentIdOrIpKeyExtractor, NoOpMiddleware, Body> {
+    GovernorLayer::new(
+        GovernorConfigBuilder::default()
+            .per_second(60)
+            .burst_size(30)
+            .key_extractor(AgentIdOrIpKeyExtractor)
+            .finish()
+            .expect("diagnostics GovernorConfig should always be valid"),
+    )
+    .error_handler(rate_limit_error_handler)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
