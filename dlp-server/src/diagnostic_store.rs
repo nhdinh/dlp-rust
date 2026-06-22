@@ -11,6 +11,7 @@
 //! - Pagination caps at 1000 entries per request (T-58-13 mitigation).
 //! - JWT auth required on the admin endpoint (T-58-11 mitigation).
 
+use std::collections::VecDeque;
 use std::sync::Arc;
 
 use chrono::{DateTime, Utc};
@@ -41,6 +42,10 @@ pub struct DiagnosticSnapshotStore {
     snapshots: Arc<DashMap<String, Vec<DiagnosticSnapshot>>>,
     /// Maximum snapshots to retain per DLL.
     max_entries_per_dll: usize,
+    /// Maximum number of DLL keys to retain globally.
+    max_keys: usize,
+    /// Ordered queue of keys for LRU eviction when max_keys is exceeded.
+    key_queue: Arc<std::sync::Mutex<VecDeque<String>>>,
 }
 
 impl DiagnosticSnapshotStore {
@@ -60,6 +65,19 @@ impl DiagnosticSnapshotStore {
         Self {
             snapshots: Arc::new(DashMap::new()),
             max_entries_per_dll,
+            max_keys: 10_000,
+            key_queue: Arc::new(std::sync::Mutex::new(VecDeque::new())),
+        }
+    }
+
+    /// Creates a new store with custom per-DLL and global key caps.
+    #[must_use]
+    pub fn with_caps(max_entries_per_dll: usize, max_keys: usize) -> Self {
+        Self {
+            snapshots: Arc::new(DashMap::new()),
+            max_entries_per_dll,
+            max_keys,
+            key_queue: Arc::new(std::sync::Mutex::new(VecDeque::new())),
         }
     }
 
@@ -76,13 +94,30 @@ impl DiagnosticSnapshotStore {
     /// * `new_snapshots` — snapshots to ingest.
     pub fn ingest(&self, agent_id: &str, pid: u32, mut new_snapshots: Vec<DiagnosticSnapshot>) {
         let key = format!("{pid}_{agent_id}");
-        let mut entry = self.snapshots.entry(key).or_default();
-        entry.append(&mut new_snapshots);
+        let is_new_key = !self.snapshots.contains_key(&key);
 
-        // Truncate from front (oldest) if over capacity.
-        if entry.len() > self.max_entries_per_dll {
-            let excess = entry.len() - self.max_entries_per_dll;
-            entry.drain(0..excess);
+        {
+            let mut entry = self.snapshots.entry(key.clone()).or_default();
+            entry.append(&mut new_snapshots);
+
+            // Truncate from front (oldest) if over capacity.
+            if entry.len() > self.max_entries_per_dll {
+                let excess = entry.len() - self.max_entries_per_dll;
+                entry.drain(0..excess);
+            }
+        }
+
+        // Track key for LRU eviction.
+        if is_new_key {
+            let mut queue = self.key_queue.lock().expect("key_queue lock poisoned");
+            queue.push_back(key.clone());
+
+            // Evict oldest keys if over global key cap.
+            while queue.len() > self.max_keys {
+                if let Some(oldest_key) = queue.pop_front() {
+                    self.snapshots.remove(&oldest_key);
+                }
+            }
         }
     }
 
@@ -149,15 +184,12 @@ impl DiagnosticSnapshotStore {
 
     /// Checks whether a single snapshot matches the filter criteria.
     fn matches_filter(snap: &DiagnosticSnapshot, filter: &DiagnosticFilter) -> bool {
-        if let Some(ref since) = filter.since {
-            // Convert QPC timestamp to a chrono DateTime for comparison.
-            // QPC ticks are not directly comparable to wall-clock time,
-            // so we use a best-effort conversion. In practice, the agent
-            // should use the snapshot's capture time if available.
-            // For now, we skip time-based filtering since DiagnosticSnapshot
-            // only has QPC (not wall-clock). The since filter is a no-op
-            // until wall-clock timestamps are added to DiagnosticSnapshot.
-            let _ = since;
+        if let Some(ref _since) = filter.since {
+            // Time-based filtering is not yet supported because
+            // DiagnosticSnapshot only carries QPC (not wall-clock).
+            // The since parameter is accepted by the API for forward
+            // compatibility but has no effect until wall-clock timestamps
+            // are added. See CR-02.
         }
 
         if let Some(ref user_sid) = filter.user_sid {
@@ -339,5 +371,26 @@ mod tests {
 
         assert_eq!(store.dll_count(), 2);
         assert_eq!(store.total_snapshot_count(), 2);
+    }
+
+    #[test]
+    fn test_max_keys_cap() {
+        let store = DiagnosticSnapshotStore::with_caps(10, 3);
+        store.ingest("AGENT-01", 100, vec![make_snapshot("S-1-5-21-1", Some("pol-001"), 1)]);
+        store.ingest("AGENT-01", 200, vec![make_snapshot("S-1-5-21-2", Some("pol-002"), 2)]);
+        store.ingest("AGENT-01", 300, vec![make_snapshot("S-1-5-21-3", Some("pol-003"), 3)]);
+        assert_eq!(store.dll_count(), 3);
+
+        // Fourth key evicts the oldest (100).
+        store.ingest("AGENT-01", 400, vec![make_snapshot("S-1-5-21-4", Some("pol-004"), 4)]);
+        assert_eq!(store.dll_count(), 3);
+
+        let filter = DiagnosticFilter::default();
+        let result = store.get_snapshots(&filter);
+        // The oldest key (pid 100) should have been evicted.
+        assert!(!result.iter().any(|s| s.timestamp_qpc == 1));
+        assert!(result.iter().any(|s| s.timestamp_qpc == 2));
+        assert!(result.iter().any(|s| s.timestamp_qpc == 3));
+        assert!(result.iter().any(|s| s.timestamp_qpc == 4));
     }
 }
