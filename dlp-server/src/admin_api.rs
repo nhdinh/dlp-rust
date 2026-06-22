@@ -5466,14 +5466,27 @@ async fn list_bypass_alerts_handler(
         offset: q.offset,
     };
 
-    let pool = Arc::clone(&state.pool);
-    let rows = tokio::task::spawn_blocking(move || -> Result<Vec<BypassAlertRow>, AppError> {
-        BypassAlertsRepository::list_by_filters(&pool, &filter).map_err(AppError::Database)
-    })
-    .await
-    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+    let pool_for_rows = Arc::clone(&state.pool);
+    let pool_for_count = Arc::clone(&state.pool);
+    let filter_for_rows = filter.clone();
+    let filter_for_count = filter.clone();
 
-    let total = rows.len();
+    let (rows, total) = tokio::join!(
+        tokio::task::spawn_blocking(move || -> Result<Vec<BypassAlertRow>, AppError> {
+            BypassAlertsRepository::list_by_filters(&pool_for_rows, &filter_for_rows)
+                .map_err(AppError::Database)
+        }),
+        tokio::task::spawn_blocking(move || -> Result<usize, AppError> {
+            BypassAlertsRepository::count_by_filters(&pool_for_count, &filter_for_count)
+                .map_err(AppError::Database)
+        }),
+    );
+
+    let rows = rows
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+    let total = total
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+
     Ok(Json(BypassAlertListResponse {
         total,
         alerts: rows,
