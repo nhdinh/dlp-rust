@@ -20,7 +20,7 @@
 use std::sync::Arc;
 
 use anyhow::{Context, Result};
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{CloseHandle, HANDLE};
 use windows::Win32::Storage::FileSystem::{
@@ -530,16 +530,16 @@ fn handle_connection(
                         }
                     }
                     IpcPayloadV1::VolumeClassQuery(query) => {
-                        error!(
-                            drive_letter = %query.drive_letter.to_string(),
-                            "VolumeClassQuery not implemented — returning None (fail-closed)"
+                        debug!(
+                            drive_letter = %query.drive_letter,
+                            "Hook IPC: VolumeClassQuery received"
                         );
-                        // Fail-closed: respond with VolumeClassResponse { class: None } so
-                        // clients using request-style sends do not deadlock.
+                        let response = crate::detection::usb::handle_volume_class_query(&query);
+                        // Respond with the resolved class (or None on failure).
+                        // This keeps the fail-closed invariant while allowing real
+                        // drive-letter classification when the detector is available.
                         let resp = IpcEnvelope::V1(IpcMessageV1 {
-                            payload: IpcPayloadV1::VolumeClassResponse(
-                                dlp_common::hook_ipc::VolumeClassResponse { class: None },
-                            ),
+                            payload: IpcPayloadV1::VolumeClassResponse(response),
                         });
                         let resp_bytes = bincode::serialize(&resp)
                             .context("serialize VolumeClassQuery response")?;
@@ -1440,7 +1440,7 @@ mod tests {
 
     #[test]
     fn test_handle_connection_volume_class_query_debug() {
-        // Test 6: VolumeClassQuery logs at debug and continues (not yet implemented).
+        // Test 6: VolumeClassQuery deserializes correctly.
         let query = dlp_common::hook_ipc::VolumeClassQuery { drive_letter: 'D' };
         let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
             payload: dlp_common::hook_ipc::IpcPayloadV1::VolumeClassQuery(query),
@@ -1458,6 +1458,63 @@ mod tests {
                 _ => panic!("expected VolumeClassQuery payload"),
             },
         }
+    }
+
+    /// End-to-end test: a VolumeClassQuery sent over the named pipe is resolved
+    /// by the agent via the global VolumeDetector and returns the cached class.
+    #[cfg(windows)]
+    #[test]
+    fn test_handle_connection_volume_class_query_resolves_class() {
+        use dlp_common::hook_ipc::{IpcEnvelope, IpcMessageV1, IpcPayloadV1, VolumeClassQuery};
+        use dlp_common::VolumeClass;
+
+        let pipe_name = r"\\.\pipe\DlpHookPipeTestVolumeClassQuery";
+
+        // Install a detector with a seeded volume class for drive E.
+        let detector = crate::detection::VolumeDetector::new();
+        detector.inject_volume_class_for_test('E', VolumeClass::USBRemovable);
+        let detector_static: &'static crate::detection::VolumeDetector =
+            Box::leak(Box::new(detector));
+        crate::detection::usb::set_drive_detector(detector_static);
+
+        // The VolumeClassQuery path does not use the HookHandler, but the server
+        // still requires a valid handler for legacy HookRequest fallback.
+        let handler: HookHandler = Arc::new(|_req: HookRequest| HookResponse {
+            decision: Decision::ALLOW,
+            reason: "ok".to_string(),
+            cache_hint: None,
+            cache_version: 0,
+        });
+
+        let _server_handle = start_server(pipe_name, handler);
+        let client = connect_client(pipe_name).expect("client connect");
+
+        let query = VolumeClassQuery { drive_letter: 'E' };
+        let envelope = IpcEnvelope::V1(IpcMessageV1 {
+            payload: IpcPayloadV1::VolumeClassQuery(query),
+        });
+        let envelope_bytes = bincode::serialize(&envelope).unwrap();
+
+        let response_bytes = send_raw(client, &envelope_bytes).expect("send VolumeClassQuery");
+        let response_envelope: IpcEnvelope =
+            bincode::deserialize(&response_bytes).expect("deserialize VolumeClassResponse");
+
+        match response_envelope {
+            IpcEnvelope::V1(msg) => match msg.payload {
+                IpcPayloadV1::VolumeClassResponse(resp) => {
+                    assert_eq!(resp.class, Some(VolumeClass::USBRemovable));
+                }
+                _ => panic!("expected VolumeClassResponse payload"),
+            },
+        }
+
+        close_pipe(client);
+
+        // Reset global detector to a fresh empty instance so other tests are not
+        // affected by this test's seed.
+        let cleanup: &'static crate::detection::VolumeDetector =
+            Box::leak(Box::new(crate::detection::VolumeDetector::new()));
+        crate::detection::usb::set_drive_detector(cleanup);
     }
 
     #[test]
