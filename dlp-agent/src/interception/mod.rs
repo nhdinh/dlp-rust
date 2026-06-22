@@ -509,8 +509,6 @@ pub async fn run_event_loop(
 
         if override_granted {
             if let Some(ref claims) = override_claims {
-                audit_event.approver_sid = Some(claims.sub.clone());
-                audit_event.approval_expiry = Some(claims.exp);
                 audit_event.justification = Some(
                     claims
                         .dst

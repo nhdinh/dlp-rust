@@ -187,6 +187,8 @@ pub fn store_events_sync(uow: &UnitOfWork<'_>, events: &[AuditEvent]) -> Result<
                     .to_string(),
                 correlation_id: event.correlation_id.clone(),
                 content_sha256: event.content_sha256.clone(),
+                prev_hash: event.prev_hash.clone(),
+                chain_hash: event.chain_hash.clone(),
             })
         })
         .collect::<Result<Vec<_>, serde_json::Error>>()?;
@@ -342,41 +344,44 @@ pub async fn ingest_events(
             let mut conn = pool.get().map_err(AppError::from)?;
             let uow = UnitOfWork::new(&mut conn).map_err(AppError::from)?;
 
-        // Pre-serialize enum fields into AuditEventRow structs.
-        let rows: Vec<AuditEventRow> = events_for_repo
-            .iter()
-            .map(|event| {
-                Ok(AuditEventRow {
-                    timestamp: event.timestamp.to_rfc3339(),
-                    event_type: serde_json::to_value(event.event_type)?
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string(),
-                    user_sid: event.user_sid.clone(),
-                    user_name: event.user_name.clone(),
-                    resource_path: event.resource_path.clone(),
-                    classification: serde_json::to_value(event.classification)?
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string(),
-                    action_attempted: serde_json::to_value(event.action_attempted)?
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string(),
-                    decision: serde_json::to_value(event.decision)?
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string(),
-                    policy_id: event.policy_id.clone(),
-                    policy_name: event.policy_name.clone(),
-                    agent_id: event.agent_id.clone(),
-                    session_id: event.session_id as i64,
-                    access_context: serde_json::to_value(event.access_context)?
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string(),
-                    correlation_id: event.correlation_id.clone(),
-                    content_sha256: event.content_sha256.clone(),
+            // Pre-serialize enum fields into AuditEventRow structs.
+            let rows: Vec<AuditEventRow> = events_for_repo
+                .iter()
+                .map(|event| {
+                    Ok(AuditEventRow {
+                        timestamp: event.timestamp.to_rfc3339(),
+                        event_type: serde_json::to_value(event.event_type)?
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                        user_sid: event.user_sid.clone(),
+                        user_name: event.user_name.clone(),
+                        resource_path: event.resource_path.clone(),
+                        classification: serde_json::to_value(event.classification)?
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                        action_attempted: serde_json::to_value(event.action_attempted)?
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                        decision: serde_json::to_value(event.decision)?
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                        policy_id: event.policy_id.clone(),
+                        policy_name: event.policy_name.clone(),
+                        agent_id: event.agent_id.clone(),
+                        session_id: event.session_id as i64,
+                        access_context: serde_json::to_value(event.access_context)?
+                            .as_str()
+                            .unwrap_or_default()
+                            .to_string(),
+                        correlation_id: event.correlation_id.clone(),
+                        content_sha256: event.content_sha256.clone(),
+                        prev_hash: event.prev_hash.clone(),
+                        chain_hash: event.chain_hash.clone(),
+                    })
                 })
                 .collect::<Result<Vec<_>, serde_json::Error>>()
                 .map_err(AppError::from)?;
@@ -437,6 +442,7 @@ pub async fn ingest_events(
                         .unwrap_or_default()
                         .to_string(),
                     correlation_id: synthetic.correlation_id.clone(),
+                    content_sha256: synthetic.content_sha256.clone(),
                     prev_hash: synthetic.prev_hash.clone(),
                     chain_hash: synthetic.chain_hash.clone(),
                 };
