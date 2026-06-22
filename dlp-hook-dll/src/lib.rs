@@ -698,6 +698,7 @@ pub(crate) fn classify_path(
         action: action.to_string(),
         source_volume_class,
         destination_volume_class,
+        pid: std::process::id(),
         ..Default::default()
     };
     pipe_client::send_request(

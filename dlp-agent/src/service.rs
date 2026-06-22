@@ -1635,8 +1635,12 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
                 Arc::new(move |req| {
                     // Stub handler — full ABAC evaluation wired in Phase 58-05.
                     // For now, check ApprovalCache for override (DIFF-01).
+                    // SECURITY: Extract user SID from the process token of the
+                    // requesting process. Falls back to SYSTEM SID only on failure.
+                    let caller_sid = get_process_user_sid(req.pid)
+                        .unwrap_or_else(|| "S-1-5-18".to_string());
                     let cache_key = dlp_common::approval::ApprovalCacheKey::new(
-                        "S-1-5-18", // SYSTEM SID placeholder — real SID from process token in full impl
+                        &caller_sid,
                         &req.path,
                         &req.action,
                         None,
@@ -2803,6 +2807,109 @@ fn get_process_image_path(pid: u32) -> Option<String> {
 
     let len = size as usize;
     Some(String::from_utf16_lossy(&buf[..len.min(buf.len())]))
+}
+
+/// Get the user SID (as a string) for a process by opening its token.
+///
+/// Opens the process with `PROCESS_QUERY_LIMITED_INFORMATION`, opens the
+/// process token with `TOKEN_QUERY`, retrieves the `TokenUser` information,
+/// and converts the SID to a string via `ConvertSidToStringSidW`.
+///
+/// Returns `None` if any step fails (e.g., process exited, access denied).
+#[cfg(windows)]
+fn get_process_user_sid(pid: u32) -> Option<String> {
+    use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows::Win32::Security::GetTokenInformation;
+    use windows::Win32::Security::TokenUser;
+    use windows::Win32::Security::TOKEN_QUERY;
+    use windows::Win32::System::Threading::{
+        OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    // Open the target process.
+    let proc_handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()? };
+
+    // Open the process token.
+    let mut token_handle = windows::Win32::Foundation::HANDLE(std::ptr::null_mut());
+    let open_result = unsafe {
+        OpenProcessToken(
+            proc_handle,
+            TOKEN_QUERY,
+            &mut token_handle,
+        )
+    };
+    if open_result.is_err() {
+        unsafe { let _ = CloseHandle(proc_handle); }
+        return None;
+    }
+
+    // Get the required buffer size for TokenUser.
+    let mut needed: u32 = 0;
+    let _ = unsafe {
+        GetTokenInformation(
+            token_handle,
+            TokenUser,
+            None,
+            0,
+            &mut needed,
+        )
+    };
+
+    // Allocate buffer and fetch TokenUser.
+    let mut buf = vec![0u8; needed as usize];
+    let info_result = unsafe {
+        GetTokenInformation(
+            token_handle,
+            TokenUser,
+            Some(buf.as_mut_ptr().cast()),
+            needed,
+            &mut needed,
+        )
+    };
+
+    if info_result.is_err() {
+        unsafe {
+            let _ = CloseHandle(token_handle);
+            let _ = CloseHandle(proc_handle);
+        }
+        return None;
+    }
+
+    // SAFETY: GetTokenInformation succeeded with TokenUser, so the buffer
+    // contains a TOKEN_USER structure whose User.Sid field is valid.
+    let token_user = unsafe {
+        &*(buf.as_ptr() as *const windows::Win32::Security::TOKEN_USER)
+    };
+    let sid = token_user.User.Sid;
+
+    // Convert SID to string.
+    let mut sid_str_ptr = windows::core::PWSTR::null();
+    let convert_result = unsafe { ConvertSidToStringSidW(sid, &mut sid_str_ptr) };
+    if convert_result.is_err() || sid_str_ptr.is_null() {
+        unsafe {
+            let _ = CloseHandle(token_handle);
+            let _ = CloseHandle(proc_handle);
+        }
+        return None;
+    }
+
+    let sid_string = unsafe { sid_str_ptr.to_string().unwrap_or_default() };
+
+    // Cleanup.
+    unsafe {
+        let _ = windows::Win32::Foundation::LocalFree(
+            Some(windows::Win32::Foundation::HLOCAL(sid_str_ptr.as_ptr().cast())),
+        );
+        let _ = CloseHandle(token_handle);
+        let _ = CloseHandle(proc_handle);
+    }
+
+    if sid_string.is_empty() {
+        None
+    } else {
+        Some(sid_string)
+    }
 }
 
 /// Spawns the config poll task when a server client is available.
