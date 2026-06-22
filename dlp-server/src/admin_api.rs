@@ -5485,10 +5485,8 @@ async fn list_bypass_alerts_handler(
         }),
     );
 
-    let rows = rows
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
-    let total = total
-        .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+    let rows = rows.map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
+    let total = total.map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))??;
 
     Ok(Json(BypassAlertListResponse {
         total,
@@ -12308,7 +12306,10 @@ mod tests {
         assert_eq!(payload.total, 1);
         assert_eq!(payload.snapshots.len(), 1);
         assert_eq!(payload.snapshots[0].user_sid, "S-1-5-21-1");
-        assert_eq!(payload.snapshots[0].matched_policy_id, Some("pol-001".to_string()));
+        assert_eq!(
+            payload.snapshots[0].matched_policy_id,
+            Some("pol-001".to_string())
+        );
     }
 
     #[tokio::test]
@@ -12367,7 +12368,11 @@ mod tests {
                 enforcement_mode: Some("Block".to_string()),
                 decision_latency_us: 150,
                 timestamp_qpc: i as u64 * 1000,
-                user_sid: if i % 2 == 0 { "S-1-5-21-A".to_string() } else { "S-1-5-21-B".to_string() },
+                user_sid: if i % 2 == 0 {
+                    "S-1-5-21-A".to_string()
+                } else {
+                    "S-1-5-21-B".to_string()
+                },
             };
             diag_store.ingest("AGENT-01", 100, vec![snap]);
         }

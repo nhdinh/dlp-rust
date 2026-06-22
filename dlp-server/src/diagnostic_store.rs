@@ -267,7 +267,6 @@ impl DiagnosticSnapshotStore {
             return Some(format!("user_sid has invalid format: {}", snap.user_sid));
         }
 
-
         None
     }
 
@@ -280,7 +279,8 @@ impl DiagnosticSnapshotStore {
             return false;
         }
         // Allow only ASCII digits, hyphens, and the "S-1-" prefix.
-        sid.chars().all(|c| c.is_ascii_digit() || c == '-' || c == 'S')
+        sid.chars()
+            .all(|c| c.is_ascii_digit() || c == '-' || c == 'S')
     }
 }
 
@@ -451,13 +451,29 @@ mod tests {
     #[test]
     fn test_max_keys_cap() {
         let store = DiagnosticSnapshotStore::with_caps(10, 3);
-        store.ingest("AGENT-01", 100, vec![make_snapshot("S-1-5-21-1", Some("pol-001"), 1)]);
-        store.ingest("AGENT-01", 200, vec![make_snapshot("S-1-5-21-2", Some("pol-002"), 2)]);
-        store.ingest("AGENT-01", 300, vec![make_snapshot("S-1-5-21-3", Some("pol-003"), 3)]);
+        store.ingest(
+            "AGENT-01",
+            100,
+            vec![make_snapshot("S-1-5-21-1", Some("pol-001"), 1)],
+        );
+        store.ingest(
+            "AGENT-01",
+            200,
+            vec![make_snapshot("S-1-5-21-2", Some("pol-002"), 2)],
+        );
+        store.ingest(
+            "AGENT-01",
+            300,
+            vec![make_snapshot("S-1-5-21-3", Some("pol-003"), 3)],
+        );
         assert_eq!(store.dll_count(), 3);
 
         // Fourth key evicts the oldest (100).
-        store.ingest("AGENT-01", 400, vec![make_snapshot("S-1-5-21-4", Some("pol-004"), 4)]);
+        store.ingest(
+            "AGENT-01",
+            400,
+            vec![make_snapshot("S-1-5-21-4", Some("pol-004"), 4)],
+        );
         assert_eq!(store.dll_count(), 3);
 
         let filter = DiagnosticFilter::default();

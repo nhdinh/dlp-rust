@@ -1532,9 +1532,8 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
     // The HookIpcServer runs on a dedicated std::thread without a tokio runtime.
     // Override requests need async server submission, so we use a channel to
     // forward them to a tokio task that handles the async work.
-    let (override_tx, mut override_rx) = tokio::sync::mpsc::channel::<
-        dlp_common::hook_ipc::OverrideRequest,
-    >(100);
+    let (override_tx, mut override_rx) =
+        tokio::sync::mpsc::channel::<dlp_common::hook_ipc::OverrideRequest>(100);
     let override_server_client = server_client.clone();
     let override_handle = tokio::spawn(async move {
         while let Some(req) = override_rx.recv().await {
@@ -1600,8 +1599,8 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
     let hook_ipc_handle = std::thread::Builder::new()
         .name("hook-ipc".into())
         .spawn(move || {
-            let diag_handler: crate::hook_ipc::DiagnosticsHandler = Arc::new(
-                move |req: dlp_common::hook_ipc::PullDiagnosticsRequest| {
+            let diag_handler: crate::hook_ipc::DiagnosticsHandler =
+                Arc::new(move |req: dlp_common::hook_ipc::PullDiagnosticsRequest| {
                     let filter = crate::diagnostic_aggregator::DiagnosticFilter::default();
                     let (snapshots, _total) = hook_ipc_diag.get_snapshots_paginated(
                         &filter,
@@ -1609,24 +1608,21 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
                         0,
                     );
                     dlp_common::hook_ipc::DiagnosticsResponse { snapshots }
-                },
-            );
-            let health_handler: crate::hook_ipc::HealthHandler = Arc::new(
-                move |_req: dlp_common::hook_ipc::PullHealthRequest| {
+                });
+            let health_handler: crate::hook_ipc::HealthHandler =
+                Arc::new(move |_req: dlp_common::hook_ipc::PullHealthRequest| {
                     let snapshot = hook_ipc_health
                         .get_current_status()
                         .map(|(_, s)| s)
                         .unwrap_or_default();
                     dlp_common::hook_ipc::HealthResponse { snapshot }
-                },
-            );
-            let override_handler: crate::hook_ipc::OverrideHandler = Arc::new(
-                move |req: dlp_common::hook_ipc::OverrideRequest| {
+                });
+            let override_handler: crate::hook_ipc::OverrideHandler =
+                Arc::new(move |req: dlp_common::hook_ipc::OverrideRequest| {
                     if let Err(e) = hook_ipc_override_tx.try_send(req) {
                         warn!(error = %e, "Override channel full — dropping request");
                     }
-                },
-            );
+                });
             let approval_cache_for_handler = Arc::clone(&hook_ipc_approval_cache);
             let server = crate::hook_ipc::HookIpcServer::new(
                 crate::hook_ipc::DEFAULT_PIPE_NAME,
@@ -1635,8 +1631,8 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
                     // For now, check ApprovalCache for override (DIFF-01).
                     // SECURITY: Extract user SID from the process token of the
                     // requesting process. Falls back to SYSTEM SID only on failure.
-                    let caller_sid = get_process_user_sid(req.pid)
-                        .unwrap_or_else(|| "S-1-5-18".to_string());
+                    let caller_sid =
+                        get_process_user_sid(req.pid).unwrap_or_else(|| "S-1-5-18".to_string());
                     let cache_key = dlp_common::approval::ApprovalCacheKey::new(
                         &caller_sid,
                         &req.path,
@@ -1671,7 +1667,10 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
         })
         .ok();
     if hook_ipc_handle.is_some() {
-        info!("Hook IPC server started on {}", crate::hook_ipc::DEFAULT_PIPE_NAME);
+        info!(
+            "Hook IPC server started on {}",
+            crate::hook_ipc::DEFAULT_PIPE_NAME
+        );
     }
 
     // ── BitLocker Encryption Verification (Phase 34) ──────────────────────
@@ -2830,29 +2829,17 @@ fn get_process_user_sid(pid: u32) -> Option<String> {
 
     // Open the process token.
     let mut token_handle = windows::Win32::Foundation::HANDLE(std::ptr::null_mut());
-    let open_result = unsafe {
-        OpenProcessToken(
-            proc_handle,
-            TOKEN_QUERY,
-            &mut token_handle,
-        )
-    };
+    let open_result = unsafe { OpenProcessToken(proc_handle, TOKEN_QUERY, &mut token_handle) };
     if open_result.is_err() {
-        unsafe { let _ = CloseHandle(proc_handle); }
+        unsafe {
+            let _ = CloseHandle(proc_handle);
+        }
         return None;
     }
 
     // Get the required buffer size for TokenUser.
     let mut needed: u32 = 0;
-    let _ = unsafe {
-        GetTokenInformation(
-            token_handle,
-            TokenUser,
-            None,
-            0,
-            &mut needed,
-        )
-    };
+    let _ = unsafe { GetTokenInformation(token_handle, TokenUser, None, 0, &mut needed) };
 
     // Allocate buffer and fetch TokenUser.
     let mut buf = vec![0u8; needed as usize];
@@ -2876,9 +2863,7 @@ fn get_process_user_sid(pid: u32) -> Option<String> {
 
     // SAFETY: GetTokenInformation succeeded with TokenUser, so the buffer
     // contains a TOKEN_USER structure whose User.Sid field is valid.
-    let token_user = unsafe {
-        &*(buf.as_ptr() as *const windows::Win32::Security::TOKEN_USER)
-    };
+    let token_user = unsafe { &*(buf.as_ptr() as *const windows::Win32::Security::TOKEN_USER) };
     let sid = token_user.User.Sid;
 
     // Convert SID to string.
@@ -2896,9 +2881,9 @@ fn get_process_user_sid(pid: u32) -> Option<String> {
 
     // Cleanup.
     unsafe {
-        let _ = windows::Win32::Foundation::LocalFree(
-            Some(windows::Win32::Foundation::HLOCAL(sid_str_ptr.as_ptr().cast())),
-        );
+        let _ = windows::Win32::Foundation::LocalFree(Some(windows::Win32::Foundation::HLOCAL(
+            sid_str_ptr.as_ptr().cast(),
+        )));
         let _ = CloseHandle(token_handle);
         let _ = CloseHandle(proc_handle);
     }
@@ -3411,11 +3396,11 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
         // be shutting down.
         #[cfg(windows)]
         unsafe {
+            use windows::core::PCWSTR;
+            use windows::Win32::Foundation::CloseHandle;
             use windows::Win32::Storage::FileSystem::{
                 CreateFileW, FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_NONE, OPEN_EXISTING,
             };
-            use windows::Win32::Foundation::CloseHandle;
-            use windows::core::PCWSTR;
             let name_wide: Vec<u16> = crate::hook_ipc::DEFAULT_PIPE_NAME
                 .encode_utf16()
                 .chain(std::iter::once(0))
