@@ -39,7 +39,7 @@ use crate::db::repositories::{
 };
 use crate::exception_store;
 use crate::policy_store::{mode_str, parse_enforcement_mode};
-use crate::rate_limiter::{self, default_config, policy_config};
+use crate::rate_limiter::{self, default_config, diagnostics_config, policy_config};
 use crate::AppError;
 use dlp_common::abac::{EnforcementMode, PolicyMode};
 use dlp_common::{
@@ -1273,7 +1273,10 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
                 .delete(delete_protected_path_handler),
         )
         // Phase 58: Diagnostics admin API
-        .route("/admin/diagnostics", get(list_diagnostics_handler))
+        .route(
+            "/admin/diagnostics",
+            get(list_diagnostics_handler).route_layer(diagnostics_config()),
+        )
         // Phase 53: Bypass alerts admin API
         .route("/admin/bypass-alerts", get(list_bypass_alerts_handler))
         .route(
