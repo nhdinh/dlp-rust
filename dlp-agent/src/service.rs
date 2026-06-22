@@ -1182,12 +1182,10 @@ async fn run_loop_init(machine_name: Option<String>) -> RunLoopContext {
             Arc::clone(&registry_cache),
         )));
 
-    // SAFETY: detector_arc is stored in the RunLoopContext which outlives the
-    // service main loop. The static reference is only used during the lifetime
-    // of the service process.
-    let detector_static: &'static crate::detection::VolumeDetector =
-        unsafe { std::mem::transmute(detector_arc.as_ref()) };
-    crate::detection::usb::set_drive_detector(detector_static);
+    // Pass Arc<VolumeDetector> directly to avoid unsafe transmute for lifetime
+    // extension. DRIVE_DETECTOR stores Option<Arc<VolumeDetector>> so the Arc
+    // clone keeps the detector alive as long as needed.
+    crate::detection::usb::set_drive_detector(Arc::clone(&detector_arc));
 
     // ── Offline manager ────────────────────────────────────────────────────
     let offline = init_offline_manager(engine_client, cache, &server_client, machine_name.clone());
