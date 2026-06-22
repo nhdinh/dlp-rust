@@ -226,9 +226,21 @@ mod tests {
     #[test]
     fn test_ingest_multiple_dlls() {
         let agg = DiagnosticAggregator::new();
-        agg.ingest("AGENT-01", 100, vec![make_snapshot("S-1-5-21-1", Some("pol-001"), 1000)]);
-        agg.ingest("AGENT-01", 200, vec![make_snapshot("S-1-5-21-2", Some("pol-002"), 2000)]);
-        agg.ingest("AGENT-01", 300, vec![make_snapshot("S-1-5-21-3", Some("pol-003"), 3000)]);
+        agg.ingest(
+            "AGENT-01",
+            100,
+            vec![make_snapshot("S-1-5-21-1", Some("pol-001"), 1000)],
+        );
+        agg.ingest(
+            "AGENT-01",
+            200,
+            vec![make_snapshot("S-1-5-21-2", Some("pol-002"), 2000)],
+        );
+        agg.ingest(
+            "AGENT-01",
+            300,
+            vec![make_snapshot("S-1-5-21-3", Some("pol-003"), 3000)],
+        );
 
         let filter = DiagnosticFilter::default();
         let result = agg.get_snapshots(&filter);
@@ -242,9 +254,21 @@ mod tests {
     #[test]
     fn test_filter_by_user_sid() {
         let agg = DiagnosticAggregator::new();
-        agg.ingest("AGENT-01", 100, vec![make_snapshot("S-1-5-21-A", Some("pol-001"), 1000)]);
-        agg.ingest("AGENT-01", 100, vec![make_snapshot("S-1-5-21-B", Some("pol-002"), 2000)]);
-        agg.ingest("AGENT-01", 100, vec![make_snapshot("S-1-5-21-A", Some("pol-003"), 3000)]);
+        agg.ingest(
+            "AGENT-01",
+            100,
+            vec![make_snapshot("S-1-5-21-A", Some("pol-001"), 1000)],
+        );
+        agg.ingest(
+            "AGENT-01",
+            100,
+            vec![make_snapshot("S-1-5-21-B", Some("pol-002"), 2000)],
+        );
+        agg.ingest(
+            "AGENT-01",
+            100,
+            vec![make_snapshot("S-1-5-21-A", Some("pol-003"), 3000)],
+        );
 
         let filter = DiagnosticFilter {
             user_sid: Some("S-1-5-21-A".to_string()),
@@ -258,9 +282,21 @@ mod tests {
     #[test]
     fn test_filter_by_policy_id() {
         let agg = DiagnosticAggregator::new();
-        agg.ingest("AGENT-01", 100, vec![make_snapshot("S-1-5-21-1", Some("pol-001"), 1000)]);
-        agg.ingest("AGENT-01", 100, vec![make_snapshot("S-1-5-21-1", Some("pol-002"), 2000)]);
-        agg.ingest("AGENT-01", 100, vec![make_snapshot("S-1-5-21-1", Some("pol-001"), 3000)]);
+        agg.ingest(
+            "AGENT-01",
+            100,
+            vec![make_snapshot("S-1-5-21-1", Some("pol-001"), 1000)],
+        );
+        agg.ingest(
+            "AGENT-01",
+            100,
+            vec![make_snapshot("S-1-5-21-1", Some("pol-002"), 2000)],
+        );
+        agg.ingest(
+            "AGENT-01",
+            100,
+            vec![make_snapshot("S-1-5-21-1", Some("pol-001"), 3000)],
+        );
 
         let filter = DiagnosticFilter {
             policy_id: Some("pol-001".to_string()),
@@ -268,7 +304,9 @@ mod tests {
         };
         let result = agg.get_snapshots(&filter);
         assert_eq!(result.len(), 2);
-        assert!(result.iter().all(|s| s.matched_policy_id == Some("pol-001".to_string())));
+        assert!(result
+            .iter()
+            .all(|s| s.matched_policy_id == Some("pol-001".to_string())));
     }
 
     #[test]
@@ -323,8 +361,16 @@ mod tests {
         assert_eq!(agg.dll_count(), 0);
         assert_eq!(agg.total_snapshot_count(), 0);
 
-        agg.ingest("AGENT-01", 100, vec![make_snapshot("S-1-5-21-1", Some("pol-001"), 1000)]);
-        agg.ingest("AGENT-01", 200, vec![make_snapshot("S-1-5-21-2", Some("pol-002"), 2000)]);
+        agg.ingest(
+            "AGENT-01",
+            100,
+            vec![make_snapshot("S-1-5-21-1", Some("pol-001"), 1000)],
+        );
+        agg.ingest(
+            "AGENT-01",
+            200,
+            vec![make_snapshot("S-1-5-21-2", Some("pol-002"), 2000)],
+        );
 
         assert_eq!(agg.dll_count(), 2);
         assert_eq!(agg.total_snapshot_count(), 2);

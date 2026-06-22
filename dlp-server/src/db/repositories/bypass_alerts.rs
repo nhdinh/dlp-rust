@@ -207,10 +207,7 @@ impl BypassAlertsRepository {
 
     /// Returns the total count of bypass alerts matching the filter criteria
     /// (before pagination).
-    pub fn count_by_filters(
-        pool: &Pool,
-        filter: &BypassAlertFilter,
-    ) -> rusqlite::Result<usize> {
+    pub fn count_by_filters(pool: &Pool, filter: &BypassAlertFilter) -> rusqlite::Result<usize> {
         let conn = pool
             .get()
             .map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
