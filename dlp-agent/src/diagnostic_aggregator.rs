@@ -200,7 +200,6 @@ mod tests {
             hook_function: "WriteFile".to_string(),
             classification_source: ClassificationSource::CacheHit,
             classification_age_ms: 42,
-            abac_subject: user_sid.to_string(),
             abac_resource: r"C:\Data\file.txt".to_string(),
             abac_action: "WRITE".to_string(),
             abac_environment: "local".to_string(),

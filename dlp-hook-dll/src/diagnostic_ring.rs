@@ -143,7 +143,6 @@ mod tests {
             hook_function: hook_function.to_string(),
             classification_source: ClassificationSource::CacheHit,
             classification_age_ms: 42,
-            abac_subject: "S-1-5-21-1".to_string(),
             abac_resource: r"C:\Data\file.txt".to_string(),
             abac_action: "WRITE".to_string(),
             abac_environment: "local".to_string(),
