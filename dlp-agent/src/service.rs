@@ -1744,6 +1744,7 @@ async fn run_loop_init(
 
             // bypass_rx was created alongside bypass_tx when HookIpcServer was
             // constructed; the correlator consumes hook DLL BypassAlert frames.
+            // Verified: bypass_tx/bypass_rx wiring per 58.1-02 (bounded 1000, with_bypass_channel).
 
             let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
             let handle = tokio::spawn(async move {
