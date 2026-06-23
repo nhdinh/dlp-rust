@@ -385,6 +385,26 @@ impl BypassCorrelator {
         self
     }
 
+    /// Test-only accessor for the pending alert batch length.
+    ///
+    /// # Note
+    ///
+    /// This is intended for integration tests to verify batching behavior
+    /// without exposing the internal `PendingAlert` type.
+    pub async fn batch_len(&self) -> usize {
+        self.alert_batch.lock().await.len()
+    }
+
+    /// Test-only accessor for the pending alert batch contents.
+    ///
+    /// # Note
+    ///
+    /// This is intended for integration tests to verify alert enrichment
+    /// without exposing the internal `PendingAlert` type.
+    pub async fn batch_alert(&self, index: usize) -> Option<BypassAlert> {
+        self.alert_batch.lock().await.get(index).map(|p| p.alert.clone())
+    }
+
     /// Calibrates QPC against system file time (CR-01).
     ///
     /// Returns (qpc_freq, qpc_delta) where:
