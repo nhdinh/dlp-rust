@@ -433,9 +433,14 @@ Plans:
   3. OPS-04 UAT executes on physical Windows 11 hardware and results are recorded in `.planning/milestones/v0.10.0-UAT.md`.
   4. Missing `VERIFICATION.md` files are created for the relevant completed phases.
 
-**Plans:** 0 plans
+**Plans:** 2/4 plans executed
 
 Plans:
+
+- [x] 58.1-01-PLAN.md
+- [ ] 58.1-02-PLAN.md
+- [x] 58.1-03-PLAN.md
+- [ ] 58.1-04-PLAN.md
 - [ ] TBD (run `/gsd-plan-phase 58.1` to break down)
 
 ### Phase 59: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
@@ -623,7 +628,7 @@ Plans:
 | 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 6/6 | Complete | 2026-06-06 |
 | 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 6/6 | Complete | 2026-06-10 |
 | 58. Differentiators Bundle (cuttable to v0.10.1) | 6/6 | Complete | 2026-06-09 |
-| 58.1 | Close v0.10.0 ship-gap verification items (INSERTED) | 3/4 | In Progress | 2026-06-23 |
+| 58.1 | Close v0.10.0 ship-gap verification items (INSERTED) | 2/4 | In Progress|  |
 | 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Complete | 2026-05-21 |
 | 60. Data Owner Review Queue + Admin TUI Screen | 1/1 | Complete | 2026-05-12 |
 | 61. Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature | 4/4 | Complete | 2026-05-14 |
