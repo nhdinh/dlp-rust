@@ -2,13 +2,13 @@
 gsd_state_version: 1.0
 milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
-current_phase: 58.1
-current_phase_name: close-v0-10-0-ship-gap-verification-items
-status: executing
-stopped_at: Phase 58.1 Plan 04 complete
-last_updated: "2026-06-23T11:36:17.140Z"
+current_phase: 59
+current_phase_name: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
+status: verifying
+stopped_at: Phase 58.1 verification completed
+last_updated: "2026-06-23T15:34:28.940Z"
 last_activity: 2026-06-23
-last_activity_desc: Phase 58.1 Plan 03 executed
+last_activity_desc: Phase 58.1 complete, transitioned to Phase 59
 progress:
   total_phases: 43
   completed_phases: 36
@@ -23,16 +23,17 @@ progress:
 
 **Project:** DLP-RUST — Enterprise DLP System (NTFS + Active Directory + ABAC)
 **Core Value:** Prevent data exfiltration via a layered enforcement stack (NTFS + ABAC + AD identity)
-**Current Focus:** Phase 58.1 — close-v0-10-0-ship-gap-verification-items
+**Current Focus:** Phase 58.1 — close-v0-10-0-ship-gap-verification-items (VERIFIED)
 
 ---
 
 ## Current Position
 
-Phase: 58.1 (close-v0-10-0-ship-gap-verification-items) — COMPLETE
-Plan: 4 of 4 complete
-Status: All 4 plans complete (01: journal writes, 02: bypass correlator routing, 03: VERIFICATION.md artifacts, 04: OPS-04 UAT handoff)
-Last activity: 2026-06-23 — Phase 58.1 Plan 03 executed
+Phase: 59 — Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
+Plan: Not started
+Status: All 4 plans complete and verified (01: journal writes, 02: bypass correlator routing, 03: VERIFICATION.md artifacts, 04: OPS-04 UAT handoff)
+Verification: 14/14 truths verified, status passed, 18 tests pass, 0 gaps
+Last activity: 2026-06-23 — Phase 58.1 complete, transitioned to Phase 59
 
 Phase: 57 (operational-deployment-guide-av-edr-allowlist-uat) — IN PROGRESS
 Plan: 4 of 6 complete (UAT execution pending manual verification)
@@ -51,7 +52,7 @@ v0.8.0 [Phase 39–42 done] (shipped 2026-05-07)
 v0.8.1 [Phase 43–46 done] (shipped 2026-05-08)
 v0.9.0 [M017 / pre-Phase 47 done] (shipped 2026-05-09)
 v1.0.0 [abandoned 2026-05-12 — only Phase 47 (HARD-01) shipped]
-v0.10.0 [Phase 47 done (prereq) | Phases 48–56 done | Phases 57–58 active] (in progress)
+v0.10.0 [Phase 47 done (prereq) | Phases 48–56 done | Phases 57–58 done | Phase 58.1 verified] (in progress — UAT pending)
 v0.11.0 [Phases 59–64 done] (shipped 2026-06-09 — Label Service + Workflow + Syslog + Hash + Device)
 v0.12.0 [Phases 65–70 planned] (planned — Scanner + Screenshot + Watermark + Email + RDP + BT)
 ```
@@ -80,6 +81,7 @@ v0.12.0 [Phases 65–70 planned] (planned — Scanner + Screenshot + Watermark +
 | 56.1 | Close gap DRIVE-03/04 — add volume class fields to HookRequest and ABAC path (INSERTED) | TBD |
 | 57 | Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | OPS-01..04 |
 | 58 | Differentiators Bundle (cuttable to v0.10.1) | DIFF-01..04 |
+| 58.1 | Close v0.10.0 ship-gap verification items (INSERTED) | OPS-04, ETW-03, DIFF-04 |
 | **v0.11.0** | | |
 | 59 | Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | LABEL-01..07 |
 | 60 | Data Owner Review Queue + Admin TUI Screen | LABEL-04 |
@@ -133,6 +135,7 @@ Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlatio
 27. **2026-05-30: Phase 57 Plans 01-04 complete.** Deployment guide (`docs/operations/deployment-guide.md`) with per-vendor AV/EDR allowlist procedures for 6 vendors (Defender, CrowdStrike, SentinelOne, Carbon Black, Sophos, Trend Micro). RELEASE_NOTES.md with SHA-256/SHA-512 hash tables, artifact provenance, signing certificate info, WDSI submission flow, and signtool verification commands. v0.10.0 UAT test plan (`.planning/milestones/v0.10.0-UAT.md`) with 36 scenarios across 10 categories. Deployment reality documentation (57-04) covering Secure Boot, PPL coverage gaps, DACL tripwire backstop, privilege preservation, and reboot requirements. OPS-01, OPS-02, OPS-03 requirements satisfied. OPS-04 (UAT execution) PENDING manual execution on physical Windows 11 host.
 28. **2026-05-30: Phase 57 Plans 05-06 complete.** Final integration verification: standardized DLL naming convention (`dlp_hook_dll.dll` with underscore, not hyphen) across all documentation. Added code block language tags to deployment guide for syntax highlighting. Phase 57 status: IN PROGRESS (4 of 6 plans complete). Ship/no-ship decision PENDING UAT results. See `57-VERIFICATION.md` for detailed status.
 29. **2026-06-02: Phase 58 complete (all 6 plans).** Differentiators Bundle — override flow, diagnostics, health, hash evidence, admin TUI screens. Key deliverables: IpcPayloadV2 versioned envelope, DiagnosticSnapshot with 18 fields, content_hasher with 100MB/1GB boundaries, diagnostic_ring (1000-entry lock-free buffer), DecisionContext in all 12 trampolines, injected_pids/patched_modules counters, DiagnosticAggregator with 5-min history scanning, connected_pipes registry, concurrent pipe polling with JoinSet, server CachedDiagnostics with rate limiting, GET /admin/diagnostics + /admin/health endpoints, AuditEvent INSERT to SQLite, admin TUI Diagnostic List + Self-Health Dashboard screens, HookResponse.approval_override with TTL enforcement, 30s deduplication with strengthened key. Full workspace: 2158+ tests pass, clippy clean (-D warnings), cargo fmt clean. DIFF-01..04 requirements satisfied. Phase 58 COMPLETE.
+30. **2026-06-23: Phase 58.1 verification complete.** Close v0.10.0 ship-gap verification items — ETW journal writes in hook DLL trampolines verified (D-03/D-04), BypassCorrelator::run() consumes bypass_rx and routes to alert storage verified, 7 missing VERIFICATION.md files created (phases 50, 50.1, 52, 53, 53.1, 56, 58), OPS-04 UAT handoff script and companion guide created. 14/14 observable truths verified. 18 tests pass (4 bypass_correlator_rx + 4 bypass_rx_batch + 7 journal_integration + 3 journal_degraded). PowerShell syntax valid. 0 gaps. Status: PASSED. See `58.1-VERIFICATION.md` for full report.
 
 ## Blockers
 
@@ -176,8 +179,8 @@ Both plans in Phase 55.1 are complete. Ready for verification (`/gsd-verify-phas
 
 ## Session Continuity
 
-Last session: 2026-06-23T11:36:17.130Z
-Stopped at: Phase 58.1 context gathered
+Last session: 2026-06-23T12:00:00Z
+Stopped at: Phase 58.1 verification completed
 Resume file: .planning/phases/58.1-close-v0-10-0-ship-gap-verification-items/58.1-CONTEXT.md
 
 ## Operator Next Steps
@@ -224,3 +227,4 @@ Resume file: .planning/phases/58.1-close-v0-10-0-ship-gap-verification-items/58.
 - [Phase ?]: Extracted compute_override_decision() as pure testable function from run_event_loop
 - [Phase ?]: Added approver_sid and approval_expiry to AuditEvent in dlp-common for cross-crate sharing
 - [Phase ?]: Hook DLL path approval override DEFERRED to follow-up phase — structural wiring only
+- [Phase 58.1]: Verification passed 14/14 truths. 0 gaps. 18 tests pass. All key links wired. 7 missing VERIFICATION.md files created. OPS-04 UAT handoff script and companion guide exist and are self-contained.
