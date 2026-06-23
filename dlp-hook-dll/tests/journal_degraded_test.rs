@@ -17,7 +17,11 @@ fn connect_client(pipe_name: &str) -> std::io::Result<std::fs::File> {
     let path = format!(r"\\.\pipe\{}", pipe_name.trim_start_matches(r"\\.\pipe\"));
     let mut attempts = 0;
     loop {
-        match std::fs::OpenOptions::new().read(true).write(true).open(&path) {
+        match std::fs::OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+        {
             Ok(f) => return Ok(f),
             Err(e) if attempts < 50 => {
                 std::thread::sleep(Duration::from_millis(10));
@@ -119,10 +123,8 @@ mod windows_tests {
 
         let server_handle = std::thread::spawn(move || {
             unsafe {
-                let name_wide: Vec<u16> = pipe_name
-                    .encode_utf16()
-                    .chain(std::iter::once(0))
-                    .collect();
+                let name_wide: Vec<u16> =
+                    pipe_name.encode_utf16().chain(std::iter::once(0)).collect();
                 let name_pcwstr = windows::core::PCWSTR::from_raw(name_wide.as_ptr());
 
                 let pipe_handle = CreateNamedPipeW(
@@ -181,17 +183,18 @@ mod windows_tests {
                 *guard = msg_buf;
 
                 // Send an ACK response (empty Response payload).
-                let ack = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
-                    payload: dlp_common::hook_ipc::IpcPayloadV1::Response(
-                        dlp_common::hook_ipc::HookResponse {
-                            decision: dlp_common::Decision::ALLOW,
-                            reason: "journal degraded ack".to_string(),
-                            cache_hint: None,
-                            cache_version: 0,
-                            approval_override: None,
-                        },
-                    ),
-                });
+                let ack =
+                    dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+                        payload: dlp_common::hook_ipc::IpcPayloadV1::Response(
+                            dlp_common::hook_ipc::HookResponse {
+                                decision: dlp_common::Decision::ALLOW,
+                                reason: "journal degraded ack".to_string(),
+                                cache_hint: None,
+                                cache_version: 0,
+                                approval_override: None,
+                            },
+                        ),
+                    });
                 let ack_bytes = bincode::serialize(&ack).unwrap();
                 let ack_len = ack_bytes.len() as u32;
                 let mut written: u32 = 0;
@@ -231,7 +234,8 @@ mod windows_tests {
         });
         let envelope_bytes = bincode::serialize(&envelope).unwrap();
 
-        let ack_bytes = send_raw(&mut client, &envelope_bytes).expect("send journal degraded alert");
+        let ack_bytes =
+            send_raw(&mut client, &envelope_bytes).expect("send journal degraded alert");
         let ack_envelope: dlp_common::hook_ipc::IpcEnvelope =
             bincode::deserialize(&ack_bytes).expect("deserialize ack");
         match ack_envelope {

@@ -175,9 +175,8 @@ impl HookIpcServer {
         handler: HookHandler,
         bypass_tx: crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>,
     ) -> Self {
-        let handler: HookHandler = Arc::new(move |req: HookRequest| {
-            handle_hook_request(req, &handler, &cache, None)
-        });
+        let handler: HookHandler =
+            Arc::new(move |req: HookRequest| handle_hook_request(req, &handler, &cache, None));
         Self {
             pipe_name: pipe_name.into(),
             handler,
@@ -370,7 +369,7 @@ fn handle_connection(
                 }
                 IpcPayloadV1::BypassAlert(ref alert) => {
                     debug!(reason = ?alert.reason, stub = %alert.stub_name, "Hook IPC: bypass alert received");
-                    if let Some(ref tx) = bypass_tx {
+                    if let Some(tx) = bypass_tx {
                         if let Err(e) = tx.send(alert.clone()) {
                             warn!(metric = "bypass_tx_dropped", error = ?e, "bypass channel full or closed");
                         }

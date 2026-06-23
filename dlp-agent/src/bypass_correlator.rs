@@ -133,7 +133,7 @@ pub struct PendingAlert {
 
 impl PendingAlert {
     /// Creates a new `PendingAlert` with a fresh UUID batch_id.
-    fn new(alert: BypassAlert) -> Self {
+    pub fn new(alert: BypassAlert) -> Self {
         Self {
             alert,
             retry_count: 0,
@@ -402,7 +402,11 @@ impl BypassCorrelator {
     /// This is intended for integration tests to verify alert enrichment
     /// without exposing the internal `PendingAlert` type.
     pub async fn batch_alert(&self, index: usize) -> Option<BypassAlert> {
-        self.alert_batch.lock().await.get(index).map(|p| p.alert.clone())
+        self.alert_batch
+            .lock()
+            .await
+            .get(index)
+            .map(|p| p.alert.clone())
     }
 
     /// Calibrates QPC against system file time (CR-01).
@@ -1047,7 +1051,11 @@ impl BypassCorrelator {
                     rt.block_on(bypass_corr.submit_bypass_alert(alert));
                 }
             }
-            tracing::warn!(metric = "bypass_rx_dropped", reason = "channel_closed", "bypass_rx channel closed — exiting bypass alert handler");
+            tracing::warn!(
+                metric = "bypass_rx_dropped",
+                reason = "channel_closed",
+                "bypass_rx channel closed — exiting bypass alert handler"
+            );
         });
 
         // Task 4: Batch flush task.

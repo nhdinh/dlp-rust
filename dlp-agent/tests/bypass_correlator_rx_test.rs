@@ -77,7 +77,9 @@ async fn test_bypass_rx_routes_to_repo() {
         "severity should be mapped"
     );
     assert!(
-        batched_alert.correlation_reason.contains("Hook self-reported"),
+        batched_alert
+            .correlation_reason
+            .contains("Hook self-reported"),
         "correlation_reason should be set"
     );
 }
@@ -147,7 +149,9 @@ async fn test_bypass_rx_batch_of_100() {
     // Give it a moment to process, then drop tx to signal completion.
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     drop(bypass_tx);
-    bypass_rx_handle.await.expect("spawn_blocking should succeed");
+    bypass_rx_handle
+        .await
+        .expect("spawn_blocking should succeed");
 
     // Assert: All 100 alerts should be in the batch.
     assert_eq!(

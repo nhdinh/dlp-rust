@@ -25,7 +25,10 @@ fn test_journal_write_before_api_writefile() {
     let journal_op_write: u8 = 2;
 
     // Verify the op code mapping matches the documented convention.
-    assert_eq!(journal_op_write, 2, "WriteFile journal_op must be 2 (Write)");
+    assert_eq!(
+        journal_op_write, 2,
+        "WriteFile journal_op must be 2 (Write)"
+    );
 
     // Verify that journal_write_from_trampoline is called in the WriteFile
     // trampoline by checking the source structure. The call is at the end
@@ -42,7 +45,10 @@ fn test_journal_write_before_api_writefile() {
 fn test_journal_write_before_api_deletefile() {
     // Verify the correct op code for DeleteFileW (3 = Delete).
     let journal_op_delete: u8 = 3;
-    assert_eq!(journal_op_delete, 3, "DeleteFileW journal_op must be 3 (Delete)");
+    assert_eq!(
+        journal_op_delete, 3,
+        "DeleteFileW journal_op must be 3 (Delete)"
+    );
 
     // Structural verification: HookDeleteFileW calls classify_and_log_path
     // with journal_op=3, and the journal write is at line 397 of trampolines.rs
@@ -57,7 +63,10 @@ fn test_journal_write_before_api_deletefile() {
 fn test_journal_write_before_api_movefile() {
     // Verify the correct op code for MoveFileExW (4 = SetInfo/Move).
     let journal_op_move: u8 = 4;
-    assert_eq!(journal_op_move, 4, "MoveFileExW journal_op must be 4 (SetInfo)");
+    assert_eq!(
+        journal_op_move, 4,
+        "MoveFileExW journal_op must be 4 (SetInfo)"
+    );
 
     // Structural verification: HookMoveFileExW calls classify_and_log_path
     // with journal_op=4, and the journal write is at line 397.
@@ -140,11 +149,11 @@ fn test_pure_open_no_journal() {
 #[cfg(windows)]
 mod windows_tests {
     use windows::Win32::Foundation::CloseHandle;
+    use windows::Win32::Foundation::INVALID_HANDLE_VALUE;
     use windows::Win32::System::Memory::{
         CreateFileMappingW, MapViewOfFile, UnmapViewOfFile, FILE_MAP_ALL_ACCESS,
         MEMORY_MAPPED_VIEW_ADDRESS, PAGE_READWRITE,
     };
-    use windows::Win32::Foundation::INVALID_HANDLE_VALUE;
 
     const TEST_JOURNAL_NAME: &str = "DlpHookJournal_TestOrdering";
 
@@ -203,8 +212,8 @@ mod windows_tests {
 
             // Write a journal entry with op=2 (Write).
             dlp_hook_dll::journal_write(
-                42,   // handle_value
-                2,    // op = Write
+                42, // handle_value
+                2,  // op = Write
                 r"C:\test\file.txt",
                 1234, // ts_qpc
                 0,    // etw_timestamp
