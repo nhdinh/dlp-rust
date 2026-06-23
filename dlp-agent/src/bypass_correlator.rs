@@ -1020,12 +1020,14 @@ impl BypassCorrelator {
         let bypass_handle = tokio::task::spawn_blocking(move || {
             while let Ok(alert) = bypass_rx.recv() {
                 let bypass_corr = Arc::clone(&bypass_corr);
+                tracing::info!(metric = "bypass_rx_processed", pid = alert.pid, stub = %alert.stub_name, reason = ?alert.reason, "bypass alert received from hook DLL");
                 // Bridge sync recv to async submit_bypass_alert.
                 // Use block_on if a runtime is available; otherwise skip.
                 if let Ok(rt) = tokio::runtime::Handle::try_current() {
                     rt.block_on(bypass_corr.submit_bypass_alert(alert));
                 }
             }
+            tracing::warn!(metric = "bypass_rx_dropped", reason = "channel_closed", "bypass_rx channel closed — exiting bypass alert handler");
         });
 
         // Task 4: Batch flush task.
