@@ -1225,48 +1225,51 @@ fn emit_ntdll_patching_enabled_event() {
 fn spawn_hook_ipc_server(
     _cache: Arc<dyn crate::hook_ipc::CacheAccessor>,
     offline: Arc<crate::offline::OfflineManager>,
-    _bypass_tx: crossbeam_channel::Sender<BypassAlert>,
+    bypass_tx: crossbeam_channel::Sender<BypassAlert>,
 ) -> Option<std::thread::JoinHandle<()>> {
-    let server = crate::hook_ipc::HookIpcServer::new(
+    let handler = Arc::new(move |req: dlp_common::HookRequest| {
+        // Map hook action string to ABAC Action enum.
+        let action = match req.action.as_str() {
+            "READ" => dlp_common::Action::READ,
+            "WRITE" | "CREATE" => dlp_common::Action::WRITE,
+            "COPY" => dlp_common::Action::COPY,
+            "DELETE" => dlp_common::Action::DELETE,
+            "MOVE" | "RENAME" => dlp_common::Action::MOVE,
+            _ => dlp_common::Action::READ,
+        };
+        let evaluate_req = dlp_common::EvaluateRequest {
+            subject: dlp_common::Subject {
+                user_sid: "S-1-5-18".to_string(),
+                ..Default::default()
+            },
+            resource: dlp_common::Resource {
+                path: req.path,
+                ..Default::default()
+            },
+            environment: dlp_common::Environment::default(),
+            action,
+            agent: None,
+            source_application: None,
+            destination_application: None,
+            source_origin: None,
+            destination_origin: None,
+            source_volume_class: None,
+            destination_volume_class: None,
+        };
+        let eval_resp = offline.offline_decision(&evaluate_req);
+        dlp_common::HookResponse {
+            decision: eval_resp.decision,
+            reason: eval_resp.reason,
+            cache_hint: None,
+            cache_version: 0,
+            approval_override: None,
+        }
+    });
+
+    let server = crate::hook_ipc::HookIpcServer::with_bypass_channel(
         crate::hook_ipc::DEFAULT_PIPE_NAME,
-        Arc::new(move |req: dlp_common::HookRequest| {
-            // Map hook action string to ABAC Action enum.
-            let action = match req.action.as_str() {
-                "READ" => dlp_common::Action::READ,
-                "WRITE" | "CREATE" => dlp_common::Action::WRITE,
-                "COPY" => dlp_common::Action::COPY,
-                "DELETE" => dlp_common::Action::DELETE,
-                "MOVE" | "RENAME" => dlp_common::Action::MOVE,
-                _ => dlp_common::Action::READ,
-            };
-            let evaluate_req = dlp_common::EvaluateRequest {
-                subject: dlp_common::Subject {
-                    user_sid: "S-1-5-18".to_string(),
-                    ..Default::default()
-                },
-                resource: dlp_common::Resource {
-                    path: req.path,
-                    ..Default::default()
-                },
-                environment: dlp_common::Environment::default(),
-                action,
-                agent: None,
-                source_application: None,
-                destination_application: None,
-                source_origin: None,
-                destination_origin: None,
-                source_volume_class: None,
-                destination_volume_class: None,
-            };
-            let eval_resp = offline.offline_decision(&evaluate_req);
-            dlp_common::HookResponse {
-                decision: eval_resp.decision,
-                reason: eval_resp.reason,
-                cache_hint: None,
-                cache_version: 0,
-                approval_override: None,
-            }
-        }),
+        handler,
+        bypass_tx,
     );
 
     match std::thread::Builder::new()
@@ -1429,7 +1432,7 @@ async fn run_loop_init(
     // correlator (receiver). Hook DLL BypassAlert frames received over the
     // named pipe are forwarded to the correlator for enrichment and routing to
     // SIEM.
-    let (bypass_tx, bypass_rx) = crossbeam_channel::unbounded::<BypassAlert>();
+    let (bypass_tx, bypass_rx) = crossbeam_channel::bounded::<BypassAlert>(1000);
 
     let classification_cache_dyn: Arc<dyn crate::hook_ipc::CacheAccessor> =
         classification_cache.clone();

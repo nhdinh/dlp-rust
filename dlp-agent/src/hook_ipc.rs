@@ -95,6 +95,7 @@ pub struct HookIpcServer {
     diagnostics_handler: Option<DiagnosticsHandler>,
     health_handler: Option<HealthHandler>,
     override_handler: Option<OverrideHandler>,
+    bypass_tx: Option<crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>>,
 }
 
 impl HookIpcServer {
@@ -109,6 +110,7 @@ impl HookIpcServer {
             diagnostics_handler: None,
             health_handler: None,
             override_handler: None,
+            bypass_tx: None,
         }
     }
 
@@ -138,6 +140,51 @@ impl HookIpcServer {
             diagnostics_handler: None,
             health_handler: None,
             override_handler: None,
+            bypass_tx: None,
+        }
+    }
+
+    /// Creates a new hook IPC server with a bypass alert channel.
+    ///
+    /// `bypass_tx` receives [`dlp_common::hook_ipc::BypassAlert`] payloads sent
+    /// by the hook DLL over the named pipe (e.g. hook-overwrite or journal-degraded
+    /// self-reported events).  The agent-side [`BypassCorrelator`] drains the
+    /// matching receiver.
+    pub fn with_bypass_channel(
+        pipe_name: impl Into<String>,
+        handler: HookHandler,
+        bypass_tx: crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>,
+    ) -> Self {
+        Self {
+            pipe_name: pipe_name.into(),
+            handler,
+            diagnostics_handler: None,
+            health_handler: None,
+            override_handler: None,
+            bypass_tx: Some(bypass_tx),
+        }
+    }
+
+    /// Creates a new hook IPC server with cache, offline manager, and bypass channel.
+    ///
+    /// This is the production constructor used by `service.rs`.
+    /// The `handler` is constructed by the caller (typically using `OfflineManager::offline_decision`).
+    pub fn with_cache_offline_and_bypass(
+        pipe_name: impl Into<String>,
+        cache: Arc<dyn CacheAccessor>,
+        handler: HookHandler,
+        bypass_tx: crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>,
+    ) -> Self {
+        let handler: HookHandler = Arc::new(move |req: HookRequest| {
+            handle_hook_request(req, &handler, &cache, None)
+        });
+        Self {
+            pipe_name: pipe_name.into(),
+            handler,
+            diagnostics_handler: None,
+            health_handler: None,
+            override_handler: None,
+            bypass_tx: Some(bypass_tx),
         }
     }
 
@@ -181,6 +228,7 @@ impl HookIpcServer {
             self.diagnostics_handler,
             self.health_handler,
             self.override_handler,
+            self.bypass_tx,
         )
     }
 }
@@ -221,6 +269,7 @@ fn accept_loop(
     diagnostics_handler: Option<DiagnosticsHandler>,
     health_handler: Option<HealthHandler>,
     override_handler: Option<OverrideHandler>,
+    bypass_tx: Option<crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>>,
 ) -> Result<()> {
     let mut pipe = first_pipe;
     loop {
@@ -254,6 +303,7 @@ fn accept_loop(
             diagnostics_handler.as_ref(),
             health_handler.as_ref(),
             override_handler.as_ref(),
+            bypass_tx.as_ref(),
         ) {
             warn!(error = %e, "Hook IPC: connection handler error");
         }
@@ -270,6 +320,7 @@ fn handle_connection(
     diagnostics_handler: Option<&DiagnosticsHandler>,
     health_handler: Option<&HealthHandler>,
     override_handler: Option<&OverrideHandler>,
+    bypass_tx: Option<&crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>>,
 ) -> Result<()> {
     loop {
         let frame = match read_frame(pipe) {
@@ -319,7 +370,19 @@ fn handle_connection(
                 }
                 IpcPayloadV1::BypassAlert(ref alert) => {
                     debug!(reason = ?alert.reason, stub = %alert.stub_name, "Hook IPC: bypass alert received");
-                    continue;
+                    if let Some(ref tx) = bypass_tx {
+                        if let Err(e) = tx.send(alert.clone()) {
+                            warn!(metric = "bypass_tx_dropped", error = ?e, "bypass channel full or closed");
+                        }
+                    }
+                    // Respond with empty ACK so DLL doesn't block.
+                    IpcPayloadV1::Response(HookResponse {
+                        decision: dlp_common::Decision::ALLOW,
+                        reason: "bypass alert forwarded".to_string(),
+                        cache_hint: None,
+                        cache_version: 0,
+                        approval_override: None,
+                    })
                 }
                 IpcPayloadV1::JournalDegraded(ref alert) => {
                     debug!(file_object = alert.file_object, op = alert.op, error = %alert.error, "Hook IPC: journal degraded alert received");
@@ -1362,20 +1425,17 @@ mod tests {
             crossbeam_channel::unbounded::<dlp_common::hook_ipc::BypassAlert>();
 
         let cache: Arc<dyn CacheAccessor> = Arc::new(MockCache { version: 7 });
-        let offline = Arc::new(crate::offline::OfflineManager::new(
-            crate::engine_client::EngineClient::new(
-                crate::engine_client::DEFAULT_ENGINE_URL,
-                false,
-            )
-            .expect("engine client must be constructable"),
-            Arc::new(crate::cache::Cache::new()),
-            None,
-        ));
+        let handler: HookHandler = Arc::new(|_req: HookRequest| HookResponse {
+            decision: Decision::ALLOW,
+            reason: "ok".to_string(),
+            cache_hint: None,
+            cache_version: 0,
+        });
 
         let server = HookIpcServer::with_cache_offline_and_bypass(
             r"\\.\pipe\DlpHookPipeTestOfflineBypass",
             cache,
-            offline,
+            handler,
             bypass_tx,
         );
 
