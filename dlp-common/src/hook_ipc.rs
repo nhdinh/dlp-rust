@@ -117,6 +117,12 @@ pub enum IpcPayloadV1 {
     /// Sent when the hook DLL detects a bypass attempt (e.g., EDR overwriting
     /// the trampoline, patch race condition). Fire-and-forget; no response expected.
     BypassAlert(BypassAlert),
+    /// A journal degraded alert from the hook DLL to the agent.
+    ///
+    /// Sent when the hook DLL's shared-memory journal mapping is lost or the
+    /// ring buffer cannot accept an entry. The ABAC decision is preserved;
+    /// this alert is for monitoring and SIEM routing only.
+    JournalDegraded(JournalDegradedAlert),
 }
 
 /// Request sent by the hook DLL to the agent for classification.
@@ -282,6 +288,21 @@ pub struct BypassAlert {
     /// Human-readable correlation reason for SIEM routing.
     #[serde(default)]
     pub correlation_reason: String,
+}
+
+/// Alert emitted by the hook DLL when the journal mapping is lost or the ring
+/// buffer cannot accept an entry.
+///
+/// Per D-04, the hook DLL preserves the ABAC decision and emits this alert
+/// via the named pipe for monitoring. The operation is NOT failed closed.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct JournalDegradedAlert {
+    /// The file object (HANDLE value) that was being operated on.
+    pub file_object: u64,
+    /// The operation type (1=Create, 2=Write, 3=Delete, 4=SetInfo).
+    pub op: u8,
+    /// Human-readable error description.
+    pub error: String,
 }
 
 /// Default alert version for deserialization when the field is missing.

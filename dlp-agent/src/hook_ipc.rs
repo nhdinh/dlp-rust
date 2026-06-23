@@ -321,6 +321,10 @@ fn handle_connection(
                     debug!(reason = ?alert.reason, stub = %alert.stub_name, "Hook IPC: bypass alert received");
                     continue;
                 }
+                IpcPayloadV1::JournalDegraded(ref alert) => {
+                    debug!(file_object = alert.file_object, op = alert.op, error = %alert.error, "Hook IPC: journal degraded alert received");
+                    continue;
+                }
                 // Agent-to-DLL responses should not arrive on the server.
                 other => {
                     warn!(payload = ?other, "Hook IPC: unexpected payload from DLL");

@@ -234,6 +234,8 @@ impl HookJournal {
 /// * `etw_timestamp` — ETW timestamp in 100ns units (0 if unknown).
 pub fn journal_write(handle_value: u64, op: u8, path: &str, ts_qpc: u64, etw_timestamp: u64) {
     let Some(journal) = HookJournal::get() else {
+        // D-04: Emit alert but do NOT fail the operation closed.
+        emit_journal_degraded_alert(handle_value, op, "journal mapping unavailable");
         return;
     };
 
@@ -314,6 +316,45 @@ unsafe fn query_performance_counter() -> u64 {
         Ok(_) => qpc as u64,
         Err(_) => 0,
     }
+}
+
+/// Emit a `JournalDegraded` alert via the named pipe.
+///
+/// Per D-04, when the journal mapping is lost or the ring buffer cannot accept
+/// an entry, the hook preserves the ABAC decision and emits this alert for
+/// monitoring. The alert is fire-and-forget: if the pipe is unreachable, the
+/// error is silently dropped.
+///
+/// # Arguments
+///
+/// * `file_object` — The HANDLE value from the API call.
+/// * `op` — The operation type (1=Create, 2=Write, 3=Delete, 4=SetInfo).
+/// * `error` — Human-readable error description.
+pub fn emit_journal_degraded_alert(file_object: u64, op: u8, error: &str) {
+    let alert = dlp_common::hook_ipc::JournalDegradedAlert {
+        file_object,
+        op,
+        error: error.to_string(),
+    };
+    let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+        payload: dlp_common::hook_ipc::IpcPayloadV1::JournalDegraded(alert),
+    });
+
+    match bincode::serialize(&envelope) {
+        Ok(payload) => {
+            let _ = crate::pipe_client::send_raw_oneway(crate::DEFAULT_PIPE_NAME, &payload);
+        }
+        Err(e) => {
+            let msg = format!("[dlp-hook] JournalDegraded serialization failed: {:?}\0", e);
+            crate::debug_log(&msg);
+        }
+    }
+    // Also log locally
+    let msg = format!(
+        "[dlp-hook] JournalDegraded: file_object={} op={} error={}\0",
+        file_object, op, error
+    );
+    crate::debug_log(&msg);
 }
 
 // ---------------------------------------------------------------------------
