@@ -79,6 +79,10 @@ pub use classification_cache::lru;
 pub use classification_cache::{CacheHeader, CacheLookup};
 pub use fail_mode::{decide_isolated, is_cache_stale, FailModeState, FailState};
 
+// Re-export hook_journal for integration tests (journal_integration.rs, journal_degraded_test.rs).
+#[cfg(any(test, feature = "test-helpers"))]
+pub use hook_journal::{emit_journal_degraded_alert, journal_write, JournalHeader, JournalEntry};
+
 /// Default pipe name used by the hook DLL.
 pub(crate) const DEFAULT_PIPE_NAME: &str = r"\\.\pipe\DlpHookPipe";
 
