@@ -71,6 +71,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 56: SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004)** — fold SEED-004 in: device enumeration, two new ABAC attributes, admin TUI extension. (completed 2026-06-06)
 - [x] **Phase 57: Operational Deployment Guide + AV/EDR Allowlist + UAT** — the milestone ship gate; per-vendor allowlist procedures, hash publishing, and real-Windows UAT (folds in former HARD-05). (completed 2026-06-10)
 - [ ] **Phase 58: Differentiators Bundle (cuttable to v0.10.1 if scope pressure hits)** — cuttable as a unit to v0.10.1 if scope pressure hits; otherwise materially improves deployability.
+- [ ] **Phase 58.1: Close v0.10.0 ship-gap verification items (INSERTED)** — fix ETW journal writes in hook DLL trampolines, verify BypassCorrelator::run() consumes bypass_rx, execute OPS-04 UAT on physical Windows 11 hardware, and create missing VERIFICATION.md files.
 
 ---
 
@@ -420,6 +421,23 @@ Plans:
 
 **Plans:** 6/6 plans planned (revised 2026-05-27 incorporating cross-AI review feedback)
 
+### Phase 58.1: Close v0.10.0 ship-gap verification items (INSERTED)
+
+**Goal**: Close the remaining verification and integration gaps that block v0.10.0 ship readiness: hook DLL ETW journal writes, bypass correlator routing, physical Windows 11 UAT execution, and missing VERIFICATION.md artifacts.
+**Depends on**: Phase 58
+**Requirements**: TBD
+**Success Criteria** (what must be TRUE):
+
+  1. The hook DLL writes a ring journal entry for every ETW-correlated trampoline operation so bypass correlation is accurate.
+  2. `BypassCorrelator::run()` consumes `bypass_rx` events and routes them to alert storage without dropping agent-submitted bypass alerts.
+  3. OPS-04 UAT executes on physical Windows 11 hardware and results are recorded in `.planning/milestones/v0.10.0-UAT.md`.
+  4. Missing `VERIFICATION.md` files are created for the relevant completed phases.
+
+**Plans:** 0 plans
+
+Plans:
+- [ ] TBD (run `/gsd-plan-phase 58.1` to break down)
+
 ### Phase 59: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 
 **Goal**: A label service provides persistent data classification labels with folder inheritance, manual assignment, and admin API/TUI management.
@@ -605,6 +623,7 @@ Plans:
 | 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 5/6 | In Progress|  |
 | 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 2/6 | In Progress|  |
 | 58. Differentiators Bundle (cuttable to v0.10.1) | 0/0 | Not started | - |
+| 58.1 | Close v0.10.0 ship-gap verification items (INSERTED) | 0/0 | Not started | - |
 | 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Complete | 2026-05-21 |
 | 60. Data Owner Review Queue + Admin TUI Screen | 1/1 | Complete | 2026-05-12 |
 | 61. Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature | 4/4 | Complete | 2026-05-14 |
