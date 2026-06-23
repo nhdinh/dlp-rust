@@ -2,17 +2,19 @@
 gsd_state_version: 1.0
 milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
-current_phase: 50.1
-current_phase_name: Close gap FAIL-01/02/03 — verify ISOLATED->RESYNC->HEALTHY recovery at runtime
+current_phase: 58.1
+current_phase_name: Close v0.10.0 ship-gap verification items
 status: executing
-last_updated: "2026-06-02T21:45:00.000Z"
-last_activity: 2026-06-02 -- Phase 58 execution complete (all 6 plans)
+stopped_at: Phase 58.1 context gathered
+last_updated: "2026-06-23T04:59:25.821Z"
+last_activity: 2026-06-23
+last_activity_desc: Phase 58.1 execution started
 progress:
-  total_phases: 32
-  completed_phases: 25
-  total_plans: 127
-  completed_plans: 113
-  percent: 78
+  total_phases: 43
+  completed_phases: 35
+  total_plans: 163
+  completed_plans: 153
+  percent: 81
 ---
 
 # Project State
@@ -21,16 +23,16 @@ progress:
 
 **Project:** DLP-RUST — Enterprise DLP System (NTFS + Active Directory + ABAC)
 **Core Value:** Prevent data exfiltration via a layered enforcement stack (NTFS + ABAC + AD identity)
-**Current Focus:** Phase 57 — operational-deployment-guide-av-edr-allowlist-uat
+**Current Focus:** Phase 58.1 — Close v0.10.0 ship-gap verification items
 
 ---
 
 ## Current Position
 
-Phase: 58 (differentiators-bundle-override-diagnostic-hash-evidence-sel) — COMPLETE
-Plan: 6 of 6
-Status: All plans executed, tests passing
-Last activity: 2026-06-02 -- Phase 58 execution complete (all 6 plans)
+Phase: 58.1 (Close v0.10.0 ship-gap verification items) — EXECUTING
+Plan: 1 of ?
+Status: Executing Phase 58.1
+Last activity: 2026-06-23 — Phase 58.1 execution started
 
 Phase: 57 (operational-deployment-guide-av-edr-allowlist-uat) — IN PROGRESS
 Plan: 4 of 6 complete (UAT execution pending manual verification)
@@ -174,9 +176,9 @@ Both plans in Phase 55.1 are complete. Ready for verification (`/gsd-verify-phas
 
 ## Session Continuity
 
-Last session: 2026-06-21T15:51:57.389Z
-Stopped at: context exhaustion at 75% (2026-06-21)
-Resume file: .planning/phases/55.1-close-gap-mode-01-read-global-enforcement-mode-in-bypasscorr/55.1-02-SUMMARY.md
+Last session: 2026-06-23T04:59:25.812Z
+Stopped at: Phase 58.1 context gathered
+Resume file: .planning/phases/58.1-close-v0-10-0-ship-gap-verification-items/58.1-CONTEXT.md
 
 ## Operator Next Steps
 
@@ -194,6 +196,7 @@ Resume file: .planning/phases/55.1-close-gap-mode-01-read-global-enforcement-mod
 - Phase 68.1 inserted after Phase 68: Close gap: DEVICE-05/TAMPER-03/04 — wire tamper detection to SIEM and health (URGENT)
 - Phase 67.1 inserted after Phase 67: Print Watermarking — XPS Page Geometry + Text Metrics (URGENT)
 - Phase 55.1 inserted after Phase 55: Close gap MODE-01 — read global_enforcement_mode in BypassCorrelator (URGENT)
+- Phase 58.1 inserted after Phase 58: Close v0.10.0 ship-gap verification items: ETW journal writes, bypass correlator routing, OPS-04 UAT, missing VERIFICATION.md files (URGENT)
 
 ## Performance Metrics
 
