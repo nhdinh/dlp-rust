@@ -620,10 +620,10 @@ Plans:
 | 53.1 | Close gap ETW-03 — add BypassAlert to IpcPayloadV1 and route in agent hook_ipc (INSERTED) | 4/4 | Complete   | 2026-06-17 |
 | 54. Admin TUI Protected Paths + Bypass Alerts Screens | 6/6 | Complete    | 2026-05-28 |
 | 55. Monitor-Only / Audit-Only Per-Policy Enforcement Mode | 7/7 | Complete    | 2026-05-29 |
-| 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 5/6 | In Progress|  |
-| 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 2/6 | In Progress|  |
-| 58. Differentiators Bundle (cuttable to v0.10.1) | 0/0 | Not started | - |
-| 58.1 | Close v0.10.0 ship-gap verification items (INSERTED) | 0/0 | Not started | - |
+| 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 6/6 | Complete | 2026-06-06 |
+| 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 6/6 | Complete | 2026-06-10 |
+| 58. Differentiators Bundle (cuttable to v0.10.1) | 6/6 | Complete | 2026-06-09 |
+| 58.1 | Close v0.10.0 ship-gap verification items (INSERTED) | 3/4 | In Progress | 2026-06-23 |
 | 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Complete | 2026-05-21 |
 | 60. Data Owner Review Queue + Admin TUI Screen | 1/1 | Complete | 2026-05-12 |
 | 61. Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature | 4/4 | Complete | 2026-05-14 |
