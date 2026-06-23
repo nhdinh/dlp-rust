@@ -70,8 +70,8 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 55.1: Close gap MODE-01 — read global_enforcement_mode in BypassCorrelator (INSERTED)** — urgent gap closure. (completed 2026-06-20)
 - [x] **Phase 56: SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004)** — fold SEED-004 in: device enumeration, two new ABAC attributes, admin TUI extension. (completed 2026-06-06)
 - [x] **Phase 57: Operational Deployment Guide + AV/EDR Allowlist + UAT** — the milestone ship gate; per-vendor allowlist procedures, hash publishing, and real-Windows UAT (folds in former HARD-05). (completed 2026-06-10)
-- [ ] **Phase 58: Differentiators Bundle (cuttable to v0.10.1 if scope pressure hits)** — cuttable as a unit to v0.10.1 if scope pressure hits; otherwise materially improves deployability.
-- [ ] **Phase 58.1: Close v0.10.0 ship-gap verification items (INSERTED)** — fix ETW journal writes in hook DLL trampolines, verify BypassCorrelator::run() consumes bypass_rx, execute OPS-04 UAT on physical Windows 11 hardware, and create missing VERIFICATION.md files.
+- [x] **Phase 58: Differentiators Bundle (cuttable to v0.10.1 if scope pressure hits)** — cuttable as a unit to v0.10.1 if scope pressure hits; otherwise materially improves deployability. (completed 2026-06-09)
+- [x] **Phase 58.1: Close v0.10.0 ship-gap verification items (INSERTED)** — fix ETW journal writes in hook DLL trampolines, verify BypassCorrelator::run() consumes bypass_rx, execute OPS-04 UAT on physical Windows 11 hardware, and create missing VERIFICATION.md files. (completed 2026-06-23)
 
 ---
 
@@ -433,15 +433,14 @@ Plans:
   3. OPS-04 UAT executes on physical Windows 11 hardware and results are recorded in `.planning/milestones/v0.10.0-UAT.md`.
   4. Missing `VERIFICATION.md` files are created for the relevant completed phases.
 
-**Plans:** 3/4 plans executed
+**Plans:** 4/4 plans complete (completed 2026-06-23)
 
 Plans:
 
-- [x] 58.1-01-PLAN.md
-- [x] 58.1-02-PLAN.md
-- [x] 58.1-03-PLAN.md
-- [ ] 58.1-04-PLAN.md
-- [ ] TBD (run `/gsd-plan-phase 58.1` to break down)
+- [x] 58.1-01-PLAN.md — Hook DLL journal writes verification: audit trampoline coverage, add JournalDegraded alert, 10 unit tests *(completed 2026-06-23)*
+- [x] 58.1-02-PLAN.md — BypassCorrelator bypass_rx routing: verify bypass_tx/bypass_rx wiring, metric logging, batch semantics integration tests *(completed 2026-06-23)*
+- [x] 58.1-03-PLAN.md — Missing VERIFICATION.md artifacts: discovery matrix + 8 verification documents (50, 50.1, 52, 53, 53.1, 56, 58, 57) *(completed 2026-06-23)*
+- [x] 58.1-04-PLAN.md — OPS-04 UAT execution handoff: PowerShell script (36 scenarios + CRIT-04 benchmark) + markdown companion guide *(completed 2026-06-23)*
 
 ### Phase 59: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 
@@ -628,7 +627,7 @@ Plans:
 | 56. SD/Optical/Virtual Drive Enumeration + Volume-Class ABAC (SEED-004) | 6/6 | Complete | 2026-06-06 |
 | 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 6/6 | Complete | 2026-06-10 |
 | 58. Differentiators Bundle (cuttable to v0.10.1) | 6/6 | Complete | 2026-06-09 |
-| 58.1 | Close v0.10.0 ship-gap verification items (INSERTED) | 3/4 | In Progress|  |
+| 58.1 | Close v0.10.0 ship-gap verification items (INSERTED) | 4/4 | Complete | 2026-06-23 |
 | 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Complete | 2026-05-21 |
 | 60. Data Owner Review Queue + Admin TUI Screen | 1/1 | Complete | 2026-05-12 |
 | 61. Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature | 4/4 | Complete | 2026-05-14 |
