@@ -18,6 +18,43 @@
 //! - `WriteFile*`, `NtWriteFile` -> op = 2 (Write)
 //! - `DeleteFile*`, `NtSetInformationFile(FileDispositionInformation)` -> op = 3 (Delete)
 //! - `MoveFileEx*`, `CopyFileEx*`, `ReplaceFile*`, `NtSetInformationFile(FileRenameInfo)` -> op = 4 (SetInfo)
+//!
+//! ## Journal Coverage Audit (Phase 58.1)
+//!
+//! Per D-01, all 9 mutating trampolines MUST write a journal entry before the
+//! original Win32/NT API call. The 3 pure-open trampolines MUST NOT.
+//!
+//! | # | Trampoline | Journal | journal_op | Placement |
+//! |---|------------|---------|------------|-----------|
+//! | 1 | HookCreateFileW | NOT_JOURNALED | 1 | Pure open (correct) |
+//! | 2 | HookNtCreateFile | NOT_JOURNALED | 1 | Pure open (correct) |
+//! | 3 | HookWriteFile | JOURNALED | 2 | classify_and_log_handle line 534 |
+//! | 4 | HookWriteFileEx | JOURNALED | 2 | classify_and_log_handle line 534 |
+//! | 5 | HookMoveFileExW | JOURNALED | 4 | classify_and_log_path line 397 |
+//! | 6 | HookCopyFileExW | JOURNALED | 4 | classify_and_log_path line 397 |
+//! | 7 | HookDeleteFileW | JOURNALED | 3 | classify_and_log_path line 397 |
+//! | 8 | HookReplaceFileW | JOURNALED | 4 | classify_and_log_path line 397 |
+//! | 9 | HookSetFileInformationByHandle | JOURNALED | 4 | classify_and_log_handle line 534 |
+//! | 10 | HookNtOpenFile | NOT_JOURNALED | 1 | Pure open (correct) |
+//! | 11 | HookNtWriteFile | JOURNALED | 2 | classify_and_log_handle line 534 |
+//! | 12 | HookNtSetInformationFile | JOURNALED | 4 | classify_and_log_handle line 534 |
+//!
+//! D-03 invariant: The journal write is placed AFTER classification and BEFORE
+//! returning the decision. Both `classify_and_log_path` (line 397) and
+//! `classify_and_log_handle` (line 534) call `journal_write_from_trampoline`
+//! as their final operation before returning `Option<DenyReturn>`. This ensures
+//! ETW cannot observe an operation the hook has not yet recorded.
+//!
+//! D-04 invariant: If the journal mapping is lost, `journal_write` returns
+//! silently (HookJournal::get() returns None). The ABAC decision is preserved.
+//! Phase 58.1 Task 3 adds `JournalDegraded` alert emission for monitoring.
+//!
+//! ## Ntdll Trampolines (Phase 51)
+//!
+//! The ntdll-specific trampolines (`NtdllTrampolineNtCreateFile`, etc.) follow
+//! the same classification pipeline but are not included in the 12 IAT
+//! trampolines above. They reuse `classify_and_log_path` and therefore inherit
+//! the same journal coverage.
 
 // Trampolines are inherently unsafe FFI boundaries; safety docs and transmute
 // are pre-existing patterns from Plan 48-02.
