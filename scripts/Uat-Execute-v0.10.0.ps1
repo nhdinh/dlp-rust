@@ -358,6 +358,11 @@ function Invoke-CategoryH {
     }
 }
 
+function Invoke-CategoryI {
+    Write-Host "`n--- Category I: Performance / CRIT-04 ---" -ForegroundColor Green
+    Invoke-Crit04Benchmark
+}
+
 # ─── CRIT-04 Benchmark ───────────────────────────────────────────────────────
 
 function Get-Median {
@@ -741,7 +746,7 @@ $categories = @(
     @{ Fn = 'Invoke-CategoryF'; Name = 'F' },
     @{ Fn = 'Invoke-CategoryG'; Name = 'G' },
     @{ Fn = 'Invoke-CategoryH'; Name = 'H' },
-    @{ Fn = 'Invoke-Crit04Benchmark'; Name = 'I' },
+    @{ Fn = 'Invoke-CategoryI'; Name = 'I' },
     @{ Fn = 'Invoke-CategoryJ'; Name = 'J' }
 )
 
