@@ -385,7 +385,14 @@ fn handle_connection(
                 }
                 IpcPayloadV1::JournalDegraded(ref alert) => {
                     debug!(file_object = alert.file_object, op = alert.op, error = %alert.error, "Hook IPC: journal degraded alert received");
-                    continue;
+                    // Respond with empty ACK so DLL doesn't block waiting for a response.
+                    IpcPayloadV1::Response(HookResponse {
+                        decision: dlp_common::Decision::ALLOW,
+                        reason: "journal degraded alert received".to_string(),
+                        cache_hint: None,
+                        cache_version: 0,
+                        approval_override: None,
+                    })
                 }
                 // Agent-to-DLL responses should not arrive on the server.
                 other => {
