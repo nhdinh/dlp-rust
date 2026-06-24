@@ -42,6 +42,7 @@ fn send_envelope(pipe: windows::Win32::Foundation::HANDLE, envelope: &IpcEnvelop
 /// Test that `HookIpcServer` with builder chain starts a named thread and can
 /// accept `Request` frames.
 #[test]
+#[serial_test::serial]
 fn test_consolidated_server_routes_request_frame() {
     let pipe_name = r"\\.\pipe\DlpHookPipeTestConsolidatedRequest";
 
@@ -116,6 +117,7 @@ fn test_consolidated_server_routes_request_frame() {
 
 /// Test that `HookIpcServer` routes `PullDiagnostics` to the diagnostics handler.
 #[test]
+#[serial_test::serial]
 fn test_consolidated_server_routes_diagnostics_frame() {
     let pipe_name = r"\\.\pipe\DlpHookPipeTestConsolidatedDiag";
 
@@ -174,6 +176,7 @@ fn test_consolidated_server_routes_diagnostics_frame() {
 
 /// Test that `HookIpcServer` routes `PullHealth` to the health handler.
 #[test]
+#[serial_test::serial]
 fn test_consolidated_server_routes_health_frame() {
     let pipe_name = r"\\.\pipe\DlpHookPipeTestConsolidatedHealth";
 
@@ -240,6 +243,7 @@ fn test_consolidated_server_routes_health_frame() {
 /// Test that `HookIpcServer` routes `RequestOverride` to the override
 /// handler (fire-and-forget; response is ACK).
 #[test]
+#[serial_test::serial]
 fn test_consolidated_server_routes_override_frame() {
     let pipe_name = r"\\.\pipe\DlpHookPipeTestConsolidatedOverride";
 
@@ -317,6 +321,7 @@ fn test_consolidated_server_routes_override_frame() {
 /// Test that the consolidated server returns ALLOW for COPY and DENY for DELETE
 /// via the hook handler.
 #[test]
+#[serial_test::serial]
 fn test_consolidated_server_volume_class_allow_deny() {
     let pipe_name = r"\\.\pipe\DlpHookPipeTestConsolidatedVolClass";
 
