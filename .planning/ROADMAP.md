@@ -72,7 +72,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 57: Operational Deployment Guide + AV/EDR Allowlist + UAT** — the milestone ship gate; per-vendor allowlist procedures, hash publishing, and real-Windows UAT (folds in former HARD-05). (completed 2026-06-10)
 - [x] **Phase 58: Differentiators Bundle (cuttable to v0.10.1 if scope pressure hits)** — cuttable as a unit to v0.10.1 if scope pressure hits; otherwise materially improves deployability. (completed 2026-06-09)
 - [x] **Phase 58.1: Close v0.10.0 ship-gap verification items (INSERTED)** — fix ETW journal writes in hook DLL trampolines, verify BypassCorrelator::run() consumes bypass_rx, execute OPS-04 UAT on physical Windows 11 hardware, and create missing VERIFICATION.md files. (completed 2026-06-23)
-- [ ] **Phase 58.2: Fix double HookIpcServer and wire volume classes (INSERTED)** — eliminate duplicate hook IPC server initialization and complete volume-class attribute wiring through the ABAC enforcement path. (not started)
+- [x] **Phase 58.2: Fix double HookIpcServer and wire volume classes (INSERTED)** — eliminate duplicate hook IPC server initialization and complete volume-class attribute wiring through the ABAC enforcement path. (Plan 01 complete 2026-06-24; Plans 02-03 pending)
 
 ---
 
