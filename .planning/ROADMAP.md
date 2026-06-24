@@ -72,6 +72,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 57: Operational Deployment Guide + AV/EDR Allowlist + UAT** — the milestone ship gate; per-vendor allowlist procedures, hash publishing, and real-Windows UAT (folds in former HARD-05). (completed 2026-06-10)
 - [x] **Phase 58: Differentiators Bundle (cuttable to v0.10.1 if scope pressure hits)** — cuttable as a unit to v0.10.1 if scope pressure hits; otherwise materially improves deployability. (completed 2026-06-09)
 - [x] **Phase 58.1: Close v0.10.0 ship-gap verification items (INSERTED)** — fix ETW journal writes in hook DLL trampolines, verify BypassCorrelator::run() consumes bypass_rx, execute OPS-04 UAT on physical Windows 11 hardware, and create missing VERIFICATION.md files. (completed 2026-06-23)
+- [ ] **Phase 58.2: Fix double HookIpcServer and wire volume classes (INSERTED)** — eliminate duplicate hook IPC server initialization and complete volume-class attribute wiring through the ABAC enforcement path. (not started)
 
 ---
 
@@ -442,6 +443,24 @@ Plans:
 - [x] 58.1-03-PLAN.md — Missing VERIFICATION.md artifacts: discovery matrix + 8 verification documents (50, 50.1, 52, 53, 53.1, 56, 58, 57) *(completed 2026-06-23)*
 - [x] 58.1-04-PLAN.md — OPS-04 UAT execution handoff: PowerShell script (36 scenarios + CRIT-04 benchmark) + markdown companion guide *(completed 2026-06-23)*
 
+### Phase 58.2: Fix double HookIpcServer and wire volume classes (INSERTED)
+
+**Goal**: Eliminate duplicate `HookIpcServer` initialization in the agent and complete the wiring of `source_volume_class` / `destination_volume_class` attributes through the ABAC evaluation path so volume-class policies enforce correctly for hook-intercepted operations.
+**Depends on**: Phase 58.1
+**Requirements**: TBD
+**Success Criteria** (what must be TRUE):
+
+  1. Only one `HookIpcServer` instance is created and torn down per agent lifecycle; no duplicate named-pipe listeners or conflicting hook IPC endpoints exist.
+  2. `HookRequest` / `EvaluateRequest` carry populated volume-class fields from the hook DLL through the agent to `PolicyStore::evaluate`.
+  3. ABAC policies expressed in terms of `source_volume_class` and `destination_volume_class` produce the expected ALLOW/DENY decision for hook-intercepted file operations.
+  4. Existing unit and integration tests continue to pass; new tests cover the duplicate-initialization guard and the volume-class wiring path.
+
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run `/gsd-plan-phase 58.2` to break down)
+
 ### Phase 59: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 
 **Goal**: A label service provides persistent data classification labels with folder inheritance, manual assignment, and admin API/TUI management.
@@ -628,6 +647,7 @@ Plans:
 | 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 6/6 | Complete | 2026-06-10 |
 | 58. Differentiators Bundle (cuttable to v0.10.1) | 6/6 | Complete | 2026-06-09 |
 | 58.1 | Close v0.10.0 ship-gap verification items (INSERTED) | 4/4 | Complete    | 2026-06-23 |
+| 58.2 | Fix double HookIpcServer and wire volume classes (INSERTED) | 0/0 | Not started | - |
 | 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Complete | 2026-05-21 |
 | 60. Data Owner Review Queue + Admin TUI Screen | 1/1 | Complete | 2026-05-12 |
 | 61. Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature | 4/4 | Complete | 2026-05-14 |

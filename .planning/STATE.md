@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
-current_phase: 59
-current_phase_name: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
-status: verifying
+current_phase: 58.2
+current_phase_name: Fix double HookIpcServer and wire volume classes
+status: inserted
 stopped_at: context exhaustion at 75% (2026-06-24)
-last_updated: "2026-06-24T04:28:21.531Z"
-last_activity: 2026-06-23
-last_activity_desc: Phase 58.1 complete, transitioned to Phase 59
+last_updated: "2026-06-24T05:45:58.986Z"
+last_activity: 2026-06-24
+last_activity_desc: Phase 58.2 inserted after 58.1 — Fix double HookIpcServer and wire volume classes
 progress:
-  total_phases: 43
+  total_phases: 44
   completed_phases: 36
   total_plans: 181
   completed_plans: 162
-  percent: 84
+  percent: 82
 ---
 
 # Project State
@@ -23,17 +23,21 @@ progress:
 
 **Project:** DLP-RUST — Enterprise DLP System (NTFS + Active Directory + ABAC)
 **Core Value:** Prevent data exfiltration via a layered enforcement stack (NTFS + ABAC + AD identity)
-**Current Focus:** Phase 58.1 — close-v0-10-0-ship-gap-verification-items (VERIFIED)
+**Current Focus:** Phase 58.2 — fix-double-hookipcserver-and-wire-volume-classes (INSERTED — urgent)
 
 ---
 
 ## Current Position
 
+Phase: 58.2 — Fix double HookIpcServer and wire volume classes
+Plan: Not started
+Status: Inserted as urgent gap closure; run `/gsd-plan-phase 58.2` to break down
+Verification: TBD
+Last activity: 2026-06-24 — Phase 58.2 inserted after Phase 58.1
+
 Phase: 59 — Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 Plan: Not started
 Status: All 4 plans complete and verified (01: journal writes, 02: bypass correlator routing, 03: VERIFICATION.md artifacts, 04: OPS-04 UAT handoff)
-Verification: 14/14 truths verified, status passed, 18 tests pass, 0 gaps
-Last activity: 2026-06-23 — Phase 58.1 complete, transitioned to Phase 59
 
 Phase: 57 (operational-deployment-guide-av-edr-allowlist-uat) — IN PROGRESS
 Plan: 4 of 6 complete (UAT execution pending manual verification)
@@ -52,7 +56,7 @@ v0.8.0 [Phase 39–42 done] (shipped 2026-05-07)
 v0.8.1 [Phase 43–46 done] (shipped 2026-05-08)
 v0.9.0 [M017 / pre-Phase 47 done] (shipped 2026-05-09)
 v1.0.0 [abandoned 2026-05-12 — only Phase 47 (HARD-01) shipped]
-v0.10.0 [Phase 47 done (prereq) | Phases 48–56 done | Phases 57–58 done | Phase 58.1 verified] (in progress — UAT pending)
+v0.10.0 [Phase 47 done (prereq) | Phases 48–56 done | Phases 57–58 done | Phase 58.1 verified | Phase 58.2 inserted] (in progress — UAT pending)
 v0.11.0 [Phases 59–64 done] (shipped 2026-06-09 — Label Service + Workflow + Syslog + Hash + Device)
 v0.12.0 [Phases 65–70 planned] (planned — Scanner + Screenshot + Watermark + Email + RDP + BT)
 ```
@@ -82,6 +86,7 @@ v0.12.0 [Phases 65–70 planned] (planned — Scanner + Screenshot + Watermark +
 | 57 | Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | OPS-01..04 |
 | 58 | Differentiators Bundle (cuttable to v0.10.1) | DIFF-01..04 |
 | 58.1 | Close v0.10.0 ship-gap verification items (INSERTED) | OPS-04, ETW-03, DIFF-04 |
+| 58.2 | Fix double HookIpcServer and wire volume classes (INSERTED) | TBD |
 | **v0.11.0** | | |
 | 59 | Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | LABEL-01..07 |
 | 60 | Data Owner Review Queue + Admin TUI Screen | LABEL-04 |
@@ -148,28 +153,24 @@ Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlatio
 
 ## Next Action
 
-### Immediate: Complete Phase 57 UAT
+### Immediate: Plan Phase 58.2
 
-Phase 57 is IN PROGRESS (4 of 6 plans complete). Remaining work:
+Phase 58.2 was inserted as urgent gap closure after Phase 58.1. Next step:
 
-1. **Manual UAT execution** on physical Windows 11 host (OPS-04)
-   - Run all 36 scenarios from `.planning/milestones/v0.10.0-UAT.md`
-   - Verify CRIT-04 benchmark gate (<= 25% overhead)
-   - Record results in UAT document
+1. **Run `/gsd-plan-phase 58.2`** to break down the work into plans:
+   - Identify where the duplicate `HookIpcServer` initialization occurs and design a single-instance guard.
+   - Trace `source_volume_class` / `destination_volume_class` from hook DLL `HookRequest` through agent IPC to `EvaluateRequest` and `PolicyStore::evaluate`.
+   - Define unit/integration tests for both fixes.
 
-2. **After UAT completes:**
-   - Analyze results and make ship/no-ship decision
-   - Update deployment guide with any UAT-discovered corrections
-   - Create final VERIFICATION.md with PASS/FAIL determination
-   - Update STATE.md and ROADMAP.md with Phase 57 completion
+2. **After planning:** execute plans with `/gsd-execute-phase 58.2`.
 
-3. **Phase 58** (Differentiators Bundle) can proceed in parallel with UAT execution if resources allow.
+### Background: Phase 57 UAT remains pending
+
+OPS-04 UAT execution on physical Windows 11 hardware is still required before v0.10.0 can ship. Phase 58.2 should be treated as pre-ship gap closure and may run in parallel with UAT scheduling.
 
 ### v0.11.0 Active Phases (Post-v0.10.0 Ship)
 
-Both plans in Phase 55.1 are complete. Ready for verification (`/gsd-verify-phase` or `/gsd-verify-work`).
-
-**Scope:** Verify Plan 01 (CorrelatorConfig.enforcement_mode field + service.rs wiring) and Plan 02 (Audit-mode suppression guards + 6 tests).
+Phase 59 and later are complete and shipped as part of v0.11.0.
 
 ---
 
@@ -200,6 +201,7 @@ Resume file: .planning/phases/58.1-close-v0-10-0-ship-gap-verification-items/58.
 - Phase 67.1 inserted after Phase 67: Print Watermarking — XPS Page Geometry + Text Metrics (URGENT)
 - Phase 55.1 inserted after Phase 55: Close gap MODE-01 — read global_enforcement_mode in BypassCorrelator (URGENT)
 - Phase 58.1 inserted after Phase 58: Close v0.10.0 ship-gap verification items: ETW journal writes, bypass correlator routing, OPS-04 UAT, missing VERIFICATION.md files (URGENT)
+- Phase 58.2 inserted after Phase 58.1: Fix double HookIpcServer and wire volume classes (URGENT)
 
 ## Performance Metrics
 
