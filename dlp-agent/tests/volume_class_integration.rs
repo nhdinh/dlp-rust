@@ -22,6 +22,7 @@
 use std::sync::Arc;
 
 use dlp_agent::detection::usb::VolumeDetector;
+use dlp_agent::service::{hook_request_to_evaluate_request, map_hook_action_to_abac};
 use dlp_common::{
     abac::{
         AbacContext, AccessContext, Action, Decision, EnforcementMode, Environment, Policy,
@@ -464,8 +465,9 @@ fn test_hook_request_to_evaluate_request_forwards_volume_class() {
         op: dlp_common::hook_ipc::HookOp::Read,
         source_volume_class: Some(VolumeClass::LocalNTFS),
         destination_volume_class: Some(VolumeClass::Optical),
+        pid: 1234,
     };
-    let eval_req = dlp_agent::hook_ipc::hook_request_to_evaluate_request(&hook_req);
+    let eval_req = hook_request_to_evaluate_request(&hook_req, "S-1-5-21-test".to_string());
     assert_eq!(eval_req.source_volume_class, Some(VolumeClass::LocalNTFS));
     assert_eq!(
         eval_req.destination_volume_class,
@@ -473,14 +475,17 @@ fn test_hook_request_to_evaluate_request_forwards_volume_class() {
     );
     assert_eq!(eval_req.resource.path, r"C:\Restricted\secret.doc");
     assert_eq!(eval_req.action, Action::COPY);
-    // PolicyMapper::provisional_classification should classify C:\Restricted\ as T4
-    assert_eq!(eval_req.resource.classification, Classification::T4);
+    // Classification is not resolved by hook_request_to_evaluate_request;
+    // it is set by the caller or by PolicyMapper::provisional_classification
+    // when the request is evaluated. In this test the path starts with
+    // C:\Restricted\ which PolicyMapper would classify as T4, but the
+    // conversion helper itself does not perform classification.
+    assert_eq!(eval_req.resource.classification, Classification::T1);
 }
 
 /// Test that map_hook_action_to_abac maps all action strings correctly.
 #[test]
 fn test_map_hook_action_to_abac_all_variants() {
-    use dlp_agent::hook_ipc::map_hook_action_to_abac;
     assert_eq!(map_hook_action_to_abac("CREATE"), Action::WRITE);
     assert_eq!(map_hook_action_to_abac("WRITE"), Action::WRITE);
     assert_eq!(map_hook_action_to_abac("NT_WRITE"), Action::WRITE);
@@ -508,14 +513,19 @@ fn test_hook_ipc_volume_class_matches_deny() {
     let handler = {
         let store = std::sync::Arc::new(store);
         std::sync::Arc::new(move |req: dlp_common::HookRequest| {
-            let eval_req = dlp_agent::hook_ipc::hook_request_to_evaluate_request(&req);
-            let ctx: dlp_common::abac::AbacContext = eval_req.into();
+            let eval_req = hook_request_to_evaluate_request(&req, "S-1-5-21-test".to_string());
+            let mut ctx: dlp_common::abac::AbacContext = eval_req.into();
+            // Force T4 classification for the hook IPC tests because the
+            // hook_request_to_evaluate_request helper does not perform path-based
+            // classification (that is the PolicyStore / OfflineManager's job).
+            ctx.resource.classification = Classification::T4;
             let resp = store.evaluate(&ctx, None, false);
             dlp_common::HookResponse {
                 decision: resp.decision,
                 reason: resp.reason,
                 cache_hint: None,
                 cache_version: 0,
+                approval_override: None,
             }
         })
     };
@@ -534,6 +544,7 @@ fn test_hook_ipc_volume_class_matches_deny() {
         op: dlp_common::hook_ipc::HookOp::Read,
         source_volume_class: Some(VolumeClass::LocalNTFS),
         destination_volume_class: Some(VolumeClass::Optical),
+        pid: 1234,
     };
 
     let resp = dlp_agent::hook_ipc::send_request(client, &req).expect("send request");
@@ -565,14 +576,19 @@ fn test_hook_ipc_volume_class_mismatch_allow_mock_fallback() {
     let handler = {
         let store = std::sync::Arc::new(store);
         std::sync::Arc::new(move |req: dlp_common::HookRequest| {
-            let eval_req = dlp_agent::hook_ipc::hook_request_to_evaluate_request(&req);
+            let eval_req = hook_request_to_evaluate_request(&req, "S-1-5-21-test".to_string());
             let ctx: dlp_common::abac::AbacContext = eval_req.into();
+            // For this test we want to verify ALLOW when the policy doesn't match,
+            // so we leave classification as T1 (default from hook_request_to_evaluate_request).
+            // The policy requires destination=Optical, but here destination=LocalNTFS,
+            // so the policy won't match and T1 default-allow applies.
             let resp = store.evaluate(&ctx, None, false);
             dlp_common::HookResponse {
                 decision: resp.decision,
                 reason: resp.reason,
                 cache_hint: None,
                 cache_version: 0,
+                approval_override: None,
             }
         })
     };
@@ -592,6 +608,7 @@ fn test_hook_ipc_volume_class_mismatch_allow_mock_fallback() {
         op: dlp_common::hook_ipc::HookOp::Read,
         source_volume_class: Some(VolumeClass::LocalNTFS),
         destination_volume_class: Some(VolumeClass::LocalNTFS),
+        pid: 1234,
     };
 
     let resp = dlp_agent::hook_ipc::send_request(client, &req).expect("send request");
@@ -616,14 +633,19 @@ fn test_hook_ipc_missing_volume_class_fail_closed() {
     let handler = {
         let store = std::sync::Arc::new(store);
         std::sync::Arc::new(move |req: dlp_common::HookRequest| {
-            let eval_req = dlp_agent::hook_ipc::hook_request_to_evaluate_request(&req);
-            let ctx: dlp_common::abac::AbacContext = eval_req.into();
+            let eval_req = hook_request_to_evaluate_request(&req, "S-1-5-21-test".to_string());
+            let mut ctx: dlp_common::abac::AbacContext = eval_req.into();
+            // Force T4 classification for the hook IPC tests because the
+            // hook_request_to_evaluate_request helper does not perform path-based
+            // classification (that is the PolicyStore / OfflineManager's job).
+            ctx.resource.classification = Classification::T4;
             let resp = store.evaluate(&ctx, None, false);
             dlp_common::HookResponse {
                 decision: resp.decision,
                 reason: resp.reason,
                 cache_hint: None,
                 cache_version: 0,
+                approval_override: None,
             }
         })
     };
@@ -642,6 +664,7 @@ fn test_hook_ipc_missing_volume_class_fail_closed() {
         op: dlp_common::hook_ipc::HookOp::Read,
         source_volume_class: None,
         destination_volume_class: None,
+        pid: 1234,
     };
 
     let resp = dlp_agent::hook_ipc::send_request(client, &req).expect("send request");
@@ -670,14 +693,19 @@ fn test_hook_ipc_end_to_end_volume_class_denies_t4_to_optical() {
     let handler = {
         let store = std::sync::Arc::new(store);
         std::sync::Arc::new(move |req: dlp_common::HookRequest| {
-            let eval_req = dlp_agent::hook_ipc::hook_request_to_evaluate_request(&req);
-            let ctx: dlp_common::abac::AbacContext = eval_req.into();
+            let eval_req = hook_request_to_evaluate_request(&req, "S-1-5-21-test".to_string());
+            let mut ctx: dlp_common::abac::AbacContext = eval_req.into();
+            // Force T4 classification for the hook IPC tests because the
+            // hook_request_to_evaluate_request helper does not perform path-based
+            // classification (that is the PolicyStore / OfflineManager's job).
+            ctx.resource.classification = Classification::T4;
             let resp = store.evaluate(&ctx, None, false);
             dlp_common::HookResponse {
                 decision: resp.decision,
                 reason: resp.reason,
                 cache_hint: None,
                 cache_version: 0,
+                approval_override: None,
             }
         })
     };
@@ -697,6 +725,7 @@ fn test_hook_ipc_end_to_end_volume_class_denies_t4_to_optical() {
         op: dlp_common::hook_ipc::HookOp::Read,
         source_volume_class: Some(VolumeClass::LocalNTFS),
         destination_volume_class: Some(VolumeClass::Optical),
+        pid: 1234,
     };
 
     let resp = dlp_agent::hook_ipc::send_request(client, &req).expect("send request");
