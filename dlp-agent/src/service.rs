@@ -3977,7 +3977,7 @@ fn report_scm_status(state: ServiceState, controls: ServiceControlAccept, wait_h
 ///
 /// # Errors
 ///
-/// Calls `std::process::exit(1)` when another instance is detected.
+/// Calls `std::process::abort()` when another instance is detected.
 /// Returns `Err` on unexpected Win32 API failures.
 #[cfg(windows)]
 fn acquire_instance_mutex() -> windows::core::Result<windows::Win32::Foundation::HANDLE> {
@@ -4005,7 +4005,7 @@ fn acquire_instance_mutex() -> windows::core::Result<windows::Win32::Foundation:
             service_name = SERVICE_NAME,
             "another DLP agent instance is already running — aborting"
         );
-        std::process::exit(1);
+        std::process::abort();
     }
 
     info!(
