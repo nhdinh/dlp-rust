@@ -385,6 +385,28 @@ fn handle_connection(
                 }
                 IpcPayloadV1::JournalDegraded(ref alert) => {
                     debug!(file_object = alert.file_object, op = alert.op, error = %alert.error, "Hook IPC: journal degraded alert received");
+                    if let Some(tx) = bypass_tx {
+                        let bypass_alert = dlp_common::hook_ipc::BypassAlert {
+                            reason: dlp_common::hook_ipc::BypassReason::EdrDetected,
+                            stub_name: "journal_degraded".to_string(),
+                            pid: 0,
+                            timestamp_secs: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs(),
+                            version: 2,
+                            agent_id: String::new(),
+                            image_path: String::new(),
+                            image_sha256: None,
+                            file_path: String::new(),
+                            operation: format!("op={}", alert.op),
+                            file_object: alert.file_object,
+                            qpc_timestamp: 0,
+                            severity: "warn".to_string(),
+                            correlation_reason: format!("Journal degraded: {}", alert.error),
+                        };
+                        let _ = tx.send(bypass_alert);
+                    }
                     // Respond with empty ACK so DLL doesn't block waiting for a response.
                     IpcPayloadV1::Response(HookResponse {
                         decision: dlp_common::Decision::ALLOW,
