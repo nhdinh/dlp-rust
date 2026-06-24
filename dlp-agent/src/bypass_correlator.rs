@@ -1064,23 +1064,33 @@ impl BypassCorrelator {
         });
 
         // Task 3: Bypass alert handler (from hook DLL IPC).
-        // Per REVIEW-M-09, wrap the blocking recv loop in spawn_blocking
-        // to avoid starving the async runtime.
-        let bypass_corr = Arc::clone(&correlator);
-        let bypass_handle = tokio::task::spawn_blocking(move || {
+        // Bridge sync crossbeam channel to async tokio channel to avoid
+        // block_on inside spawn_blocking (WR-03).
+        let (async_bypass_tx, mut async_bypass_rx) = tokio::sync::mpsc::channel::<BypassAlert>(1000);
+        let bypass_bridge_handle = tokio::task::spawn_blocking(move || {
             while let Ok(alert) = bypass_rx.recv() {
-                let bypass_corr = Arc::clone(&bypass_corr);
-                tracing::info!(metric = "bypass_rx_processed", pid = alert.pid, stub = %alert.stub_name, reason = ?alert.reason, "bypass alert received from hook DLL");
-                // Bridge sync recv to async submit_bypass_alert.
-                // Use block_on if a runtime is available; otherwise skip.
-                if let Ok(rt) = tokio::runtime::Handle::try_current() {
-                    rt.block_on(bypass_corr.submit_bypass_alert(alert));
+                if let Err(e) = async_bypass_tx.blocking_send(alert) {
+                    tracing::warn!(error = %e, "async bypass channel closed — stopping bridge");
+                    break;
                 }
             }
             tracing::warn!(
                 metric = "bypass_rx_dropped",
                 reason = "channel_closed",
-                "bypass_rx channel closed — exiting bypass alert handler"
+                "bypass_rx channel closed — exiting bypass alert bridge"
+            );
+        });
+        let bypass_corr = Arc::clone(&correlator);
+        let bypass_handle = tokio::spawn(async move {
+            while let Some(alert) = async_bypass_rx.recv().await {
+                let bypass_corr = Arc::clone(&bypass_corr);
+                tracing::info!(metric = "bypass_rx_processed", pid = alert.pid, stub = %alert.stub_name, reason = ?alert.reason, "bypass alert received from hook DLL");
+                bypass_corr.submit_bypass_alert(alert).await;
+            }
+            tracing::warn!(
+                metric = "async_bypass_rx_dropped",
+                reason = "channel_closed",
+                "async bypass channel closed — exiting bypass alert handler"
             );
         });
 
@@ -1100,6 +1110,7 @@ impl BypassCorrelator {
             _ = proc_handle => {},
             _ = etw_handle => {},
             _ = bypass_handle => {},
+            _ = bypass_bridge_handle => {},
             _ = flush_handle => {},
         }
     }
