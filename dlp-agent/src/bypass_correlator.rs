@@ -992,17 +992,43 @@ impl BypassCorrelator {
 
     /// Gets the creation time for a PID from the process registry.
     async fn get_creation_time_for_pid(&self, pid: u32) -> Option<u64> {
-        // Check if we have pending journal info with creation time.
-        // For now, return None — will be integrated with process_registry.
-        let _ = pid;
-        None
+        use windows::Win32::System::Threading::{OpenProcess, GetProcessTimes, PROCESS_QUERY_LIMITED_INFORMATION};
+        use windows::Win32::Foundation::{CloseHandle, FILETIME};
+        unsafe {
+            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
+            let mut creation = FILETIME::default();
+            let mut exit = FILETIME::default();
+            let mut kernel = FILETIME::default();
+            let mut user = FILETIME::default();
+            if GetProcessTimes(handle, &mut creation, &mut exit, &mut kernel, &mut user).is_ok() {
+                let _ = CloseHandle(handle);
+                Some(((creation.dwHighDateTime as u64) << 32) | (creation.dwLowDateTime as u64))
+            } else {
+                let _ = CloseHandle(handle);
+                None
+            }
+        }
     }
 
     /// Gets the image path for a PID from the process registry.
     async fn get_image_path_for_pid(&self, pid: u32) -> String {
-        // Will be integrated with process_registry.
-        let _ = pid;
-        String::new()
+        use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_NAME_WIN32};
+        use windows::Win32::Foundation::CloseHandle;
+        unsafe {
+            let handle = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
+                Ok(h) => h,
+                Err(_) => return String::new(),
+            };
+            let mut buffer = [0u16; 1024];
+            let mut size = buffer.len() as u32;
+            if QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, windows::core::PWSTR::from_raw(buffer.as_mut_ptr()), &mut size).is_ok() {
+                let _ = CloseHandle(handle);
+                String::from_utf16_lossy(&buffer[..size as usize])
+            } else {
+                let _ = CloseHandle(handle);
+                String::new()
+            }
+        }
     }
 
     /// Runs the correlator event loop.
