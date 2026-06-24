@@ -180,9 +180,9 @@ function Initialize-UatEnvironment {
 function Capture-Environment {
     $os = Get-CimInstance -ClassName Win32_OperatingSystem
     $cpu = Get-CimInstance -ClassName Win32_Processor | Select-Object -First 1
-    $edrProcesses = Get-Process | Where-Object {
+    $edrProcesses = @(Get-Process | Where-Object {
         $_.ProcessName -match 'MsMpEng|CSFalconService|SentinelService|CbDefense|Sophos|TrendMicro'
-    } | ForEach-Object { $_.ProcessName }
+    } | ForEach-Object { $_.ProcessName })
 
     $cloudVersions = @{}
     foreach ($client in @('OneDrive','GoogleDriveFS','Dropbox','BoxDrive')) {
@@ -571,17 +571,17 @@ function Invoke-CategoryJ {
 # ─── Results Summary Generation ──────────────────────────────────────────────
 
 function New-UatSummary {
-    $passed = ($SCRIPT:Results | Where-Object { $_.result -eq 'PASS' }).Count
-    $failed = ($SCRIPT:Results | Where-Object { $_.result -eq 'FAIL' }).Count
-    $na     = ($SCRIPT:Results | Where-Object { $_.result -eq 'N-A' }).Count
-    $blocking = $SCRIPT:Results | Where-Object { $_.result -eq 'FAIL' -and $_.scenario_id -match '^(B01|B02|B03|B04|B05|B06|G01|H02|I01|I02|J01|J02|J04|J05)' }
+    $passed = @($SCRIPT:Results | Where-Object { $_.result -eq 'PASS' }).Count
+    $failed = @($SCRIPT:Results | Where-Object { $_.result -eq 'FAIL' }).Count
+    $na     = @($SCRIPT:Results | Where-Object { $_.result -eq 'N-A' }).Count
+    $blocking = @($SCRIPT:Results | Where-Object { $_.result -eq 'FAIL' -and $_.scenario_id -match '^(B01|B02|B03|B04|B05|B06|G01|H02|I01|I02|J01|J02|J04|J05)' })
 
     $crit04 = if (Test-Path $SCRIPT:Crit04Json) {
         Get-Content -Path $SCRIPT:Crit04Json -Raw | ConvertFrom-Json
     }
     else { $null }
 
-    $naJustifications = $SCRIPT:Results | Where-Object { $_.result -eq 'N-A' } | ForEach-Object { "- $($_.scenario_id): $($_.notes)" }
+    $naJustifications = @($SCRIPT:Results | Where-Object { $_.result -eq 'N-A' } | ForEach-Object { "- $($_.scenario_id): $($_.notes)" })
 
     $shipRecommendation = 'PENDING'
     if ($failed -eq 0 -and $na -lt 10) { $shipRecommendation = 'SHIP' }
