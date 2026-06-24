@@ -992,8 +992,10 @@ impl BypassCorrelator {
 
     /// Gets the creation time for a PID from the process registry.
     async fn get_creation_time_for_pid(&self, pid: u32) -> Option<u64> {
-        use windows::Win32::System::Threading::{OpenProcess, GetProcessTimes, PROCESS_QUERY_LIMITED_INFORMATION};
         use windows::Win32::Foundation::{CloseHandle, FILETIME};
+        use windows::Win32::System::Threading::{
+            GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
+        };
         unsafe {
             let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
             let mut creation = FILETIME::default();
@@ -1012,8 +1014,11 @@ impl BypassCorrelator {
 
     /// Gets the image path for a PID from the process registry.
     async fn get_image_path_for_pid(&self, pid: u32) -> String {
-        use windows::Win32::System::Threading::{OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_NAME_WIN32};
         use windows::Win32::Foundation::CloseHandle;
+        use windows::Win32::System::Threading::{
+            OpenProcess, QueryFullProcessImageNameW, PROCESS_NAME_WIN32,
+            PROCESS_QUERY_LIMITED_INFORMATION,
+        };
         unsafe {
             let handle = match OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) {
                 Ok(h) => h,
@@ -1021,7 +1026,14 @@ impl BypassCorrelator {
             };
             let mut buffer = [0u16; 1024];
             let mut size = buffer.len() as u32;
-            if QueryFullProcessImageNameW(handle, PROCESS_NAME_WIN32, windows::core::PWSTR::from_raw(buffer.as_mut_ptr()), &mut size).is_ok() {
+            if QueryFullProcessImageNameW(
+                handle,
+                PROCESS_NAME_WIN32,
+                windows::core::PWSTR::from_raw(buffer.as_mut_ptr()),
+                &mut size,
+            )
+            .is_ok()
+            {
                 let _ = CloseHandle(handle);
                 String::from_utf16_lossy(&buffer[..size as usize])
             } else {
@@ -1066,7 +1078,8 @@ impl BypassCorrelator {
         // Task 3: Bypass alert handler (from hook DLL IPC).
         // Bridge sync crossbeam channel to async tokio channel to avoid
         // block_on inside spawn_blocking (WR-03).
-        let (async_bypass_tx, mut async_bypass_rx) = tokio::sync::mpsc::channel::<BypassAlert>(1000);
+        let (async_bypass_tx, mut async_bypass_rx) =
+            tokio::sync::mpsc::channel::<BypassAlert>(1000);
         let bypass_bridge_handle = tokio::task::spawn_blocking(move || {
             while let Ok(alert) = bypass_rx.recv() {
                 if let Err(e) = async_bypass_tx.blocking_send(alert) {

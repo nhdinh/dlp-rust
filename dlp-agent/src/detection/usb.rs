@@ -628,8 +628,8 @@ impl VolumeDetector {
 ///
 /// # Arguments
 ///
-/// * `letter` — The drive letter to inject (e.g., `'C'`, `'D'`).
-/// * `class` — The [`VolumeClass`] to associate with the drive letter.
+/// * `letter` - The drive letter to inject (e.g., `'C'`, `'D'`).
+/// * `class` - The [`VolumeClass`] to associate with the drive letter.
 impl VolumeDetector {
     pub fn inject_volume_class_for_test(&self, letter: char, class: VolumeClass) {
         self.volume_class_map
@@ -1734,36 +1734,10 @@ fn extract_drive_letter(path: &str) -> Option<char> {
     }
 }
 
-/// Injects a volume class into the detector's cache for testing.
-///
-/// This helper allows tests to bypass WMI queries and directly populate
-/// the `volume_class_map` with a known classification. Used by integration
-/// tests to simulate drive classifications without requiring physical hardware.
-///
-/// # Arguments
-///
-/// * `letter` - Drive letter to inject (e.g., `'C'`, `'D'`).
-/// * `class` - The [`VolumeClass`] to associate with the drive letter.
-///
-/// # Example
-///
-/// ```
-/// let detector = VolumeDetector::new();
-/// detector.inject_volume_class_for_test('C', VolumeClass::LocalNTFS);
-/// detector.inject_volume_class_for_test('D', VolumeClass::Optical);
-/// ```
-#[cfg(test)]
-impl VolumeDetector {
-    pub fn inject_volume_class_for_test(&self, letter: char, class: VolumeClass) {
-        self.volume_class_map
-            .write()
-            .insert(letter.to_ascii_uppercase(), (class, Instant::now()));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Arc;
 
     #[test]
     fn test_device_identities_default_empty() {
@@ -2364,8 +2338,8 @@ mod tests {
 
         // Install a fresh detector with no cached drives.
         let detector = VolumeDetector::new();
-        let detector_static: &'static VolumeDetector = Box::leak(Box::new(detector));
-        set_drive_detector(detector_static);
+        let detector_static: Arc<VolumeDetector> = Arc::new(detector);
+        set_drive_detector(detector_static.clone());
 
         let query = VolumeClassQuery { drive_letter: 'Z' };
         let resp = handle_volume_class_query(&query);
@@ -2387,8 +2361,8 @@ mod tests {
             .insert('E', (VolumeClass::Optical, Instant::now()));
 
         // Install the detector globally (this is a test-only pattern).
-        let detector_static: &'static VolumeDetector = Box::leak(Box::new(detector));
-        set_drive_detector(detector_static);
+        let detector_static: Arc<VolumeDetector> = Arc::new(detector);
+        set_drive_detector(detector_static.clone());
 
         let query = VolumeClassQuery { drive_letter: 'E' };
         let resp = handle_volume_class_query(&query);
@@ -2412,8 +2386,8 @@ mod tests {
             .write()
             .insert('E', (VolumeClass::SDCard, Instant::now()));
 
-        let detector_static: &'static VolumeDetector = Box::leak(Box::new(detector));
-        set_drive_detector(detector_static);
+        let detector_static: Arc<VolumeDetector> = Arc::new(detector);
+        set_drive_detector(detector_static.clone());
 
         // Lowercase query should match uppercase cache entry.
         let query = VolumeClassQuery { drive_letter: 'e' };

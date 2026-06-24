@@ -212,9 +212,9 @@ impl ApprovalCache {
     #[must_use]
     pub fn get_decoding_key(&self) -> Option<jsonwebtoken::DecodingKey> {
         let vk_guard = self.verifying_key.read().expect("poisoned lock");
-        vk_guard.as_ref().map(|vk| {
-            jsonwebtoken::DecodingKey::from_ed_der(&vk.to_bytes())
-        })
+        vk_guard
+            .as_ref()
+            .map(|vk| jsonwebtoken::DecodingKey::from_ed_der(&vk.to_bytes()))
     }
 
     /// Removes a specific entry from the cache.
