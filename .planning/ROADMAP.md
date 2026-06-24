@@ -455,11 +455,13 @@ Plans:
   3. ABAC policies expressed in terms of `source_volume_class` and `destination_volume_class` produce the expected ALLOW/DENY decision for hook-intercepted file operations.
   4. Existing unit and integration tests continue to pass; new tests cover the duplicate-initialization guard and the volume-class wiring path.
 
-**Plans:** 0 plans
+**Plans:** 3 plans
 
 Plans:
 
-- [ ] TBD (run `/gsd-plan-phase 58.2` to break down)
+- [ ] `58.2-01-PLAN.md` — Consolidate HookIpcServer: introduce HookIpcServerConfig, rewrite spawn_hook_ipc_server, remove inline block from run_loop_init, remove BlockingThreads::hook_ipc, wire all DIFF handlers
+- [ ] `58.2-02-PLAN.md` — Wire volume classes and identity resolution: add hook_request_to_evaluate_request, map_hook_action_to_abac, get_caller_sid, warn! for missing volume classes on COPY/MOVE
+- [ ] `58.2-03-PLAN.md` — Tests: unit tests for helpers, integration test for consolidated server routing all four frame types, end-to-end volume-class ALLOW/DENY decisions
 
 ### Phase 59: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 
