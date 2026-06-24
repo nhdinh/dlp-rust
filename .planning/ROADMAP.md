@@ -455,13 +455,13 @@ Plans:
   3. ABAC policies expressed in terms of `source_volume_class` and `destination_volume_class` produce the expected ALLOW/DENY decision for hook-intercepted file operations.
   4. Existing unit and integration tests continue to pass; new tests cover the duplicate-initialization guard and the volume-class wiring path.
 
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 
 Plans:
 
 - [x] 58.2-01-PLAN.md
 - [x] 58.2-02-PLAN.md
-- [ ] 58.2-03-PLAN.md
+- [x] 58.2-03-PLAN.md
 
 - [ ] `58.2-01-PLAN.md` — Consolidate HookIpcServer: introduce HookIpcServerConfig, rewrite spawn_hook_ipc_server, remove inline block from run_loop_init, remove BlockingThreads::hook_ipc, wire all DIFF handlers
 - [ ] `58.2-02-PLAN.md` — Wire volume classes and identity resolution: add hook_request_to_evaluate_request, map_hook_action_to_abac, get_caller_sid, warn! for missing volume classes on COPY/MOVE
@@ -653,7 +653,7 @@ Plans:
 | 57. Operational Deployment Guide + AV/EDR Allowlist + UAT (ship gate) | 6/6 | Complete | 2026-06-10 |
 | 58. Differentiators Bundle (cuttable to v0.10.1) | 6/6 | Complete | 2026-06-09 |
 | 58.1 | Close v0.10.0 ship-gap verification items (INSERTED) | 4/4 | Complete    | 2026-06-23 |
-| 58.2 | Fix double HookIpcServer and wire volume classes (INSERTED) | 2/3 | In Progress|  |
+| 58.2 | Fix double HookIpcServer and wire volume classes (INSERTED) | 3/3 | Complete   | 2026-06-24 |
 | 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Complete | 2026-05-21 |
 | 60. Data Owner Review Queue + Admin TUI Screen | 1/1 | Complete | 2026-05-12 |
 | 61. Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature | 4/4 | Complete | 2026-05-14 |
