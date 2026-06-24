@@ -34,11 +34,11 @@ fn test_bypass_alert(pid: u32, stub_name: &str, reason: BypassReason) -> BypassA
 }
 
 // ---------------------------------------------------------------------------
-// Test 1: Batch insert max 100 boundary
+// Test 1: Batch insert is unbounded (flush boundary is 100, not submission)
 // ---------------------------------------------------------------------------
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_batch_insert_max_100() {
+async fn test_batch_insert_unbounded() {
     // Arrange: Create correlator with default batch_size = 100.
     let config = CorrelatorConfig::default();
     let correlator = Arc::new(BypassCorrelator::new(config));
