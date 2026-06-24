@@ -5237,6 +5237,58 @@ fn test_hook_request_to_evaluate_request() {
     assert!(eval_req.destination_origin.is_none());
 }
 
+/// Test that `hook_request_to_evaluate_request` forwards Optical volume class.
+#[test]
+fn test_hook_request_to_evaluate_request_forwards_volume_classes() {
+    let req = dlp_common::HookRequest {
+        path: r"C:\test.txt".to_string(),
+        action: "COPY".to_string(),
+        cache_version: 0,
+        protocol_version: 1,
+        op: dlp_common::hook_ipc::HookOp::Read,
+        source_volume_class: Some(dlp_common::VolumeClass::LocalNTFS),
+        destination_volume_class: Some(dlp_common::VolumeClass::Optical),
+        pid: 1234,
+    };
+    let caller_sid = "S-1-5-21-123".to_string();
+
+    let eval_req = hook_request_to_evaluate_request(&req, caller_sid.clone());
+
+    assert_eq!(eval_req.subject.user_sid, caller_sid);
+    assert_eq!(eval_req.resource.path, r"C:\test.txt");
+    assert_eq!(eval_req.action, dlp_common::Action::COPY);
+    assert_eq!(
+        eval_req.source_volume_class,
+        Some(dlp_common::VolumeClass::LocalNTFS)
+    );
+    assert_eq!(
+        eval_req.destination_volume_class,
+        Some(dlp_common::VolumeClass::Optical)
+    );
+}
+
+/// Test that `hook_request_to_evaluate_request` leaves optional fields as None.
+#[test]
+fn test_hook_request_to_evaluate_request_leaves_optional_fields_none() {
+    let req = dlp_common::HookRequest {
+        path: r"C:\Users\test\file.txt".to_string(),
+        action: "READ".to_string(),
+        cache_version: 0,
+        protocol_version: 1,
+        op: dlp_common::hook_ipc::HookOp::Read,
+        source_volume_class: None,
+        destination_volume_class: None,
+        pid: 1234,
+    };
+    let eval_req = hook_request_to_evaluate_request(&req, "S-1-5-21-test".to_string());
+
+    assert!(eval_req.agent.is_none());
+    assert!(eval_req.source_application.is_none());
+    assert!(eval_req.destination_application.is_none());
+    assert!(eval_req.source_origin.is_none());
+    assert!(eval_req.destination_origin.is_none());
+}
+
 /// Test that `get_caller_sid` returns a test stub on non-Windows targets.
 #[cfg(not(windows))]
 #[test]
@@ -5245,4 +5297,22 @@ fn test_get_caller_sid_non_windows_stub() {
     assert_eq!(sid, Some("S-1-5-18-test".to_string()));
     let sid2 = get_caller_sid(1234);
     assert_eq!(sid2, Some("S-1-5-18-test".to_string()));
+}
+
+/// Test that `get_caller_sid` on Windows returns a valid SID string.
+#[cfg(windows)]
+#[test]
+fn test_get_caller_sid_windows_current_process() {
+    let current_pid = std::process::id();
+    let sid = get_caller_sid(current_pid);
+    assert!(
+        sid.is_some(),
+        "get_caller_sid should return Some for current process"
+    );
+    let sid_str = sid.unwrap();
+    assert!(
+        sid_str.starts_with("S-1-5-"),
+        "SID should start with S-1-5-, got: {}",
+        sid_str
+    );
 }
