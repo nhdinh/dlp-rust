@@ -954,7 +954,7 @@ impl BypassCorrelator {
         let batch_id = alerts
             .first()
             .map(|a| a.batch_id.clone())
-            .unwrap_or_default();
+            .expect("flush_batch: alerts non-empty after early return check");
         let bypass_alerts: Vec<BypassAlert> = alerts.iter().map(|a| a.alert.clone()).collect();
 
         match server_client.post_bypass(&batch_id, &bypass_alerts).await {
