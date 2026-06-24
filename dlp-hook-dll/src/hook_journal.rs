@@ -190,9 +190,9 @@ impl HookJournal {
             }
         }
 
-        // Keep the mapping handle alive by leaking it.
-        // The mapping is freed automatically when the process exits.
-        let _ = CloseHandle(handle);
+        // Intentionally do NOT close the mapping handle so the section object
+        // stays alive for the lifetime of the process. The view is unmapped
+        // automatically when the process exits.
 
         let journal = HookJournal {
             header: header_ptr,
