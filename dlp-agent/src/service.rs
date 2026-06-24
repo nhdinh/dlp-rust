@@ -211,7 +211,9 @@ impl BlockingThreads {
         request_shutdown();
         info!("shutdown requested — joining blocking threads");
 
-        // Watchdog: if shutdown takes longer than timeout + 5 s buffer, force exit.
+        // Watchdog: if shutdown takes longer than timeout + 5 s buffer, force abort.
+        // std::process::abort is used instead of exit(1) to bypass atexit handlers
+        // and avoid partial cleanup that could corrupt the SQLite WAL.
         let watchdog_timeout = SHUTDOWN_TIMEOUT
             .saturating_mul(4)
             .saturating_add(Duration::from_secs(5));
@@ -219,9 +221,9 @@ impl BlockingThreads {
             std::thread::sleep(watchdog_timeout);
             error!(
                 ?watchdog_timeout,
-                "shutdown watchdog: forced process exit after timeout"
+                "shutdown watchdog: threads failed to join — forcing abort"
             );
-            std::process::exit(1);
+            std::process::abort();
         });
 
         let start = Instant::now();
