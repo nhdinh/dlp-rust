@@ -3236,24 +3236,27 @@ async fn approval_poll_loop(
                     active_jtis.insert(entry.id.clone());
 
                     // Parse the JWT claims from the token.
-                    // We use jsonwebtoken::decode without verification here because
-                    // the token was just fetched from the trusted server over HTTPS.
-                    // The signature is re-verified on every cache read via
-                    // ApprovalCache::check() using the cached public key.
+                    // The signature is verified using the cached server public key.
+                    let decoding_key = match approval_cache.get_decoding_key() {
+                        Some(key) => key,
+                        None => {
+                            warn!("approval poll loop: no public key cached — skipping token verification");
+                            continue;
+                        }
+                    };
                     let token_data = match jsonwebtoken::decode::<ApprovalClaims>(
                         &entry.token,
-                        &jsonwebtoken::DecodingKey::from_secret(&[]),
+                        &decoding_key,
                         &{
                             let mut v =
                                 jsonwebtoken::Validation::new(jsonwebtoken::Algorithm::EdDSA);
-                            v.insecure_disable_signature_validation();
                             v.set_issuer(&["dlp-server"]);
                             v
                         },
                     ) {
                         Ok(data) => data.claims,
                         Err(e) => {
-                            warn!(approval_id = %entry.id, error = %e, "failed to parse approval token claims");
+                            warn!(approval_id = %entry.id, error = %e, "approval token signature verification failed");
                             continue;
                         }
                     };

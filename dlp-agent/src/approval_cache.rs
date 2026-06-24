@@ -203,6 +203,20 @@ impl ApprovalCache {
         })
     }
 
+    /// Returns a `DecodingKey` derived from the cached Ed25519 public key.
+    ///
+    /// # Returns
+    ///
+    /// `Some(DecodingKey)` if the public key has been set.
+    /// `None` if no key is cached yet.
+    #[must_use]
+    pub fn get_decoding_key(&self) -> Option<jsonwebtoken::DecodingKey> {
+        let vk_guard = self.verifying_key.read().expect("poisoned lock");
+        vk_guard.as_ref().map(|vk| {
+            jsonwebtoken::DecodingKey::from_ed_der(&vk.to_bytes())
+        })
+    }
+
     /// Removes a specific entry from the cache.
     pub fn remove(&self, key: &ApprovalCacheKey) {
         self.cache.remove(&key.encode());
