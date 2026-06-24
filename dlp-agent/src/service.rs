@@ -1872,9 +1872,20 @@ async fn run_loop_init(
                     // Stub handler — full ABAC evaluation wired in Phase 58-05.
                     // For now, check ApprovalCache for override (DIFF-01).
                     // SECURITY: Extract user SID from the process token of the
-                    // requesting process. Falls back to SYSTEM SID only on failure.
-                    let caller_sid =
-                        get_process_user_sid(req.pid).unwrap_or_else(|| "S-1-5-18".to_string());
+                    // requesting process. Deny the request if identity resolution fails.
+                    let caller_sid = match get_process_user_sid(req.pid) {
+                        Some(sid) => sid,
+                        None => {
+                            warn!(pid = req.pid, "failed to resolve process SID — denying request");
+                            return dlp_common::HookResponse {
+                                decision: dlp_common::Decision::DENY,
+                                reason: "identity resolution failed".to_string(),
+                                cache_hint: None,
+                                cache_version: 0,
+                                approval_override: None,
+                            };
+                        }
+                    };
                     let cache_key = dlp_common::approval::ApprovalCacheKey::new(
                         &caller_sid,
                         &req.path,
