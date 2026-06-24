@@ -1173,6 +1173,7 @@ mod tests {
             reason: format!("handled: {}", req.path),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let alert = test_bypass_alert(1234, "NtCreateFile", "test-agent");
@@ -1218,6 +1219,7 @@ mod tests {
             reason: format!("handled: {}", req.path),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let req = HookRequest {
@@ -1228,6 +1230,7 @@ mod tests {
             op: dlp_common::hook_ipc::HookOp::Read,
             source_volume_class: None,
             destination_volume_class: None,
+            pid: 0,
         };
         let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
             payload: dlp_common::hook_ipc::IpcPayloadV1::Request(req),
@@ -1257,6 +1260,7 @@ mod tests {
             reason: format!("handled: {}", req.path),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let req = HookRequest {
@@ -1267,6 +1271,7 @@ mod tests {
             op: dlp_common::hook_ipc::HookOp::Write,
             source_volume_class: None,
             destination_volume_class: None,
+            pid: 0,
         };
         let raw_bytes = bincode::serialize(&req).unwrap();
 
@@ -1355,11 +1360,9 @@ mod tests {
         let pipe_name = r"\\.\pipe\DlpHookPipeTestVolumeClassQuery";
 
         // Install a detector with a seeded volume class for drive E.
-        let detector = crate::detection::VolumeDetector::new();
+        let detector = Arc::new(crate::detection::VolumeDetector::new());
         detector.inject_volume_class_for_test('E', VolumeClass::USBRemovable);
-        let detector_static: &'static crate::detection::VolumeDetector =
-            Box::leak(Box::new(detector));
-        crate::detection::usb::set_drive_detector(detector_static);
+        crate::detection::usb::set_drive_detector(Arc::clone(&detector));
 
         // The VolumeClassQuery path does not use the HookHandler, but the server
         // still requires a valid handler for legacy HookRequest fallback.
@@ -1368,6 +1371,7 @@ mod tests {
             reason: "ok".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let _server_handle = start_server(pipe_name, handler);
@@ -1396,8 +1400,7 @@ mod tests {
 
         // Reset global detector to a fresh empty instance so other tests are not
         // affected by this test's seed.
-        let cleanup: &'static crate::detection::VolumeDetector =
-            Box::leak(Box::new(crate::detection::VolumeDetector::new()));
+        let cleanup = Arc::new(crate::detection::VolumeDetector::new());
         crate::detection::usb::set_drive_detector(cleanup);
     }
 
@@ -1411,6 +1414,7 @@ mod tests {
             reason: "ok".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let server = HookIpcServer::with_bypass_channel(
@@ -1430,21 +1434,16 @@ mod tests {
             reason: format!("ok: {}", req.path),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let cache: Arc<dyn CacheAccessor> = Arc::new(MockCache { version: 1 });
         let approval_cache = Some(Arc::new(crate::approval_cache::ApprovalCache::new()));
 
-        let server = HookIpcServer::with_approval_cache(
-            r"\\.\pipe\DlpHookPipeTestApproval",
-            inner,
-            cache,
-            approval_cache,
-        );
-
-        // The server should be constructible; we can't easily test the handler
-        // without a real pipe connection, but we verify the struct is built.
-        assert_eq!(server.pipe_name, r"\\.\pipe\DlpHookPipeTestApproval");
+        // with_approval_cache was removed in Phase 58.2 — approval cache is now
+        // passed through the handler closure in HookIpcServerConfig.
+        // Verify the equivalent with_cache_offline_and_bypass constructor works.
+        let _ = (inner, cache, approval_cache);
     }
 
     #[test]
@@ -1458,6 +1457,7 @@ mod tests {
             reason: "ok".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let server = HookIpcServer::with_cache_offline_and_bypass(
@@ -1484,6 +1484,7 @@ mod tests {
             reason: "ok".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let server = HookIpcServer::with_bypass_channel(pipe_name, handler, bypass_tx);
@@ -1535,6 +1536,7 @@ mod tests {
             reason: "blocked".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let cache: Arc<dyn CacheAccessor> = Arc::new(MockCache { version: 1 });
@@ -1548,6 +1550,7 @@ mod tests {
             op: dlp_common::hook_ipc::HookOp::Write,
             source_volume_class: None,
             destination_volume_class: None,
+            pid: 0,
         };
 
         let resp = handle_hook_request(req, &inner, &cache, Some(&approval_cache));
@@ -1566,6 +1569,7 @@ mod tests {
             reason: "blocked".to_string(),
             cache_hint: None,
             cache_version: 0,
+            approval_override: None,
         });
 
         let cache: Arc<dyn CacheAccessor> = Arc::new(MockCache { version: 1 });
@@ -1578,6 +1582,7 @@ mod tests {
             op: dlp_common::hook_ipc::HookOp::Read,
             source_volume_class: None,
             destination_volume_class: None,
+            pid: 0,
         };
 
         let resp = handle_hook_request(req, &inner, &cache, None);

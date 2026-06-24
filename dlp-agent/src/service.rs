@@ -186,8 +186,6 @@ struct BlockingThreads {
     ipc: Vec<std::thread::JoinHandle<()>>,
     chrome: Option<std::thread::JoinHandle<()>>,
     session: Option<std::thread::JoinHandle<()>>,
-    /// Phase 53: Hook DLL IPC server thread (real-time classification + bypass alerts).
-    hook_ipc: Option<std::thread::JoinHandle<()>>,
 }
 
 impl BlockingThreads {
@@ -197,7 +195,6 @@ impl BlockingThreads {
             ipc: Vec::new(),
             chrome: None,
             session: None,
-            hook_ipc: None,
         }
     }
 
@@ -248,7 +245,6 @@ impl BlockingThreads {
         for (i, h) in self.ipc.into_iter().enumerate() {
             join_with_log(&format!("ipc-pipe-{i}"), Some(h));
         }
-        join_with_log("hook-ipc", self.hook_ipc);
         join_with_log("chrome", self.chrome);
         join_with_log("session", self.session);
 
@@ -1205,74 +1201,189 @@ fn emit_ntdll_patching_enabled_event() {
     crate::audit_emitter::emit(&mut event).ok();
 }
 
+/// Configuration for building a consolidated [`HookIpcServer`] with all handlers.
+///
+/// Carries every dependency needed to construct the single server instance
+/// per agent lifecycle.  `run_loop_init` assembles the config; the builder
+/// function consumes it.
+pub struct HookIpcServerConfig {
+    /// Named-pipe path (e.g. `r"\\.\pipe\DlpHookPipe"`).
+    pub pipe_name: String,
+    /// Shared-memory classification cache accessor.
+    pub cache: Arc<dyn crate::hook_ipc::CacheAccessor>,
+    /// Offline policy engine for synchronous ABAC evaluation.
+    pub offline: Arc<crate::offline::OfflineManager>,
+    /// Sender for `BypassAlert` payloads forwarded to the bypass correlator.
+    pub bypass_tx: crossbeam_channel::Sender<BypassAlert>,
+    /// Diagnostic snapshot aggregator for `PullDiagnostics` requests.
+    pub diagnostic_aggregator: Arc<crate::diagnostic_aggregator::DiagnosticAggregator>,
+    /// Health snapshot aggregator for `PullHealth` requests.
+    pub health_aggregator: Arc<crate::health_aggregator::HealthAggregator>,
+    /// Async sender for override requests (DIFF-01).
+    pub override_tx: tokio::sync::mpsc::Sender<dlp_common::hook_ipc::OverrideRequest>,
+    /// Approval cache for fast-path override checks before ABAC evaluation.
+    pub approval_cache: Arc<crate::approval_cache::ApprovalCache>,
+}
+
+/// Maps a hook action string to the ABAC [`Action`] enum.
+///
+/// The mapping is exhaustive for all actions currently emitted by the hook DLL.
+/// Unknown actions fall back to [`Action::READ`] so that ABAC evaluation still
+/// proceeds (the policy engine may have a catch-all rule).
+pub fn map_hook_action_to_abac(action: &str) -> dlp_common::Action {
+    match action.to_ascii_uppercase().as_str() {
+        "READ" | "NT_READ" => dlp_common::Action::READ,
+        "WRITE" | "CREATE" | "NT_WRITE" => dlp_common::Action::WRITE,
+        "COPY" => dlp_common::Action::COPY,
+        "DELETE" | "MOVE" | "RENAME" | "REPLACE" | "SET_INFO" | "NT_SET_INFO" => {
+            dlp_common::Action::DELETE
+        }
+        _ => dlp_common::Action::READ,
+    }
+}
+
+/// Converts a [`HookRequest`] into an [`EvaluateRequest`] for offline ABAC evaluation.
+///
+/// Identity resolution (PID -> SID) is performed **before** this call so that the
+/// helper remains pure and testable.  Volume-class fields are forwarded unchanged.
+/// All other optional fields (`agent`, `source_application`, etc.) remain `None`
+/// because the hook DLL does not carry them (D-08).
+pub fn hook_request_to_evaluate_request(
+    req: &dlp_common::HookRequest,
+    caller_sid: String,
+) -> dlp_common::EvaluateRequest {
+    let action = map_hook_action_to_abac(&req.action);
+    dlp_common::EvaluateRequest {
+        subject: dlp_common::Subject {
+            user_sid: caller_sid,
+            ..Default::default()
+        },
+        resource: dlp_common::Resource {
+            path: req.path.clone(),
+            ..Default::default()
+        },
+        environment: dlp_common::Environment::default(),
+        action,
+        agent: None,
+        source_application: None,
+        destination_application: None,
+        source_origin: None,
+        destination_origin: None,
+        source_volume_class: req.source_volume_class,
+        destination_volume_class: req.destination_volume_class,
+    }
+}
+
 /// Spawns the hook DLL IPC server on a dedicated `std::thread`.
 ///
-/// The server listens on [`DEFAULT_PIPE_NAME`], performs synchronous ABAC
-/// evaluation via [`OfflineManager::offline_decision`], and forwards
+/// The server listens on the pipe name configured in `config`, performs synchronous
+/// ABAC evaluation via [`OfflineManager::offline_decision`], and forwards
 /// `BypassAlert` payloads from the hook DLL to the bypass correlator through
-/// `bypass_tx`.
-///
-/// # Arguments
-///
-/// * `cache` — shared-memory classification cache accessor for cache-version
-///   metadata in hook responses.
-/// * `offline` — offline policy engine used for synchronous ABAC evaluation.
-/// * `bypass_tx` — unbounded sender for `BypassAlert` payloads.
+/// `config.bypass_tx`.  All DIFF-01/02/04 handlers are attached via the builder chain.
 ///
 /// # Returns
 ///
 /// `Some(JoinHandle<()>)` when the thread spawns successfully, or `None` on
-/// failure. The handle is stored in [`BlockingThreads::hook_ipc`] and joined
+/// failure. The handle is stored in [`RunLoopContext::hook_ipc_handle`] and joined
 /// during service shutdown.
-fn spawn_hook_ipc_server(
-    _cache: Arc<dyn crate::hook_ipc::CacheAccessor>,
-    offline: Arc<crate::offline::OfflineManager>,
-    bypass_tx: crossbeam_channel::Sender<BypassAlert>,
-) -> Option<std::thread::JoinHandle<()>> {
-    let handler = Arc::new(move |req: dlp_common::HookRequest| {
-        // Map hook action string to ABAC Action enum.
-        let action = match req.action.as_str() {
-            "READ" => dlp_common::Action::READ,
-            "WRITE" | "CREATE" => dlp_common::Action::WRITE,
-            "COPY" => dlp_common::Action::COPY,
-            "DELETE" => dlp_common::Action::DELETE,
-            "MOVE" | "RENAME" => dlp_common::Action::MOVE,
-            _ => dlp_common::Action::READ,
-        };
-        let evaluate_req = dlp_common::EvaluateRequest {
-            subject: dlp_common::Subject {
-                user_sid: "S-1-5-18".to_string(),
-                ..Default::default()
-            },
-            resource: dlp_common::Resource {
-                path: req.path,
-                ..Default::default()
-            },
-            environment: dlp_common::Environment::default(),
-            action,
-            agent: None,
-            source_application: None,
-            destination_application: None,
-            source_origin: None,
-            destination_origin: None,
-            source_volume_class: None,
-            destination_volume_class: None,
-        };
-        let eval_resp = offline.offline_decision(&evaluate_req);
-        dlp_common::HookResponse {
-            decision: eval_resp.decision,
-            reason: eval_resp.reason,
-            cache_hint: None,
-            cache_version: 0,
-            approval_override: None,
-        }
-    });
+fn spawn_hook_ipc_server(config: HookIpcServerConfig) -> Option<std::thread::JoinHandle<()>> {
+    let diag = Arc::clone(&config.diagnostic_aggregator);
+    let health = Arc::clone(&config.health_aggregator);
+    let override_tx = config.override_tx.clone();
+    let approval = Arc::clone(&config.approval_cache);
+    let offline = Arc::clone(&config.offline);
+    let cache = Arc::clone(&config.cache);
 
-    let server = crate::hook_ipc::HookIpcServer::with_bypass_channel(
-        crate::hook_ipc::DEFAULT_PIPE_NAME,
-        handler,
-        bypass_tx,
-    );
+    let diag_handler: crate::hook_ipc::DiagnosticsHandler =
+        Arc::new(move |req: dlp_common::hook_ipc::PullDiagnosticsRequest| {
+            let filter = crate::diagnostic_aggregator::DiagnosticFilter::default();
+            let (snapshots, _total) =
+                diag.get_snapshots_paginated(&filter, req.max_entries.min(1000), 0);
+            dlp_common::hook_ipc::DiagnosticsResponse { snapshots }
+        });
+
+    let health_handler: crate::hook_ipc::HealthHandler =
+        Arc::new(move |_req: dlp_common::hook_ipc::PullHealthRequest| {
+            let snapshot = health
+                .get_current_status()
+                .map(|(_, s)| s)
+                .unwrap_or_default();
+            dlp_common::hook_ipc::HealthResponse { snapshot }
+        });
+
+    let override_handler: crate::hook_ipc::OverrideHandler =
+        Arc::new(move |req: dlp_common::hook_ipc::OverrideRequest| {
+            if let Err(e) = override_tx.try_send(req) {
+                warn!(error = %e, "Override channel full — dropping request");
+            }
+        });
+
+    let server = crate::hook_ipc::HookIpcServer::with_cache_offline_and_bypass(
+        config.pipe_name,
+        cache,
+        Arc::new(move |req: dlp_common::HookRequest| {
+            // Resolve caller identity from PID.
+            let caller_sid = match get_caller_sid(req.pid) {
+                Some(sid) => sid,
+                None => {
+                    warn!(
+                        pid = req.pid,
+                        "failed to resolve process SID — denying request"
+                    );
+                    return dlp_common::HookResponse {
+                        decision: dlp_common::Decision::DENY,
+                        reason: "identity resolution failed".to_string(),
+                        cache_hint: None,
+                        cache_version: 0,
+                        approval_override: None,
+                    };
+                }
+            };
+
+            // Check approval cache for override (DIFF-01).
+            let cache_key = dlp_common::approval::ApprovalCacheKey::new(
+                &caller_sid,
+                &req.path,
+                &req.action,
+                None,
+            );
+            if let Some(eval_resp) = approval.check(&cache_key, None) {
+                info!(path = %req.path, "Approval cache hit — granting override");
+                return dlp_common::HookResponse {
+                    decision: eval_resp.decision,
+                    reason: eval_resp.reason,
+                    cache_hint: None,
+                    cache_version: 0,
+                    approval_override: Some(true),
+                };
+            }
+
+            // Warn when COPY/MOVE lacks volume-class information (potential hook DLL gap).
+            if matches!(req.action.as_str(), "COPY" | "MOVE") {
+                if req.source_volume_class.is_none() {
+                    warn!(path = %req.path, "COPY/MOVE request missing source_volume_class");
+                }
+                if req.destination_volume_class.is_none() {
+                    warn!(path = %req.path, "COPY/MOVE request missing destination_volume_class");
+                }
+            }
+
+            // Build EvaluateRequest and run offline ABAC evaluation.
+            let evaluate_req = hook_request_to_evaluate_request(&req, caller_sid);
+            let eval_resp = offline.offline_decision(&evaluate_req);
+            dlp_common::HookResponse {
+                decision: eval_resp.decision,
+                reason: eval_resp.reason,
+                cache_hint: None,
+                cache_version: 0,
+                approval_override: None,
+            }
+        }),
+        config.bypass_tx,
+    )
+    .with_diagnostics_handler(diag_handler)
+    .with_health_handler(health_handler)
+    .with_override_handler(override_handler);
 
     match std::thread::Builder::new()
         .name("hook-ipc-server".to_string())
@@ -1289,6 +1400,21 @@ fn spawn_hook_ipc_server(
     }
 }
 
+/// Resolves the Windows user SID for the process identified by `pid`.
+///
+/// On Windows this opens the process token and converts the SID to a string.
+/// On non-Windows targets a test stub is returned so the module compiles and
+/// tests can run.
+#[cfg(windows)]
+fn get_caller_sid(pid: u32) -> Option<String> {
+    get_process_user_sid(pid)
+}
+
+#[cfg(not(windows))]
+fn get_caller_sid(_pid: u32) -> Option<String> {
+    Some("S-1-5-18-test".to_string())
+}
+
 /// Initialises all enforcement subsystems and returns a [`RunLoopContext`]
 /// containing every handle and sender needed for graceful shutdown.
 ///
@@ -1296,7 +1422,7 @@ fn spawn_hook_ipc_server(
 /// block is kept in source order so comments remain valid.
 async fn run_loop_init(
     machine_name: Option<String>,
-    blocking_threads: &mut BlockingThreads,
+    _blocking_threads: &mut BlockingThreads,
 ) -> RunLoopContext {
     // ── Initialise the agent's local SQLite DB (offline audit queue) ───────
     if let Err(e) = init_agent_db() {
@@ -1429,6 +1555,73 @@ async fn run_loop_init(
     // ── Offline manager ────────────────────────────────────────────────────
     let offline = init_offline_manager(engine_client, cache, &server_client, machine_name.clone());
 
+    // ── Phase 58: Diagnostic and Health Aggregators ────────────────────────
+    let diagnostic_aggregator = Arc::new(crate::diagnostic_aggregator::DiagnosticAggregator::new());
+    let health_aggregator = Arc::new(crate::health_aggregator::HealthAggregator::new());
+    info!("diagnostic and health aggregators initialised");
+
+    // ── Phase 58-06: Override request channel (DIFF-01) ────────────────────
+    // The HookIpcServer runs on a dedicated std::thread without a tokio runtime.
+    // Override requests need async server submission, so we use a channel to
+    // forward them to a tokio task that handles the async work.
+    let (override_tx, mut override_rx) =
+        tokio::sync::mpsc::channel::<dlp_common::hook_ipc::OverrideRequest>(100);
+    let override_server_client = server_client.clone();
+    let override_handle = tokio::spawn(async move {
+        while let Some(req) = override_rx.recv().await {
+            let request_id = format!("ovr-{}", uuid::Uuid::new_v4());
+            info!(
+                request_id = %request_id,
+                resource_path = %req.resource_path,
+                "Override request received from hook DLL"
+            );
+
+            // Forward to UI via Pipe 1.
+            let ui_msg = crate::ipc::messages::Pipe1AgentMsg::OverrideRequest {
+                request_id: request_id.clone(),
+                reason: format!("Blocked: {}", req.resource_path),
+                classification: "T3".to_string(),
+                resource_path: req.resource_path.clone(),
+            };
+            if let Err(e) = crate::ipc::pipe1::send_to_ui(0, &ui_msg) {
+                warn!(error = %e, "Failed to send OverrideRequest to UI");
+            }
+
+            // Submit to server via async HTTP call.
+            if let Some(ref sc) = override_server_client {
+                let approval_req = dlp_common::approval::ApprovalRequest {
+                    requester_sid: req.requester_sid.clone(),
+                    data_object_id: req.data_object_id.clone(),
+                    allowed_action: req.action.clone(),
+                    destination_scope: req.destination_scope.clone(),
+                    justification: req.justification.clone(),
+                    device_fingerprint: None,
+                };
+                match sc.submit_approval_request(&approval_req).await {
+                    Ok(server_request_id) => {
+                        info!(
+                            request_id = %request_id,
+                            server_request_id = %server_request_id,
+                            "Approval request submitted to server"
+                        );
+                    }
+                    Err(e) => {
+                        warn!(
+                            request_id = %request_id,
+                            error = %e,
+                            "Failed to submit approval request to server"
+                        );
+                    }
+                }
+            } else {
+                warn!(
+                    request_id = %request_id,
+                    "No server client available — approval request not submitted"
+                );
+            }
+        }
+    });
+
     // ── Hook DLL IPC server (Phase 53/56.1) ────────────────────────────────
     // Unbounded channel shared between HookIpcServer (sender) and the bypass
     // correlator (receiver). Hook DLL BypassAlert frames received over the
@@ -1438,12 +1631,22 @@ async fn run_loop_init(
 
     let classification_cache_dyn: Arc<dyn crate::hook_ipc::CacheAccessor> =
         classification_cache.clone();
-    let hook_ipc_handle =
-        spawn_hook_ipc_server(classification_cache_dyn, Arc::clone(&offline), bypass_tx);
+
+    // Assemble the consolidated server configuration (D-01..D-05).
+    let hook_ipc_config = HookIpcServerConfig {
+        pipe_name: crate::hook_ipc::DEFAULT_PIPE_NAME.to_string(),
+        cache: classification_cache_dyn,
+        offline: Arc::clone(&offline),
+        bypass_tx,
+        diagnostic_aggregator: Arc::clone(&diagnostic_aggregator),
+        health_aggregator: Arc::clone(&health_aggregator),
+        override_tx: override_tx.clone(),
+        approval_cache: Arc::clone(&approval_cache),
+    };
+    let hook_ipc_handle = spawn_hook_ipc_server(hook_ipc_config);
     if let Some(ref h) = hook_ipc_handle {
         info!(thread_id = ?h.thread().id(), "Hook IPC server started");
     }
-    blocking_threads.hook_ipc = hook_ipc_handle;
 
     // ── Wrap agent_config in Arc<Mutex<>> for shared access ──────────────
     let config_arc = Arc::new(parking_lot::Mutex::new(agent_config.clone()));
@@ -1766,167 +1969,6 @@ async fn run_loop_init(
         warn!("ETW consumer not started — bypass correlator disabled");
         (None, None)
     };
-
-    // ── Phase 58: Diagnostic and Health Aggregators ────────────────────────
-    let diagnostic_aggregator = Arc::new(crate::diagnostic_aggregator::DiagnosticAggregator::new());
-    let health_aggregator = Arc::new(crate::health_aggregator::HealthAggregator::new());
-    info!("diagnostic and health aggregators initialised");
-
-    // ── Phase 58-06: Override request channel (DIFF-01) ────────────────────
-    // The HookIpcServer runs on a dedicated std::thread without a tokio runtime.
-    // Override requests need async server submission, so we use a channel to
-    // forward them to a tokio task that handles the async work.
-    let (override_tx, mut override_rx) =
-        tokio::sync::mpsc::channel::<dlp_common::hook_ipc::OverrideRequest>(100);
-    let override_server_client = server_client.clone();
-    let override_handle = tokio::spawn(async move {
-        while let Some(req) = override_rx.recv().await {
-            let request_id = format!("ovr-{}", uuid::Uuid::new_v4());
-            info!(
-                request_id = %request_id,
-                resource_path = %req.resource_path,
-                "Override request received from hook DLL"
-            );
-
-            // Forward to UI via Pipe 1.
-            let ui_msg = crate::ipc::messages::Pipe1AgentMsg::OverrideRequest {
-                request_id: request_id.clone(),
-                reason: format!("Blocked: {}", req.resource_path),
-                classification: "T3".to_string(),
-                resource_path: req.resource_path.clone(),
-            };
-            if let Err(e) = crate::ipc::pipe1::send_to_ui(0, &ui_msg) {
-                warn!(error = %e, "Failed to send OverrideRequest to UI");
-            }
-
-            // Submit to server via async HTTP call.
-            if let Some(ref sc) = override_server_client {
-                let approval_req = dlp_common::approval::ApprovalRequest {
-                    requester_sid: req.requester_sid.clone(),
-                    data_object_id: req.data_object_id.clone(),
-                    allowed_action: req.action.clone(),
-                    destination_scope: req.destination_scope.clone(),
-                    justification: req.justification.clone(),
-                    device_fingerprint: None,
-                };
-                match sc.submit_approval_request(&approval_req).await {
-                    Ok(server_request_id) => {
-                        info!(
-                            request_id = %request_id,
-                            server_request_id = %server_request_id,
-                            "Approval request submitted to server"
-                        );
-                    }
-                    Err(e) => {
-                        warn!(
-                            request_id = %request_id,
-                            error = %e,
-                            "Failed to submit approval request to server"
-                        );
-                    }
-                }
-            } else {
-                warn!(
-                    request_id = %request_id,
-                    "No server client available — approval request not submitted"
-                );
-            }
-        }
-    });
-
-    // ── Phase 58: Hook IPC Server (named pipe for hook DLL communication) ──
-    // The server runs on a dedicated std::thread because ConnectNamedPipeW blocks.
-    let hook_ipc_diag = Arc::clone(&diagnostic_aggregator);
-    let hook_ipc_health = Arc::clone(&health_aggregator);
-    let hook_ipc_override_tx = override_tx.clone();
-    let hook_ipc_approval_cache = Arc::clone(&approval_cache);
-    let hook_ipc_handle = std::thread::Builder::new()
-        .name("hook-ipc".into())
-        .spawn(move || {
-            let diag_handler: crate::hook_ipc::DiagnosticsHandler =
-                Arc::new(move |req: dlp_common::hook_ipc::PullDiagnosticsRequest| {
-                    let filter = crate::diagnostic_aggregator::DiagnosticFilter::default();
-                    let (snapshots, _total) = hook_ipc_diag.get_snapshots_paginated(
-                        &filter,
-                        req.max_entries.min(1000),
-                        0,
-                    );
-                    dlp_common::hook_ipc::DiagnosticsResponse { snapshots }
-                });
-            let health_handler: crate::hook_ipc::HealthHandler =
-                Arc::new(move |_req: dlp_common::hook_ipc::PullHealthRequest| {
-                    let snapshot = hook_ipc_health
-                        .get_current_status()
-                        .map(|(_, s)| s)
-                        .unwrap_or_default();
-                    dlp_common::hook_ipc::HealthResponse { snapshot }
-                });
-            let override_handler: crate::hook_ipc::OverrideHandler =
-                Arc::new(move |req: dlp_common::hook_ipc::OverrideRequest| {
-                    if let Err(e) = hook_ipc_override_tx.try_send(req) {
-                        warn!(error = %e, "Override channel full — dropping request");
-                    }
-                });
-            let approval_cache_for_handler = Arc::clone(&hook_ipc_approval_cache);
-            let server = crate::hook_ipc::HookIpcServer::new(
-                crate::hook_ipc::DEFAULT_PIPE_NAME,
-                Arc::new(move |req| {
-                    // Stub handler — full ABAC evaluation wired in Phase 58-05.
-                    // For now, check ApprovalCache for override (DIFF-01).
-                    // SECURITY: Extract user SID from the process token of the
-                    // requesting process. Deny the request if identity resolution fails.
-                    let caller_sid = match get_process_user_sid(req.pid) {
-                        Some(sid) => sid,
-                        None => {
-                            warn!(pid = req.pid, "failed to resolve process SID — denying request");
-                            return dlp_common::HookResponse {
-                                decision: dlp_common::Decision::DENY,
-                                reason: "identity resolution failed".to_string(),
-                                cache_hint: None,
-                                cache_version: 0,
-                                approval_override: None,
-                            };
-                        }
-                    };
-                    let cache_key = dlp_common::approval::ApprovalCacheKey::new(
-                        &caller_sid,
-                        &req.path,
-                        &req.action,
-                        None,
-                    );
-                    if let Some(eval_resp) = approval_cache_for_handler.check(&cache_key, None) {
-                        info!(path = %req.path, "Approval cache hit — granting override");
-                        return dlp_common::HookResponse {
-                            decision: eval_resp.decision,
-                            reason: eval_resp.reason,
-                            cache_hint: None,
-                            cache_version: 0,
-                            approval_override: Some(true),
-                        };
-                    }
-                    dlp_common::HookResponse {
-                        decision: dlp_common::Decision::ALLOW,
-                        reason: "stub".to_string(),
-                        cache_hint: None,
-                        cache_version: 0,
-                        approval_override: None,
-                    }
-                }),
-            )
-            .with_diagnostics_handler(diag_handler)
-            .with_health_handler(health_handler)
-            .with_override_handler(override_handler);
-            if let Err(e) = server.run() {
-                error!(error = %e, "Hook IPC server exited with error");
-            }
-        })
-        .ok();
-    if hook_ipc_handle.is_some() {
-        info!(
-            "Hook IPC server started on {}",
-            crate::hook_ipc::DEFAULT_PIPE_NAME
-        );
-    }
 
     // ── BitLocker Encryption Verification (Phase 34) ──────────────────────
     let (enc_shutdown_tx, enc_handle) = spawn_encryption_task(audit_ctx.clone(), recheck_interval);
@@ -4950,18 +4992,18 @@ fn test_blocking_threads_joins_running_thread() {
     assert_shutdown_joins_thread(threads, counter, "thread");
 }
 
-/// Test that BlockingThreads joins the hook IPC thread during shutdown.
+/// Test that BlockingThreads joins threads during shutdown.
 #[test]
-fn test_blocking_threads_joins_hook_ipc_thread() {
+fn test_blocking_threads_joins_threads() {
     let _guard = SHUTDOWN_TEST_MUTEX.lock().unwrap();
     reset_shutdown_signal();
 
     let (counter, handle) = spawn_shutdown_observing_thread();
 
     let mut threads = BlockingThreads::new();
-    threads.hook_ipc = Some(handle);
+    threads.ipc.push(handle);
 
-    assert_shutdown_joins_thread(threads, counter, "hook IPC thread");
+    assert_shutdown_joins_thread(threads, counter, "ipc thread");
 }
 
 /// Spawns a thread that increments `counter` once shutdown is requested.
@@ -5041,9 +5083,24 @@ fn test_spawn_hook_ipc_server_starts_named_thread() {
     let cache: Arc<dyn crate::hook_ipc::CacheAccessor> = Arc::new(MockCache { version: 1 });
     let offline = test_offline_manager();
     let (bypass_tx, _bypass_rx) = crossbeam_channel::unbounded::<BypassAlert>();
+    let diag = Arc::new(crate::diagnostic_aggregator::DiagnosticAggregator::new());
+    let health = Arc::new(crate::health_aggregator::HealthAggregator::new());
+    let (override_tx, _override_rx) =
+        tokio::sync::mpsc::channel::<dlp_common::hook_ipc::OverrideRequest>(100);
+    let approval = Arc::new(crate::approval_cache::ApprovalCache::new());
 
-    let handle = spawn_hook_ipc_server(cache, offline, bypass_tx)
-        .expect("hook IPC server thread should spawn");
+    let config = HookIpcServerConfig {
+        pipe_name: crate::hook_ipc::DEFAULT_PIPE_NAME.to_string(),
+        cache,
+        offline,
+        bypass_tx,
+        diagnostic_aggregator: diag,
+        health_aggregator: health,
+        override_tx,
+        approval_cache: approval,
+    };
+
+    let handle = spawn_hook_ipc_server(config).expect("hook IPC server thread should spawn");
 
     assert_eq!(handle.thread().name(), Some("hook-ipc-server"));
 
@@ -5102,4 +5159,90 @@ fn test_emit_ntdll_patching_enabled_event() {
         "NtdllPatchingEnabled must be routed to SIEM"
     );
     assert!(!event.agent_id.is_empty(), "agent_id must not be empty");
+}
+
+/// Test that `map_hook_action_to_abac` correctly maps all known hook action strings.
+#[test]
+fn test_map_hook_action_to_abac_all_variants() {
+    assert_eq!(map_hook_action_to_abac("READ"), dlp_common::Action::READ);
+    assert_eq!(map_hook_action_to_abac("NT_READ"), dlp_common::Action::READ);
+    assert_eq!(map_hook_action_to_abac("WRITE"), dlp_common::Action::WRITE);
+    assert_eq!(map_hook_action_to_abac("CREATE"), dlp_common::Action::WRITE);
+    assert_eq!(
+        map_hook_action_to_abac("NT_WRITE"),
+        dlp_common::Action::WRITE
+    );
+    assert_eq!(map_hook_action_to_abac("COPY"), dlp_common::Action::COPY);
+    assert_eq!(
+        map_hook_action_to_abac("DELETE"),
+        dlp_common::Action::DELETE
+    );
+    assert_eq!(map_hook_action_to_abac("MOVE"), dlp_common::Action::DELETE);
+    assert_eq!(
+        map_hook_action_to_abac("RENAME"),
+        dlp_common::Action::DELETE
+    );
+    assert_eq!(
+        map_hook_action_to_abac("REPLACE"),
+        dlp_common::Action::DELETE
+    );
+    assert_eq!(
+        map_hook_action_to_abac("SET_INFO"),
+        dlp_common::Action::DELETE
+    );
+    assert_eq!(
+        map_hook_action_to_abac("NT_SET_INFO"),
+        dlp_common::Action::DELETE
+    );
+    // Unknown actions fall back to READ.
+    assert_eq!(map_hook_action_to_abac("UNKNOWN"), dlp_common::Action::READ);
+    // Case insensitivity.
+    assert_eq!(map_hook_action_to_abac("read"), dlp_common::Action::READ);
+    assert_eq!(map_hook_action_to_abac("Write"), dlp_common::Action::WRITE);
+}
+
+/// Test that `hook_request_to_evaluate_request` builds a correct `EvaluateRequest`
+/// with volume classes forwarded and all optional fields left as `None`.
+#[test]
+fn test_hook_request_to_evaluate_request() {
+    let req = dlp_common::HookRequest {
+        path: r"C:\Users\test\file.txt".to_string(),
+        action: "COPY".to_string(),
+        cache_version: 0,
+        protocol_version: 1,
+        op: dlp_common::hook_ipc::HookOp::Read,
+        source_volume_class: Some(dlp_common::VolumeClass::LocalNTFS),
+        destination_volume_class: Some(dlp_common::VolumeClass::USBRemovable),
+        pid: 1234,
+    };
+    let caller_sid = "S-1-5-21-1234567890-1234567890-1234567890-1001".to_string();
+
+    let eval_req = hook_request_to_evaluate_request(&req, caller_sid.clone());
+
+    assert_eq!(eval_req.subject.user_sid, caller_sid);
+    assert_eq!(eval_req.resource.path, req.path);
+    assert_eq!(eval_req.action, dlp_common::Action::COPY);
+    assert_eq!(
+        eval_req.source_volume_class,
+        Some(dlp_common::VolumeClass::LocalNTFS)
+    );
+    assert_eq!(
+        eval_req.destination_volume_class,
+        Some(dlp_common::VolumeClass::USBRemovable)
+    );
+    assert!(eval_req.agent.is_none());
+    assert!(eval_req.source_application.is_none());
+    assert!(eval_req.destination_application.is_none());
+    assert!(eval_req.source_origin.is_none());
+    assert!(eval_req.destination_origin.is_none());
+}
+
+/// Test that `get_caller_sid` returns a test stub on non-Windows targets.
+#[cfg(not(windows))]
+#[test]
+fn test_get_caller_sid_non_windows_stub() {
+    let sid = get_caller_sid(0);
+    assert_eq!(sid, Some("S-1-5-18-test".to_string()));
+    let sid2 = get_caller_sid(1234);
+    assert_eq!(sid2, Some("S-1-5-18-test".to_string()));
 }

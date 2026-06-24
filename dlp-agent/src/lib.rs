@@ -175,6 +175,14 @@ pub mod bypass_correlator;
 #[cfg(windows)]
 pub mod universal_injector;
 
+/// Re-export hook IPC configuration and helpers for integration tests.
+#[cfg(test)]
+pub mod hook_ipc_config {
+    pub use crate::service::{
+        hook_request_to_evaluate_request, map_hook_action_to_abac, HookIpcServerConfig,
+    };
+}
+
 /// Shared test helpers for modules that mutate the global DiskEnumerator OnceLock.
 ///
 /// The global `DISK_ENUMERATOR` is a process-wide OnceLock. Tests in
