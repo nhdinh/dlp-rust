@@ -634,7 +634,11 @@ unsafe fn resolve_proc(dll_name: &str, fn_name: &str) -> *const std::ffi::c_void
         Ok(h) => h,
         Err(_) => return std::ptr::null(),
     };
-    let name = windows::core::PCSTR::from_raw(fn_name.as_ptr());
+    let name_c = match std::ffi::CString::new(fn_name) {
+        Ok(c) => c,
+        Err(_) => return std::ptr::null(),
+    };
+    let name = windows::core::PCSTR::from_raw(name_c.as_ptr() as *const u8);
     match GetProcAddress(dll, name) {
         Some(p) => p as *const std::ffi::c_void,
         None => std::ptr::null(),
