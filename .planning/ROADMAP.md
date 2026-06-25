@@ -481,7 +481,7 @@ Plans:
   3. The tester sign-off section is completed with engineering lead and QA lead approval.
   4. Any blocking failures are documented with defect IDs and remediation plans before ship decision.
 
-**Plans:** 0/0 plans planned
+**Plans:** 3/3 plans planned
 
 Plans:
 
