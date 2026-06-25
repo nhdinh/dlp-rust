@@ -167,10 +167,10 @@ foreach ($exe in $executables) {
 
 ---
 
-## v0.10.0 — [TO BE FILLED AT RELEASE]
+## v0.10.0 — Local Build (2026-06-25)
 
-> **Note:** Hash values below are placeholders until release day. The release
-> engineer must replace them with actual artifact hashes per the checklist above.
+> **Note:** This is a local development build for UAT preparation. Authenticode
+> signing and official pipeline build are pending release engineering.
 
 ### Summary
 
@@ -181,32 +181,32 @@ bypass detection.
 
 | Field | Value |
 |-------|-------|
-| Build ID | [TO BE FILLED AT RELEASE] |
-| Commit SHA | [TO BE FILLED AT RELEASE] |
-| Pipeline | [TO BE FILLED AT RELEASE] |
-| Built By | [TO BE FILLED AT RELEASE] |
-| Build Date | [TO BE FILLED AT RELEASE] |
+| Build ID | local-build-20260625 |
+| Commit SHA | 6874bcf1b6e48a81b4e96f8f7cfc376c93d546b9 |
+| Pipeline | local-cargo-build |
+| Built By | dev-workstation |
+| Build Date | 2026-06-25 |
 
 ### Signing Certificate
 
 | Field | Value |
 |-------|-------|
-| Thumbprint | [TO BE FILLED AT RELEASE] |
-| Issuer | [TO BE FILLED AT RELEASE] |
-| Subject | [TO BE FILLED AT RELEASE] |
-| Valid From | [TO BE FILLED AT RELEASE] |
-| Valid To | [TO BE FILLED AT RELEASE] |
+| Thumbprint | [PENDING OFFICIAL SIGNING — local build unsigned] |
+| Issuer | [PENDING OFFICIAL SIGNING] |
+| Subject | [PENDING OFFICIAL SIGNING] |
+| Valid From | [PENDING OFFICIAL SIGNING] |
+| Valid To | [PENDING OFFICIAL SIGNING] |
 
 ### Binaries
 
 | Binary | SHA-256 | SHA-512 |
 |--------|---------|---------|
-| dlp-agent.exe | [TO BE FILLED AT RELEASE] | [TO BE FILLED AT RELEASE] |
-| dlp-server.exe | [TO BE FILLED AT RELEASE] | [TO BE FILLED AT RELEASE] |
-| dlp-admin-cli.exe | [TO BE FILLED AT RELEASE] | [TO BE FILLED AT RELEASE] |
-| dlp-user-ui.exe | [TO BE FILLED AT RELEASE] | [TO BE FILLED AT RELEASE] |
-| dlp_hook_dll.dll | [TO BE FILLED AT RELEASE] | [TO BE FILLED AT RELEASE] |
-| dlp_hook_dll_x86.dll | [TO BE FILLED AT RELEASE] | [TO BE FILLED AT RELEASE] |
+| dlp-agent.exe | 2210d9b97ddceffd64a0d69e491f3a207ac8b8acf5c97457aaa5f5744c257ca2 | 279c7132038eff12755d04813d46be4808b5b319ba8e7ee8bff0db7a4c9f40515a65f0dc9e78e0f05562dcc401bf4cc48d48f4c5a557e2e4e342e6040ed9378a |
+| dlp-server.exe | 7f3e0fe0d5d0836433c7629c8aee4559b3de1d4416cf7843c862bd4762a93072 | f2de3d328c7221373d856bf328df7d4c2d7842eea6da80af02a77c50f5d896e5d7bc06a5c493d02c9ce02ba03c0721981aedb4fe8e06f697646978ffa89da2de |
+| dlp-admin-cli.exe | 394b34d0f5190195f973bb1bb3d335d9bd3715236c5c3632b7b25f2d84224d8c | 939963f8e871d535fb3ce7728fc2920774edf577d9ce7653104bba9f48d568f1e517362aeb7e517b72e75dbe632aa8f771fc3993c7aa9eabcf48c2956d0aead4 |
+| dlp-user-ui.exe | d45739f642bc281c3d71245ccd8e6ff48e35c7ce52d3a7cd045df92a5b304c68 | c8e9fa80f50f70bdc54a72605d33ddf1493fd99d0709851702397df674097e57ee58ec1599f536822394f5620cfa4cc222bb668d560815817a62f4785347a08c |
+| dlp_hook_dll.dll | c3762e1f51bf13bf5b8764f2a572f2bb4f95bc7ba742d36903630641355f8343 | 68e992b75709acb867f17d12f363d5fd9ad491d66ccd0f3fe74cb31ba5b50dea00251eef60a3dafbbe835d343c5324f7745cd14521c5318b7ff38f03fd25fc7c |
+| dlp_hook_dll_x86.dll | 16e413c4d6d16b9b8aa1e4ac59af07c72f854c7aa6e056c67934dd2f3583a868 | b88c3083d265c5350fcbd58a956d2d21e085d03648dc0fc05eebb5d5b95a551a94dbd4b4fc5afb726da4350a83822531dfa4227045479dbf6d06c83dac350746 |
 
 ### Breaking Changes
 
