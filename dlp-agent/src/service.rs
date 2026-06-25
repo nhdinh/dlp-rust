@@ -5316,3 +5316,249 @@ fn test_get_caller_sid_windows_current_process() {
         sid_str
     );
 }
+
+// ---------------------------------------------------------------------------
+// Tracing log capture helpers for warning verification tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+#[derive(Clone)]
+struct BufferWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+#[cfg(test)]
+impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for BufferWriter {
+    type Writer = BufferGuard;
+    fn make_writer(&'a self) -> Self::Writer {
+        BufferGuard(self.0.clone())
+    }
+}
+
+#[cfg(test)]
+struct BufferGuard(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+#[cfg(test)]
+impl std::io::Write for BufferGuard {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        let mut guard = self.0.lock().expect("buffer poisoned");
+        guard.extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+static TEST_LOG_BUFFER: std::sync::OnceLock<std::sync::Arc<std::sync::Mutex<Vec<u8>>>> =
+    std::sync::OnceLock::new();
+
+#[cfg(test)]
+fn get_test_log_buffer() -> std::sync::Arc<std::sync::Mutex<Vec<u8>>> {
+    TEST_LOG_BUFFER
+        .get_or_init(|| {
+            let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+            let writer = BufferWriter(buf.clone());
+            let subscriber = tracing_subscriber::fmt::Subscriber::builder()
+                .with_max_level(tracing::Level::WARN)
+                .with_writer(writer)
+                .with_ansi(false)
+                .finish();
+            let _ = tracing::dispatcher::set_global_default(subscriber.into());
+            buf
+        })
+        .clone()
+}
+
+// ---------------------------------------------------------------------------
+// Gap 58.2-02-02: PID->SID resolution failures must result in DENY
+// ---------------------------------------------------------------------------
+
+/// Test that a HookRequest with an invalid PID (pid=0) results in a DENY
+/// decision with reason "identity resolution failed" on Windows.
+///
+/// On non-Windows, `get_caller_sid` returns a test stub for any PID, so
+/// this test is Windows-only.
+#[cfg(windows)]
+#[test]
+#[serial_test::serial]
+fn test_invalid_pid_returns_deny_identity_resolution_failed() {
+    let _guard = SHUTDOWN_TEST_MUTEX.lock().unwrap();
+    reset_shutdown_signal();
+
+    let cache: Arc<dyn crate::hook_ipc::CacheAccessor> = Arc::new(MockCache { version: 1 });
+    let offline = test_offline_manager();
+    let (bypass_tx, _bypass_rx) = crossbeam_channel::unbounded::<BypassAlert>();
+    let diag = Arc::new(crate::diagnostic_aggregator::DiagnosticAggregator::new());
+    let health = Arc::new(crate::health_aggregator::HealthAggregator::new());
+    let (override_tx, _override_rx) =
+        tokio::sync::mpsc::channel::<dlp_common::hook_ipc::OverrideRequest>(100);
+    let approval = Arc::new(crate::approval_cache::ApprovalCache::new());
+
+    let config = HookIpcServerConfig {
+        pipe_name: r"\\.\pipe\DlpHookPipeTestInvalidPid".to_string(),
+        cache,
+        offline,
+        bypass_tx,
+        diagnostic_aggregator: diag,
+        health_aggregator: health,
+        override_tx,
+        approval_cache: approval,
+    };
+
+    let handle = spawn_hook_ipc_server(config).expect("hook IPC server thread should spawn");
+
+    // Give the server time to create the pipe.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // Connect a client and send a Request with pid=0.
+    let client = crate::hook_ipc::connect_client(r"\\.\pipe\DlpHookPipeTestInvalidPid")
+        .expect("client connect");
+
+    let req = dlp_common::HookRequest {
+        path: r"C:\test\file.txt".to_string(),
+        action: "READ".to_string(),
+        cache_version: 0,
+        protocol_version: 1,
+        op: dlp_common::hook_ipc::HookOp::Read,
+        source_volume_class: None,
+        destination_volume_class: None,
+        pid: 0,
+    };
+
+    let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+        payload: dlp_common::hook_ipc::IpcPayloadV1::Request(req),
+    });
+
+    let payload = bincode::serialize(&envelope).expect("serialize envelope");
+    crate::ipc::frame::write_frame(client, &payload).expect("write frame");
+
+    let frame = crate::ipc::frame::read_frame(client).expect("read frame");
+    let response_envelope: dlp_common::hook_ipc::IpcEnvelope =
+        bincode::deserialize(&frame).expect("deserialize envelope");
+
+    match response_envelope {
+        dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+            payload: dlp_common::hook_ipc::IpcPayloadV1::Response(resp),
+        }) => {
+            assert_eq!(
+                resp.decision,
+                dlp_common::Decision::DENY,
+                "Expected DENY for invalid PID, got {:?}",
+                resp.decision
+            );
+            assert!(
+                resp.reason.contains("identity resolution failed"),
+                "Expected 'identity resolution failed' reason, got: {}",
+                resp.reason
+            );
+        }
+        other => panic!("Expected Response frame, got {:?}", other),
+    }
+
+    crate::hook_ipc::close_pipe(client);
+
+    request_shutdown();
+    handle.join().expect("server thread should join cleanly");
+    reset_shutdown_signal();
+}
+
+// ---------------------------------------------------------------------------
+// Gap 58.2-02-03: COPY/MOVE with None volume class logs warning
+// ---------------------------------------------------------------------------
+
+/// Test that COPY/MOVE requests with None source or destination volume class
+/// emit a tracing::warn! warning through the actual handler closure.
+#[test]
+#[serial_test::serial]
+fn test_copy_move_none_volume_class_logs_warning() {
+    let _guard = SHUTDOWN_TEST_MUTEX.lock().unwrap();
+    reset_shutdown_signal();
+
+    // Ensure the global test subscriber is installed and clear the buffer.
+    let buf = get_test_log_buffer();
+    {
+        let mut guard = buf.lock().expect("buffer poisoned");
+        guard.clear();
+    }
+
+    let cache: Arc<dyn crate::hook_ipc::CacheAccessor> = Arc::new(MockCache { version: 1 });
+    let offline = test_offline_manager();
+    let (bypass_tx, _bypass_rx) = crossbeam_channel::unbounded::<BypassAlert>();
+    let diag = Arc::new(crate::diagnostic_aggregator::DiagnosticAggregator::new());
+    let health = Arc::new(crate::health_aggregator::HealthAggregator::new());
+    let (override_tx, _override_rx) =
+        tokio::sync::mpsc::channel::<dlp_common::hook_ipc::OverrideRequest>(100);
+    let approval = Arc::new(crate::approval_cache::ApprovalCache::new());
+
+    let config = HookIpcServerConfig {
+        pipe_name: r"\\.\pipe\DlpHookPipeTestWarning".to_string(),
+        cache,
+        offline,
+        bypass_tx,
+        diagnostic_aggregator: diag,
+        health_aggregator: health,
+        override_tx,
+        approval_cache: approval,
+    };
+
+    let handle = spawn_hook_ipc_server(config).expect("hook IPC server thread should spawn");
+
+    // Give the server time to create the pipe.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    // Connect a client and send a COPY request with None volume classes.
+    let client = crate::hook_ipc::connect_client(r"\\.\pipe\DlpHookPipeTestWarning")
+        .expect("client connect");
+
+    let req = dlp_common::HookRequest {
+        path: r"C:\test\file.txt".to_string(),
+        action: "COPY".to_string(),
+        cache_version: 0,
+        protocol_version: 1,
+        op: dlp_common::hook_ipc::HookOp::Read,
+        source_volume_class: None,
+        destination_volume_class: None,
+        pid: std::process::id(),
+    };
+
+    let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+        payload: dlp_common::hook_ipc::IpcPayloadV1::Request(req),
+    });
+
+    let payload = bincode::serialize(&envelope).expect("serialize envelope");
+    crate::ipc::frame::write_frame(client, &payload).expect("write frame");
+
+    let frame = crate::ipc::frame::read_frame(client).expect("read frame");
+    let response_envelope: dlp_common::hook_ipc::IpcEnvelope =
+        bincode::deserialize(&frame).expect("deserialize envelope");
+
+    // Verify we got a response (the server processed the request).
+    match response_envelope {
+        dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+            payload: dlp_common::hook_ipc::IpcPayloadV1::Response(_),
+        }) => {}
+        other => panic!("Expected Response frame, got {:?}", other),
+    }
+
+    crate::hook_ipc::close_pipe(client);
+
+    request_shutdown();
+    handle.join().expect("server thread should join cleanly");
+    reset_shutdown_signal();
+
+    // Verify the warning was logged.
+    let log_text = {
+        let guard = buf.lock().expect("buffer poisoned");
+        String::from_utf8_lossy(&guard).to_string()
+    };
+    assert!(
+        log_text.contains("missing source_volume_class"),
+        "Expected warning about missing source_volume_class. Log buffer: {}",
+        log_text
+    );
+    assert!(
+        log_text.contains("missing destination_volume_class"),
+        "Expected warning about missing destination_volume_class. Log buffer: {}",
+        log_text
+    );
+}
