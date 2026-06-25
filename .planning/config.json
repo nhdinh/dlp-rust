@@ -12,7 +12,8 @@
     "auto_advance": true,
     "plan_review_convergence": true,
     "_auto_chain_active": false,
-    "use_worktrees": false
+    "use_worktrees": false,
+    "security_enforcement": true
   },
   "search_gitignored": false,
   "review": {
