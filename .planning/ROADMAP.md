@@ -74,6 +74,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 58.1: Close v0.10.0 ship-gap verification items (INSERTED)** — fix ETW journal writes in hook DLL trampolines, verify BypassCorrelator::run() consumes bypass_rx, execute OPS-04 UAT on physical Windows 11 hardware, and create missing VERIFICATION.md files. (completed 2026-06-23)
 - [x] **Phase 58.2: Fix double HookIpcServer and wire volume classes (INSERTED)** — eliminate duplicate hook IPC server initialization and complete volume-class attribute wiring through the ABAC enforcement path. (Plan 01 complete 2026-06-24; Plans 02-03 pending)
 - [ ] **Phase 58.3: Close gap: OPS-04 — execute physical Windows 11 UAT (INSERTED)** — execute the v0.10.0 UAT plan on physical Windows 11 hardware and record actual results in `.planning/milestones/v0.10.0-UAT.md`.
+- [ ] **Phase 58.4: Close gap: DIFF-02/03/04 — wire differentiators into hook DLL deny paths (INSERTED)** — invoke diagnostic snapshot capture, content SHA-256 hashing, and health snapshot ingestion from the hook DLL deny paths.
 
 ---
 
@@ -487,6 +488,27 @@ Plans:
 - [ ] `58.3-01-PLAN.md` — Prepare physical Windows 11 host, peripherals, and cloud clients.
 - [ ] `58.3-02-PLAN.md` — Execute UAT scenarios A–J and capture artifacts.
 - [ ] `58.3-03-PLAN.md` — Record results, compute CRIT-04 overhead, and complete sign-off.
+
+### Phase 58.4: Close gap: DIFF-02/03/04 — wire differentiators into hook DLL deny paths (INSERTED)
+
+**Goal**: Invoke diagnostic snapshot capture, content SHA-256 hashing, and health snapshot ingestion from the hook DLL deny paths so the differentiator infrastructure built in Phase 58 produces real data.
+**Depends on**: Phase 58.2
+**Requirements**: DIFF-02, DIFF-03, DIFF-04
+**Success Criteria** (what must be TRUE):
+
+  1. `dlp-hook-dll/src/trampolines.rs` deny branches call `DiagnosticRing::push_snapshot` with the full decision context; `PullDiagnostics` returns non-empty snapshots.
+  2. `HookWriteFile` / `HookWriteFileEx` deny branches call `hash_compute::compute_content_hash` and attach the resulting SHA-256 to the audit event / `HookResponse`.
+  3. The hook DLL populates and sends `HookHealthSnapshot` to the agent health handler at regular intervals and on state transitions; the Self-Health Dashboard shows live counters.
+  4. Existing unit and integration tests continue to pass; new tests prove each differentiator data path end-to-end.
+
+**Plans:** 0/0 plans planned
+
+Plans:
+
+- [ ] `58.4-01-PLAN.md` — Wire diagnostic snapshot capture into `classify_and_log_path` / `classify_and_log_handle` deny branches.
+- [ ] `58.4-02-PLAN.md` — Wire content SHA-256 hash computation into `HookWriteFile` / `HookWriteFileEx` deny branches.
+- [ ] `58.4-03-PLAN.md` — Wire hook DLL health snapshot population and emission to the agent health handler.
+- [ ] `58.4-04-PLAN.md` — Add end-to-end tests for diagnostic, hash, and health data paths.
 
 ### Phase 59: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 
