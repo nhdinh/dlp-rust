@@ -73,6 +73,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 58: Differentiators Bundle (cuttable to v0.10.1 if scope pressure hits)** — cuttable as a unit to v0.10.1 if scope pressure hits; otherwise materially improves deployability. (completed 2026-06-09)
 - [x] **Phase 58.1: Close v0.10.0 ship-gap verification items (INSERTED)** — fix ETW journal writes in hook DLL trampolines, verify BypassCorrelator::run() consumes bypass_rx, execute OPS-04 UAT on physical Windows 11 hardware, and create missing VERIFICATION.md files. (completed 2026-06-23)
 - [x] **Phase 58.2: Fix double HookIpcServer and wire volume classes (INSERTED)** — eliminate duplicate hook IPC server initialization and complete volume-class attribute wiring through the ABAC enforcement path. (Plan 01 complete 2026-06-24; Plans 02-03 pending)
+- [ ] **Phase 58.3: Close gap: OPS-04 — execute physical Windows 11 UAT (INSERTED)** — execute the v0.10.0 UAT plan on physical Windows 11 hardware and record actual results in `.planning/milestones/v0.10.0-UAT.md`.
 
 ---
 
@@ -466,6 +467,26 @@ Plans:
 - [ ] `58.2-01-PLAN.md` — Consolidate HookIpcServer: introduce HookIpcServerConfig, rewrite spawn_hook_ipc_server, remove inline block from run_loop_init, remove BlockingThreads::hook_ipc, wire all DIFF handlers
 - [ ] `58.2-02-PLAN.md` — Wire volume classes and identity resolution: add hook_request_to_evaluate_request, map_hook_action_to_abac, get_caller_sid, warn! for missing volume classes on COPY/MOVE
 - [ ] `58.2-03-PLAN.md` — Tests: unit tests for helpers, integration test for consolidated server routing all four frame types, end-to-end volume-class ALLOW/DENY decisions
+
+### Phase 58.3: Close gap: OPS-04 — execute physical Windows 11 UAT (INSERTED)
+
+**Goal**: Execute the v0.10.0 UAT plan on physical Windows 11 hardware and record actual results in `.planning/milestones/v0.10.0-UAT.md`.
+**Depends on**: Phase 58.2
+**Requirements**: OPS-04
+**Success Criteria** (what must be TRUE):
+
+  1. Every UAT scenario in `.planning/milestones/v0.10.0-UAT.md` has an actual result, pass/fail status, tester notes, and captured artifacts.
+  2. The CRIT-04 benchmark gate (<= 25% wall-clock overhead on `cargo build` and Office app launch) is measured and recorded.
+  3. The tester sign-off section is completed with engineering lead and QA lead approval.
+  4. Any blocking failures are documented with defect IDs and remediation plans before ship decision.
+
+**Plans:** 0/0 plans planned
+
+Plans:
+
+- [ ] `58.3-01-PLAN.md` — Prepare physical Windows 11 host, peripherals, and cloud clients.
+- [ ] `58.3-02-PLAN.md` — Execute UAT scenarios A–J and capture artifacts.
+- [ ] `58.3-03-PLAN.md` — Record results, compute CRIT-04 overhead, and complete sign-off.
 
 ### Phase 59: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 
