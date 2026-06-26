@@ -30,10 +30,10 @@ progress:
 ## Current Position
 
 Phase: 58.3 (close-gap-ops-04-execute-physical-windows-11-uat) — EXECUTING
-Plan: 2 of 3 (awaiting manual UAT execution)
-Status: Plan 02 checkpoint — manual UAT execution required on physical Windows 11 host
+Plan: 1 of 3 (re-executing from scratch)
+Status: Plan 01 re-execution — manual host preparation required on physical Windows 11 host
 Verification: 10/10 must-haves verified, 0 gaps
-Last activity: 2026-06-26 — Phase 58.3 Plan 02 handed off for manual UAT execution
+Last activity: 2026-06-26 — Phase 58.3 Plan 01 re-execution requested
 
 Phase: 59 — Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 Status: All 4 plans complete and verified (01: journal writes, 02: bypass correlator routing, 03: VERIFICATION.md artifacts, 04: OPS-04 UAT handoff)
