@@ -501,7 +501,7 @@ Plans:
   3. The hook DLL populates and sends `HookHealthSnapshot` to the agent health handler at regular intervals and on state transitions; the Self-Health Dashboard shows live counters.
   4. Existing unit and integration tests continue to pass; new tests prove each differentiator data path end-to-end.
 
-**Plans:** 0/0 plans planned
+**Plans:** 4/4 plans planned
 
 Plans:
 
