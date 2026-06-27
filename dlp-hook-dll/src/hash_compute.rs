@@ -51,7 +51,7 @@ static HASH_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
 ///
 /// `buffer` must be valid for `len` bytes. This is guaranteed by the
 /// `WriteFile`/`WriteFileEx` contract when called from a trampoline.
-pub fn compute_content_hash(buffer: *const u8, len: u32) -> (Option<String>, bool, bool) {
+pub unsafe fn compute_content_hash(buffer: *const u8, len: u32) -> (Option<String>, bool, bool) {
     if buffer.is_null() || len == 0 {
         return (None, false, false);
     }
@@ -89,7 +89,10 @@ pub fn compute_content_hash(buffer: *const u8, len: u32) -> (Option<String>, boo
 ///
 /// `buffer` must be valid for `len` bytes. This is guaranteed by the
 /// `WriteFile`/`WriteFileEx` contract when called from a trampoline.
-pub fn compute_content_hash_offloaded(buffer: *const u8, len: u32) -> (Option<String>, bool, bool) {
+pub unsafe fn compute_content_hash_offloaded(
+    buffer: *const u8,
+    len: u32,
+) -> (Option<String>, bool, bool) {
     if buffer.is_null() || len == 0 {
         return (None, false, false);
     }
@@ -98,7 +101,7 @@ pub fn compute_content_hash_offloaded(buffer: *const u8, len: u32) -> (Option<St
 
     // Small buffers: hash inline to avoid thread pool overhead.
     if len_usize < SMALL_BUFFER_THRESHOLD {
-        return compute_content_hash(buffer, len);
+        return unsafe { compute_content_hash(buffer, len) };
     }
 
     // Large buffers: use thread pool.
@@ -140,7 +143,8 @@ mod tests {
     #[test]
     fn test_sha256_known_value() {
         let buffer = b"hello world";
-        let (hash, truncated, skipped) = compute_content_hash(buffer.as_ptr(), buffer.len() as u32);
+        let (hash, truncated, skipped) =
+            unsafe { compute_content_hash(buffer.as_ptr(), buffer.len() as u32) };
         assert_eq!(hash, Some(HELLO_WORLD_SHA256.to_string()));
         assert!(!truncated);
         assert!(!skipped);
@@ -148,7 +152,7 @@ mod tests {
 
     #[test]
     fn test_sha256_empty_buffer() {
-        let (hash, truncated, skipped) = compute_content_hash(std::ptr::null(), 0);
+        let (hash, truncated, skipped) = unsafe { compute_content_hash(std::ptr::null(), 0) };
         assert!(hash.is_none());
         assert!(!truncated);
         assert!(!skipped);
@@ -157,7 +161,7 @@ mod tests {
     #[test]
     fn test_sha256_zero_len() {
         let buffer = b"ignored";
-        let (hash, truncated, skipped) = compute_content_hash(buffer.as_ptr(), 0);
+        let (hash, truncated, skipped) = unsafe { compute_content_hash(buffer.as_ptr(), 0) };
         assert!(hash.is_none());
         assert!(!truncated);
         assert!(!skipped);
@@ -168,7 +172,7 @@ mod tests {
         // Create a buffer larger than HASH_CAP_BYTES.
         let oversized = vec![0xABu8; HASH_CAP_BYTES + 1000];
         let (hash, truncated, skipped) =
-            compute_content_hash(oversized.as_ptr(), oversized.len() as u32);
+            unsafe { compute_content_hash(oversized.as_ptr(), oversized.len() as u32) };
         assert!(hash.is_some());
         assert!(truncated, "expected truncated=true for oversized buffer");
         assert!(!skipped);
@@ -187,7 +191,7 @@ mod tests {
         // signature and that small buffers bypass the pool entirely.
         let buffer = b"small";
         let (hash, truncated, skipped) =
-            compute_content_hash_offloaded(buffer.as_ptr(), buffer.len() as u32);
+            unsafe { compute_content_hash_offloaded(buffer.as_ptr(), buffer.len() as u32) };
         // Small buffers are hashed inline (no pool needed).
         assert!(hash.is_some());
         assert!(!truncated);
@@ -196,7 +200,8 @@ mod tests {
 
     #[test]
     fn test_hash_skipped_on_null_buffer() {
-        let (hash, truncated, skipped) = compute_content_hash_offloaded(std::ptr::null(), 100);
+        let (hash, truncated, skipped) =
+            unsafe { compute_content_hash_offloaded(std::ptr::null(), 100) };
         assert!(hash.is_none());
         assert!(!truncated);
         assert!(!skipped);
@@ -207,7 +212,7 @@ mod tests {
         // Buffers below SMALL_BUFFER_THRESHOLD should not touch the pool.
         let buffer = vec![0xCDu8; SMALL_BUFFER_THRESHOLD - 1];
         let (hash, truncated, skipped) =
-            compute_content_hash_offloaded(buffer.as_ptr(), buffer.len() as u32);
+            unsafe { compute_content_hash_offloaded(buffer.as_ptr(), buffer.len() as u32) };
         assert!(hash.is_some());
         assert!(!truncated);
         assert!(!skipped);
@@ -218,7 +223,7 @@ mod tests {
         // Buffers at or above SMALL_BUFFER_THRESHOLD use the pool.
         let buffer = vec![0xEFu8; SMALL_BUFFER_THRESHOLD + 1];
         let (hash, truncated, skipped) =
-            compute_content_hash_offloaded(buffer.as_ptr(), buffer.len() as u32);
+            unsafe { compute_content_hash_offloaded(buffer.as_ptr(), buffer.len() as u32) };
         assert!(hash.is_some());
         assert!(!truncated);
         assert!(!skipped);

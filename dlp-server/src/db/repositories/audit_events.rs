@@ -382,6 +382,7 @@ mod tests {
             correlation_id: None,
             prev_hash: prev_hash.map(String::from),
             chain_hash: chain_hash.map(String::from),
+            content_sha256: None,
         }
     }
 

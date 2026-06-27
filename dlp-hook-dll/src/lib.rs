@@ -1059,6 +1059,7 @@ mod tests {
     /// test binary does not import the hooked functions — the pe_utils tests
     /// verify patch/restore on a controlled memory page.
     #[test]
+    #[ignore = "patches the test process IAT; run in an isolated harness"]
     fn iat_patch_and_restore_roundtrip() {
         // Reset INITIALISED so init() will run.
         INITIALISED.store(false, Ordering::SeqCst);

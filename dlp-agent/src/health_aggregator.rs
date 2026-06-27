@@ -59,6 +59,9 @@ impl HealthStatus {
     }
 }
 
+/// Alias for the optional boxed alert-router closure to keep field types readable.
+type AlertRouterSlot = Arc<Mutex<Option<Box<dyn Fn(&AuditEvent) + Send + 'static>>>>;
+
 /// Aggregates hook DLL health snapshots and emits alerts on transitions.
 ///
 /// Thread-safe via interior mutability (Mutex). All public methods take `&self`.
@@ -74,7 +77,7 @@ pub struct HealthAggregator {
     /// Stored as a function pointer to avoid coupling to dlp-server's
     /// AlertRouter type. The caller provides the routing closure at
     /// construction time.
-    alert_router: Arc<Mutex<Option<Box<dyn Fn(&AuditEvent) + Send + 'static>>>>,
+    alert_router: AlertRouterSlot,
 
     // Phantom data to make the type Debug-friendly without requiring
     // Debug on the closure type.

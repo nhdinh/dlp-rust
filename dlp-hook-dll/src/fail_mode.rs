@@ -459,6 +459,7 @@ pub fn decide_degraded(classification: Option<Classification>, op: HookOp) -> Op
 ///
 /// `Some(DenyReturn)` if the operation should be denied, `None` to allow.
 #[must_use]
+#[allow(dead_code)]
 pub fn decide_resync(classification: Option<Classification>, op: HookOp) -> Option<DenyReturn> {
     // Same logic as Healthy: use cache if available, otherwise pipe.
     // In practice, RESYNC means we have fresh cache data.

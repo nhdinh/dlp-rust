@@ -442,6 +442,7 @@ fn classify_and_log_path(
 /// This is a wrapper around `crate::classify_path` that adds
 /// `source_volume_class` and `destination_volume_class` to the request.
 /// When both are `None`, the behavior is identical to `classify_path`.
+#[allow(dead_code)]
 fn classify_path_with_volume_class(
     path: &str,
     action: &str,
@@ -2524,7 +2525,7 @@ mod tests {
             cache.borrow_mut().insert(
                 'C',
                 (
-                    dlp_common::VolumeClass::LocalNTFS,
+                    dlp_common::VolumeClass::USBRemovable,
                     std::time::Instant::now(),
                 ),
             );

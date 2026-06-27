@@ -597,6 +597,7 @@ mod tests {
             op: HookOp::Write,
             source_volume_class: Some(VolumeClass::USBRemovable),
             destination_volume_class: Some(VolumeClass::Optical),
+            pid: 0,
         };
         let bytes = bincode::serialize(&req).unwrap();
         let round_trip: HookRequest = bincode::deserialize(&bytes).unwrap();

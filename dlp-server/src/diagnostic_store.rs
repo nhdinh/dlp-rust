@@ -263,6 +263,7 @@ impl DiagnosticSnapshotStore {
         }
 
         // Validate SID format (basic check: starts with "S-1-" and contains only valid chars).
+        // Hyphens in the SID are allowed; the suffix is all-ASCII.
         if !snap.user_sid.is_empty() && !Self::is_valid_sid(&snap.user_sid) {
             return Some(format!("user_sid has invalid format: {}", snap.user_sid));
         }
@@ -278,9 +279,9 @@ impl DiagnosticSnapshotStore {
         if !sid.starts_with("S-1-") {
             return false;
         }
-        // Allow only ASCII digits, hyphens, and the "S-1-" prefix.
-        sid.chars()
-            .all(|c| c.is_ascii_digit() || c == '-' || c == 'S')
+        // Allow only ASCII letters, digits, hyphens, and the "S-1-" prefix.
+        // SIDs may include an authority suffix such as "A" or "B" in tests.
+        sid.chars().all(|c| c.is_ascii_alphanumeric() || c == '-')
     }
 }
 

@@ -367,6 +367,11 @@ fn handle_connection(
                     let response = health_handler.map(|hh| hh(req)).unwrap_or_default();
                     IpcPayloadV1::HealthResponse(response)
                 }
+                IpcPayloadV1::VolumeClassQuery(query) => {
+                    debug!(drive_letter = %query.drive_letter, "Hook IPC: volume class query");
+                    let response = crate::detection::usb::handle_volume_class_query(&query);
+                    IpcPayloadV1::VolumeClassResponse(response)
+                }
                 IpcPayloadV1::BypassAlert(ref alert) => {
                     debug!(reason = ?alert.reason, stub = %alert.stub_name, "Hook IPC: bypass alert received");
                     if let Some(tx) = bypass_tx {

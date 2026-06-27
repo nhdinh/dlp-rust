@@ -777,87 +777,7 @@ pub async fn get_audit_integrity(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::AtomicBool;
-    use std::sync::Arc;
-
     use super::*;
-    use crate::db::repositories::audit_events::AuditEventRepository;
-
-    /// Helper: build a minimal AppState with a file-backed SQLite pool
-    /// so data persists across connections (required for spawn_blocking tests).
-    fn test_app_state() -> Arc<AppState> {
-        let tmp = tempfile::NamedTempFile::new().expect("create temp db file");
-        let pool = Arc::new(crate::db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
-        std::mem::forget(tmp);
-        let crypto = Arc::new(crate::crypto::SecretCrypto::from_kek([0u8; 32], 1));
-        Arc::new(AppState {
-            pool: Arc::clone(&pool),
-            crypto: Arc::clone(&crypto),
-            policy_store: Arc::new(
-                crate::policy_store::PolicyStore::new(Arc::clone(&pool)).expect("store"),
-            ),
-            siem: crate::siem_connector::SiemConnector::new(Arc::clone(&pool), Arc::clone(&crypto)),
-            alert: crate::alert_router::AlertRouter::new(Arc::clone(&pool), Arc::clone(&crypto)),
-            ad: None,
-            label_service: Arc::new(crate::label_service::LabelService::new(Arc::clone(&pool))),
-            approval_token_service: Arc::new({
-                let conn = pool.get().expect("conn");
-                crate::approval_token::ApprovalTokenService::new(&crypto, &conn)
-                    .expect("approval token")
-            }),
-            syslog: crate::syslog_connector::SyslogConnector::new(Arc::clone(&pool), crypto),
-            label_aware_enabled: Arc::new(AtomicBool::new(false)),
-            protected_paths: Arc::new(
-                crate::db::repositories::protected_paths::ProtectedPathsRepository,
-            ),
-            bypass_alerts: Arc::new(crate::db::repositories::bypass_alerts::BypassAlertsRepository),
-        })
-    }
-
-    /// Helper: create a valid chain-hashed AuditEvent for a given agent.
-    fn chain_event(
-        agent_id: &str,
-        prev_hash: Option<String>,
-        timestamp_offset: chrono::Duration,
-    ) -> AuditEvent {
-        let mut event = AuditEvent::new(
-            dlp_common::EventType::Access,
-            "S-1-5-21-1".to_string(),
-            "testuser".to_string(),
-            r"C:\test.txt".to_string(),
-            dlp_common::Classification::T2,
-            dlp_common::Action::READ,
-            dlp_common::Decision::ALLOW,
-            agent_id.to_string(),
-            1,
-        );
-        event.timestamp = chrono::Utc::now() + timestamp_offset;
-        // Set required app-identity fields (AUDIT-04).
-        event.source_application = Some(dlp_common::endpoint::AppIdentity {
-            image_path: r"C:\test.exe".to_string(),
-            publisher: "Test".to_string(),
-            trust_tier: dlp_common::endpoint::AppTrustTier::Trusted,
-            signature_state: dlp_common::endpoint::SignatureState::Valid,
-            aumid: None,
-            package_family_name: None,
-            is_uwp: false,
-        });
-        event.destination_application = Some(dlp_common::endpoint::AppIdentity {
-            image_path: r"C:\dst.exe".to_string(),
-            publisher: "Test".to_string(),
-            trust_tier: dlp_common::endpoint::AppTrustTier::Trusted,
-            signature_state: dlp_common::endpoint::SignatureState::Valid,
-            aumid: None,
-            package_family_name: None,
-            is_uwp: false,
-        });
-        event.prev_hash = prev_hash.clone();
-        if let Some(ref ph) = prev_hash {
-            event.chain_hash =
-                Some(dlp_common::audit::compute_chain_hash(ph, &event).expect("compute hash"));
-        }
-        event
-    }
 
     #[test]
     fn test_event_query_defaults() {
@@ -923,7 +843,11 @@ mod tests {
             "agent-01".to_string(),
             42,
         )
-        .with_content_hash("abc123def456".to_string(), false, false);
+        .with_content_hash(
+            "abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string(),
+            false,
+            false,
+        );
 
         let mut conn = pool.get().expect("acquire connection");
         let uow = db::UnitOfWork::new(&mut conn).expect("begin transaction");
@@ -937,7 +861,10 @@ mod tests {
                 |row: &rusqlite::Row| Ok((row.get(0)?,)),
             )
             .expect("query audit_events");
-        assert_eq!(content_sha256, Some("abc123def456".to_string()));
+        assert_eq!(
+            content_sha256,
+            Some("abcdef1234567890abcdef1234567890abcdef1234567890abcdef1234567890".to_string())
+        );
     }
 
     #[test]

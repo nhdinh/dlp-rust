@@ -265,7 +265,6 @@ async fn test_diagnostics_pagination() {
             hook_function: "WriteFile".to_string(),
             classification_source: dlp_common::hook_ipc::ClassificationSource::CacheHit,
             classification_age_ms: 42,
-            abac_subject: format!("S-1-5-21-{}", i),
             abac_resource: r"C:\Data\secret.txt".to_string(),
             abac_action: "WRITE".to_string(),
             abac_environment: "local".to_string(),

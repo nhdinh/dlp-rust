@@ -81,7 +81,12 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
                 agent_version  TEXT NOT NULL,
                 last_heartbeat TEXT NOT NULL,
                 status         TEXT NOT NULL DEFAULT 'online',
-                registered_at  TEXT NOT NULL
+                registered_at  TEXT NOT NULL,
+                fingerprint    TEXT NOT NULL DEFAULT '',
+                mac_addresses  TEXT NOT NULL DEFAULT '[]',
+                vpn_active     INTEGER NOT NULL DEFAULT 0,
+                domain_joined  INTEGER NOT NULL DEFAULT 0,
+                health_status  TEXT NOT NULL DEFAULT 'healthy' CHECK(health_status IN ('healthy', 'degraded', 'offline', 'tampered'))
             );
 
             CREATE TABLE IF NOT EXISTS audit_events (
