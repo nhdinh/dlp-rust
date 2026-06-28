@@ -143,6 +143,34 @@ No new test files were generated. The re-audit confirmed all Phase 52 requiremen
 
 These blockers prevent workspace-wide verification commands from executing but do not indicate missing Phase 52 test coverage. Resolution is tracked separately.
 
+## Validation Audit 2026-06-28 (Re-validation run)
+
+| Metric | Count |
+|--------|-------|
+| Gaps found | 0 (Phase 52 requirements) |
+| Resolved | 0 |
+| Escalated | 0 |
+| Workspace gate blockers | 0 |
+
+### Full Workspace Verification
+
+| Gate | Command | Result |
+|------|---------|--------|
+| Build | `cargo build --workspace` | PASS (zero warnings) |
+| Clippy | `cargo clippy -p dlp-agent -p dlp-common -p dlp-server -- -D warnings` | PASS |
+| Tests | `cargo test -p dlp-agent dacl_tripwire` | PASS (20/20) |
+| Tests | `cargo test -p dlp-agent dacl_repair_watcher` | PASS (18/18) |
+| Tests | `cargo test -p dlp-agent dacl_staging` | PASS (15/15) |
+| Tests | `cargo test -p dlp-server protected_paths` | PASS (19/19) |
+| Tests | `cargo test -p dlp-common audit` | PASS (62/62) |
+| Tests | `cargo test -p dlp-server admin_api::tests -- --test-threads=1` | PASS (154/154, 2 ignored) |
+| Tests | `cargo test --workspace` | PASS (all crates green, 0 failures) |
+| Documentation | `test -f docs/operations/dpapi-recovery.md` | PASS |
+
+### Generated Test Files
+
+No new test files were generated. The re-validation confirmed all Phase 52 requirements retain automated coverage and no Nyquist gaps exist.
+
 ## Sign-Off
 
 - **Phase 52 Nyquist status:** COMPLIANT (all Phase 52 requirements have automated tests)
