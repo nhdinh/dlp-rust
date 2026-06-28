@@ -762,6 +762,54 @@ mod client_tests {
     }
 
     #[test]
+    fn list_bypass_alerts_encodes_severity_in_query_string() {
+        // T-54-04: Verify that list_bypass_alerts URL-encodes the severity parameter.
+        // We use a mock server to intercept the request and inspect the query string.
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        rt.block_on(async {
+            use wiremock::matchers::method;
+            use wiremock::{Mock, MockServer, ResponseTemplate};
+
+            let server = MockServer::start().await;
+
+            // severity value with characters that require URL encoding
+            let severity = "crit&foo";
+            let encoded = urlencoding::encode(severity);
+
+            // Use a broad mock that matches any GET to the endpoint.
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "total": 0,
+                    "alerts": []
+                })))
+                .mount(&server)
+                .await;
+
+            let client = EngineClient::for_test_with_url(server.uri());
+            let result = client.list_bypass_alerts(Some(severity), None, 20, 0).await;
+            assert!(
+                result.is_ok(),
+                "list_bypass_alerts should succeed: {:?}",
+                result.err()
+            );
+
+            // Verify the request was made with the encoded severity parameter.
+            let requests = server.received_requests().await.unwrap();
+            assert_eq!(requests.len(), 1, "expected exactly one request");
+            let req = &requests[0];
+            let query = req.url.query().unwrap_or("");
+            assert!(
+                query.contains(&format!("severity={}", encoded)),
+                "query string should contain encoded severity. got: {}",
+                query
+            );
+        });
+    }
+
+    #[test]
     fn ack_bypass_alert_method_exists() {
         let client = EngineClient::for_test();
         let _ = client.ack_bypass_alert(42);

@@ -8474,6 +8474,135 @@ mod protected_path_tests {
     }
 
     #[test]
+    fn handle_text_input_add_protected_path_passes_raw_value_without_prevalidation() {
+        // T-54-01: Verify the TUI does NOT pre-validate or clean the path input.
+        // The raw operator input must be passed directly to create_protected_path.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (mut app, _server) = rt.block_on(async {
+            use wiremock::matchers::method;
+            use wiremock::{Mock, MockServer, ResponseTemplate};
+
+            let server = MockServer::start().await;
+
+            // Raw path input with traversal-like characters that a naive pre-validator might reject or clean.
+            let raw_path = "C:\\Windows\\..\\System32\\secret.txt";
+
+            // Mock POST so the add succeeds.
+            Mock::given(method("POST"))
+                .and(wiremock::matchers::path("/admin/protected-paths"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "id": "test-id",
+                    "path": raw_path,
+                    "source": "manual",
+                    "tier": "T3"
+                })))
+                .mount(&server)
+                .await;
+
+            // Mock GET so the subsequent list refresh succeeds.
+            Mock::given(method("GET"))
+                .and(wiremock::matchers::path("/admin/protected-paths"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                    { "id": "test-id", "path": raw_path, "source": "manual", "tier": "T3" }
+                ])))
+                .mount(&server)
+                .await;
+
+            let client = EngineClient::for_test_with_url(server.uri());
+            let app_rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("app runtime");
+            let mut app = App::new(client, app_rt);
+            app.screen = Screen::TextInput {
+                prompt: "Protected path (e.g., C:\\Sensitive)".to_string(),
+                input: raw_path.to_string(),
+                purpose: InputPurpose::AddProtectedPath,
+            };
+
+            (app, server)
+        });
+
+        let key = KeyEvent::from(KeyCode::Enter);
+        handle_event(&mut app, crate::event::AppEvent::Key(key));
+
+        // After successful add and refresh, the app should navigate to ProtectedPathList.
+        assert!(
+            matches!(app.screen, Screen::ProtectedPathList { .. }),
+            "expected ProtectedPathList after adding path, got {:?}",
+            app.screen
+        );
+        let (msg, kind) = app.status.as_ref().expect("status should be set");
+        assert_eq!(msg, "Loaded 1 protected paths (page 1 of 1)");
+        assert_eq!(*kind, StatusKind::Success);
+    }
+
+    #[test]
+    fn handle_bypass_alert_list_ack_reverts_on_server_failure() {
+        // T-54-09: Verify optimistic ack is reverted when the server returns an error.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let (mut app, _server) = rt.block_on(async {
+            use wiremock::matchers::{method, path};
+            use wiremock::{Mock, MockServer, ResponseTemplate};
+
+            let server = MockServer::start().await;
+
+            // Mock the ack endpoint to return 500 (server error).
+            Mock::given(method("POST"))
+                .and(path("/admin/bypass-alerts/42/ack"))
+                .respond_with(ResponseTemplate::new(500).set_body_string("internal server error"))
+                .mount(&server)
+                .await;
+
+            let client = EngineClient::for_test_with_url(server.uri());
+            let app_rt = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("app runtime");
+            let mut app = App::new(client, app_rt);
+            app.screen = Screen::BypassAlertList {
+                alerts: vec![serde_json::json!({
+                    "id": 42,
+                    "severity": "crit",
+                    "acknowledged": false,
+                })],
+                selected: 0,
+                filter: BypassAlertSeverityFilter::All,
+                hide_acknowledged: false,
+                page: 0,
+                page_size: 20,
+                total: 1,
+                pending_ack_ids: std::collections::HashSet::new(),
+            };
+
+            (app, server)
+        });
+
+        let key = KeyEvent::from(KeyCode::Char('a'));
+        handle_event(&mut app, crate::event::AppEvent::Key(key));
+
+        // (a) acknowledged must be reverted to false.
+        if let Screen::BypassAlertList { alerts, .. } = &app.screen {
+            let ack = alerts[0]["acknowledged"].as_bool().unwrap_or(true);
+            assert!(!ack, "acknowledged should revert to false on server error");
+        } else {
+            panic!("expected BypassAlertList");
+        }
+
+        // (b) status must be Error.
+        let (msg, kind) = app.status.as_ref().expect("status should be set");
+        assert_eq!(
+            *kind,
+            StatusKind::Error,
+            "status should be Error on failed ack"
+        );
+        assert!(
+            msg.contains("Failed to acknowledge alert"),
+            "expected failure message, got: {msg}"
+        );
+    }
+
+    #[test]
     fn handle_text_input_esc_add_protected_path_routes_to_system_menu() {
         let mut app = test_app();
         app.screen = Screen::TextInput {
