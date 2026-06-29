@@ -440,7 +440,7 @@ fn classify_and_log_path(
             timestamp_qpc: crate::perf_telemetry::query_performance_counter(),
             user_sid: crate::get_current_user_sid(),
         };
-        let _ = crate::diagnostic_ring::push_snapshot(snapshot);
+        crate::diagnostic_ring::push_snapshot(snapshot);
     }
 
     // Record latency telemetry.
@@ -610,7 +610,7 @@ fn classify_and_log_handle(
             timestamp_qpc: crate::perf_telemetry::query_performance_counter(),
             user_sid: crate::get_current_user_sid(),
         };
-        let _ = crate::diagnostic_ring::push_snapshot(snapshot);
+        crate::diagnostic_ring::push_snapshot(snapshot);
     }
 
     // Write to hook journal BEFORE returning the decision (per D-23).

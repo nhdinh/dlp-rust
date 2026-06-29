@@ -81,8 +81,10 @@ async fn test_batch_insert_unbounded() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_batch_timer_fires_under_100() {
     // Arrange: Create correlator with a short flush interval (1s).
-    let mut config = CorrelatorConfig::default();
-    config.flush_interval_secs = 1;
+    let config = CorrelatorConfig {
+        flush_interval_secs: 1,
+        ..Default::default()
+    };
     let correlator = Arc::new(BypassCorrelator::new(config));
 
     let (bypass_tx, bypass_rx) = crossbeam_channel::bounded::<BypassAlert>(100);

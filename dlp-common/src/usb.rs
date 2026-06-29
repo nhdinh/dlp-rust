@@ -1066,10 +1066,7 @@ mod tests {
 
     #[test]
     fn test_serial_match_none_target_accepts_none_candidate() {
-        let serial_match = match ("(none)", "(none)") {
-            ("(none)", "(none)") => true,
-            _ => false,
-        };
+        let serial_match = matches!(("(none)", "(none)"), ("(none)", "(none)"));
         assert!(serial_match);
     }
 

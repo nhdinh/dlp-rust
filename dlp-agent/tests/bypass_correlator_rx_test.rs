@@ -91,8 +91,10 @@ async fn test_bypass_rx_routes_to_repo() {
 #[tokio::test(flavor = "multi_thread")]
 async fn test_bypass_rx_audit_mode_suppresses() {
     // Arrange: Create correlator in Audit mode.
-    let mut config = CorrelatorConfig::default();
-    config.enforcement_mode = EnforcementMode::Audit;
+    let config = dlp_agent::bypass_correlator::CorrelatorConfig {
+        enforcement_mode: EnforcementMode::Audit,
+        ..Default::default()
+    };
     let correlator = Arc::new(BypassCorrelator::new(config));
 
     let (bypass_tx, bypass_rx) = crossbeam_channel::bounded::<BypassAlert>(100);
