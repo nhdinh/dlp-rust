@@ -1425,7 +1425,7 @@ fn spawn_hook_ipc_server(config: HookIpcServerConfig) -> Option<std::thread::Joi
                     map_hook_action_to_abac(&req.action),
                     response.decision,
                     "AGENT-01".to_string(), // agent_id not available in this scope
-                    0, // session_id not available in this scope
+                    0,                      // session_id not available in this scope
                 )
                 .with_policy_mode(format!("{:?}", eval_resp.enforcement_mode));
 

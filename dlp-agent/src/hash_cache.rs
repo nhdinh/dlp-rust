@@ -42,14 +42,10 @@ pub fn create_hash_cache() -> HashCache {
 /// * `ttl` — Time-to-live for each entry. Defaults to 60 seconds if `None`.
 pub fn spawn_hash_cache_cleanup_task(cache: HashCache, ttl: Option<Duration>) {
     let cutoff = ttl.unwrap_or(Duration::from_secs(60));
-    std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(cutoff);
-            let now = Instant::now();
-            cache.retain(|_key, (_frame, inserted)| {
-                now.duration_since(*inserted) < cutoff
-            });
-        }
+    std::thread::spawn(move || loop {
+        std::thread::sleep(cutoff);
+        let now = Instant::now();
+        cache.retain(|_key, (_frame, inserted)| now.duration_since(*inserted) < cutoff);
     });
 }
 
@@ -59,7 +55,9 @@ pub fn spawn_hash_cache_cleanup_task(cache: HashCache, ttl: Option<Duration>) {
 /// The caller should check `hash_skipped` to distinguish "no hash because
 /// the pool was saturated" from "no hash because the frame hasn't arrived yet".
 pub fn lookup_hash(cache: &HashCache, pid: u32, handle_value: u64) -> Option<HashEvidenceFrame> {
-    cache.get(&(pid, handle_value)).map(|entry| entry.value().0.clone())
+    cache
+        .get(&(pid, handle_value))
+        .map(|entry| entry.value().0.clone())
 }
 
 // ---------------------------------------------------------------------------
@@ -118,10 +116,7 @@ mod tests {
         // Insert with an old timestamp (simulating expired entry).
         cache.insert(
             (1234, 0xABCD),
-            (
-                frame.clone(),
-                Instant::now() - Duration::from_secs(120),
-            ),
+            (frame.clone(), Instant::now() - Duration::from_secs(120)),
         );
 
         // Manually run retain with a 60-second cutoff.

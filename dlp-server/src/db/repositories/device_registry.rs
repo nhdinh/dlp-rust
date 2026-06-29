@@ -335,7 +335,7 @@ mod tests {
         // and must not hold the write conn open when reading.
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let row = make_row("uuid-1", "0951", "1666", "SN001", "blocked");
             DeviceRegistryRepository::upsert(&uow, &row).expect("upsert new row");
             uow.commit().expect("commit");
@@ -359,7 +359,7 @@ mod tests {
         // Insert the initial row.
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let row = make_row("uuid-1", "0951", "1666", "SN001", "blocked");
             DeviceRegistryRepository::upsert(&uow, &row).expect("initial upsert");
             uow.commit().expect("commit");
@@ -368,7 +368,7 @@ mod tests {
         // Upsert same (vid, pid, serial) with different tier and description.
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let updated = DeviceRegistryRow {
                 id: "uuid-2".to_string(), // different UUID — must NOT replace original
                 vid: "0951".to_string(),
@@ -409,7 +409,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let row = make_row("uuid-1", "0951", "1666", "SN001", "read_only");
             DeviceRegistryRepository::upsert(&uow, &row).expect("upsert");
             uow.commit().expect("commit");
@@ -417,7 +417,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let affected =
                 DeviceRegistryRepository::delete_by_id(&uow, "uuid-1").expect("delete_by_id");
             uow.commit().expect("commit");
@@ -432,7 +432,7 @@ mod tests {
     fn test_delete_by_id_nonexistent_returns_zero() {
         let pool = make_pool();
         let mut conn = pool.get().expect("get connection");
-        let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+        let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
         let affected = DeviceRegistryRepository::delete_by_id(&uow, "does-not-exist")
             .expect("delete_by_id on missing UUID must not error");
         uow.commit().expect("commit");
@@ -448,7 +448,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let machine = make_row("uuid-mw", "0951", "1666", "SN001", "read_only");
             let alice = make_row_with_owner(
                 "uuid-a",
@@ -496,7 +496,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let machine = make_row("uuid-mw", "0951", "1666", "SN001", "read_only");
             let alice = make_row_with_owner(
                 "uuid-a",
@@ -539,7 +539,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let machine = make_row("uuid-mw", "0951", "1666", "SN001", "read_only");
             let alice = make_row_with_owner(
                 "uuid-a",
@@ -574,7 +574,7 @@ mod tests {
         // Insert machine-wide entry.
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let machine = make_row("uuid-mw", "0951", "1666", "SN001", "read_only");
             DeviceRegistryRepository::upsert(&uow, &machine).expect("upsert machine-wide");
             uow.commit().expect("commit");
@@ -583,7 +583,7 @@ mod tests {
         // Insert per-user entry for same device — must NOT conflict.
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let alice = make_row_with_owner(
                 "uuid-a",
                 "0951",

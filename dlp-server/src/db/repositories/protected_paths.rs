@@ -450,7 +450,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let row = make_row("pp-1", r"C:\Data\HR", "manual", "T3", false);
             ProtectedPathsRepository::insert(&uow, &row).expect("insert new row");
             uow.commit().expect("commit");
@@ -471,7 +471,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let row1 = make_row("pp-1", r"C:\Data\HR", "manual", "T3", false);
             ProtectedPathsRepository::insert(&uow, &row1).expect("first insert");
             uow.commit().expect("commit");
@@ -479,7 +479,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let row2 = make_row("pp-2", r"C:\Data\HR", "manual", "T4", false);
             let result = ProtectedPathsRepository::insert(&uow, &row2);
             assert!(result.is_err(), "duplicate path must fail");
@@ -497,7 +497,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let row = make_row("pp-1", r"C:\Data\HR", "manual", "T3", false);
             ProtectedPathsRepository::insert(&uow, &row).expect("insert");
             uow.commit().expect("commit");
@@ -505,7 +505,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let updated = ProtectedPathRow {
                 tier: "T4".to_string(),
                 is_override: true,
@@ -529,7 +529,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let row = make_row("pp-1", r"C:\Data\HR", "manual", "T3", false);
             ProtectedPathsRepository::insert(&uow, &row).expect("insert path");
 
@@ -551,7 +551,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let affected =
                 ProtectedPathsRepository::delete_by_id(&uow, "pp-1").expect("delete_by_id");
             assert_eq!(affected, 1, "expected 1 row deleted");
@@ -624,7 +624,7 @@ mod tests {
         // Insert a manual entry.
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let row = make_row("pp-1", r"\\server\share\HR", "manual", "T3", false);
             ProtectedPathsRepository::insert(&uow, &row).expect("insert manual");
             uow.commit().expect("commit");
@@ -650,7 +650,7 @@ mod tests {
         // Insert an auto entry at T3.
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let row = make_row("pp-1", r"\\server\share\HR", "auto", "T3", false);
             ProtectedPathsRepository::insert(&uow, &row).expect("insert auto T3");
             uow.commit().expect("commit");
@@ -676,7 +676,7 @@ mod tests {
         // Insert a protected path first (FK requirement).
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let row = make_row("pp-1", r"C:\Data\HR", "manual", "T3", false);
             ProtectedPathsRepository::insert(&uow, &row).expect("insert path");
 
@@ -698,7 +698,7 @@ mod tests {
         // Upsert with new SDDL.
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let ace = ProtectedPathAceRow {
                 id: "ace-2".to_string(),
                 protected_path_id: "pp-1".to_string(),
@@ -724,7 +724,7 @@ mod tests {
     fn test_check_constraint_rejects_invalid_source() {
         let pool = make_pool();
         let mut conn = pool.get().expect("get connection");
-        let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+        let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
         let bad_row = ProtectedPathRow {
             source: "invalid".to_string(),
             ..make_row("pp-bad", r"C:\Data", "invalid", "T3", false)
@@ -742,7 +742,7 @@ mod tests {
     fn test_check_constraint_rejects_invalid_tier() {
         let pool = make_pool();
         let mut conn = pool.get().expect("get connection");
-        let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+        let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
         let bad_row = ProtectedPathRow {
             tier: "T2".to_string(),
             ..make_row("pp-bad", r"C:\Data", "manual", "T2", false)
@@ -760,7 +760,7 @@ mod tests {
     fn test_delete_by_id_nonexistent_returns_zero() {
         let pool = make_pool();
         let mut conn = pool.get().expect("get connection");
-        let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+        let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
         let affected = ProtectedPathsRepository::delete_by_id(&uow, "does-not-exist")
             .expect("delete_by_id on missing id must not error");
         uow.commit().expect("commit");

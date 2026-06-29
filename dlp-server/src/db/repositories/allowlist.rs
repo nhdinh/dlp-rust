@@ -442,7 +442,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let row = make_row(
                 "uuid-1",
                 "exact_path",
@@ -472,7 +472,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let row = make_row(
                 "uuid-1",
                 "exact_path",
@@ -502,7 +502,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let row = make_row(
                 "uuid-1",
                 "exact_path",
@@ -516,7 +516,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let updated = AllowlistEntryRow {
                 value: "C:\\Windows\\System32\\bar.dll".to_string(),
                 updated_at: "2026-06-01T00:00:00Z".to_string(),
@@ -545,7 +545,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let row = make_row(
                 "uuid-1",
                 "exact_path",
@@ -559,7 +559,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let affected = AllowlistRepository::delete_by_id(&uow, "uuid-1").expect("delete_by_id");
             assert_eq!(affected, 1, "expected 1 row deleted");
             uow.commit().expect("commit");
@@ -573,7 +573,7 @@ mod tests {
     fn test_delete_by_id_nonexistent_returns_zero() {
         let pool = make_pool();
         let mut conn = pool.get().expect("get connection");
-        let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+        let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
         let affected = AllowlistRepository::delete_by_id(&uow, "does-not-exist")
             .expect("delete_by_id on missing UUID must not error");
         uow.commit().expect("commit");
@@ -589,7 +589,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let self_row = make_row("uuid-1", "exact_path", "C:\\foo.dll", "self", 10);
             let av_row = make_row("uuid-2", "cert_thumbprint", "ABCD", "avedr", 20);
             AllowlistRepository::insert(&uow, &self_row).expect("insert self");
@@ -614,7 +614,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let row = make_row("uuid-1", "exact_path", "C:\\foo.dll", "self", 10);
             AllowlistRepository::insert(&uow, &row).expect("insert");
             uow.commit().expect("commit");
@@ -622,7 +622,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let affected =
                 AllowlistRepository::set_enabled(&uow, "uuid-1", 0, "2026-06-01T00:00:00Z")
                     .expect("set_enabled");
@@ -639,7 +639,7 @@ mod tests {
     fn test_check_constraint_rejects_invalid_match_type() {
         let pool = make_pool();
         let mut conn = pool.get().expect("get connection");
-        let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+        let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
         let bad_row = AllowlistEntryRow {
             match_type: "invalid_type".to_string(),
             ..make_row("uuid-bad", "invalid_type", "val", "self", 10)
@@ -657,7 +657,7 @@ mod tests {
     fn test_check_constraint_rejects_invalid_category() {
         let pool = make_pool();
         let mut conn = pool.get().expect("get connection");
-        let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+        let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
         let bad_row = AllowlistEntryRow {
             category: "invalid_cat".to_string(),
             ..make_row("uuid-bad", "exact_path", "val", "invalid_cat", 10)
@@ -677,7 +677,7 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             // Insert the parent allowlist entry first so the FK constraint is satisfied.
             let row = make_row("uuid-1", "exact_path", "C:\\foo.dll", "self", 10);
             AllowlistRepository::insert(&uow, &row).expect("insert entry");

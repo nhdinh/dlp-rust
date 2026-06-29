@@ -688,6 +688,7 @@ mod tests {
     }
 }
 
+#[allow(clippy::items_after_test_module)]
 // Temporary extension trait for SID extraction
 pub trait AdminSidExt {
     fn extract_sid_from_headers(

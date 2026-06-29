@@ -68,8 +68,8 @@ use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HANDLE, NTSTATUS};
 
 use crate::fail_mode::{FailModeState, FailState};
-use dlp_common::Classification;
 use dlp_common::hook_ipc::ClassificationSource;
+use dlp_common::Classification;
 
 // ---------------------------------------------------------------------------
 // Helper: shared classification + logging + deny/allow logic
@@ -104,9 +104,9 @@ fn get_fail_state() -> &'static Arc<FailModeState> {
 /// `HEALTH_EMIT_INTERVAL` round-trips.
 fn record_pipe_round_trip_and_maybe_emit() {
     crate::perf_telemetry::record_pipe_round_trip();
-    let health_count =
-        crate::perf_telemetry::HEALTH_EMIT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-            + 1;
+    let health_count = crate::perf_telemetry::HEALTH_EMIT_COUNTER
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        + 1;
     if health_count.is_multiple_of(crate::perf_telemetry::HEALTH_EMIT_INTERVAL) {
         let snapshot = crate::perf_telemetry::emit_health_snapshot();
         let _ = crate::pipe_client::send_health_snapshot(crate::DEFAULT_PIPE_NAME, &snapshot);
@@ -2689,13 +2689,14 @@ mod tests {
         crate::diagnostic_ring::drain_all_snapshots();
 
         let pipe_name = r"\\.\pipe\DlpHookPipeTestDiagPath";
-        let handler = std::sync::Arc::new(|_req: dlp_common::HookRequest| dlp_common::HookResponse {
-            decision: dlp_common::Decision::DENY,
-            reason: "denied".to_string(),
-            cache_hint: None,
-            cache_version: 0,
-            approval_override: None,
-        });
+        let handler =
+            std::sync::Arc::new(|_req: dlp_common::HookRequest| dlp_common::HookResponse {
+                decision: dlp_common::Decision::DENY,
+                reason: "denied".to_string(),
+                cache_hint: None,
+                cache_version: 0,
+                approval_override: None,
+            });
         let _server = crate::tests::start_agent_mock_server(pipe_name, handler);
         std::thread::sleep(std::time::Duration::from_millis(50));
 

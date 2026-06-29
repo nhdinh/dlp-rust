@@ -125,7 +125,7 @@ mod tests {
         let pool = make_pool();
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let row = make_row("uuid-1", "https://example.com/*");
             ManagedOriginsRepository::insert(&uow, &row).expect("insert");
             uow.commit().expect("commit");
@@ -141,14 +141,14 @@ mod tests {
         let pool = make_pool();
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             ManagedOriginsRepository::insert(&uow, &make_row("uuid-1", "https://a.com/*"))
                 .expect("insert");
             uow.commit().expect("commit");
         }
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let affected =
                 ManagedOriginsRepository::delete_by_id(&uow, "uuid-1").expect("delete_by_id");
             uow.commit().expect("commit");
@@ -163,14 +163,14 @@ mod tests {
         let pool = make_pool();
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             ManagedOriginsRepository::insert(&uow, &make_row("uuid-1", "https://dup.com/*"))
                 .expect("first insert");
             uow.commit().expect("commit");
         }
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let result =
                 ManagedOriginsRepository::insert(&uow, &make_row("uuid-2", "https://dup.com/*"));
             assert!(result.is_err(), "duplicate origin must return an error");

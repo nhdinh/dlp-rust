@@ -224,7 +224,10 @@ impl HookIpcServer {
     }
 
     /// Sets the health aggregator for one-way `HealthResponse` frame ingestion.
-    pub fn with_health_aggregator(mut self, aggregator: Arc<crate::health_aggregator::HealthAggregator>) -> Self {
+    pub fn with_health_aggregator(
+        mut self,
+        aggregator: Arc<crate::health_aggregator::HealthAggregator>,
+    ) -> Self {
         self.health_aggregator = Some(aggregator);
         self
     }
@@ -287,6 +290,7 @@ fn create_pipe(pipe_name: &str) -> Result<HANDLE> {
     Ok(pipe)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn accept_loop(
     first_pipe: HANDLE,
     pipe_name: String,
@@ -343,6 +347,7 @@ fn accept_loop(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn handle_connection(
     pipe: HANDLE,
     handler: &HookHandler,
@@ -454,7 +459,11 @@ fn handle_connection(
                     })
                 }
                 IpcPayloadV1::HashEvidence(ref evidence) => {
-                    debug!(pid = evidence.pid, handle = evidence.handle_value, "Hook IPC: hash evidence received");
+                    debug!(
+                        pid = evidence.pid,
+                        handle = evidence.handle_value,
+                        "Hook IPC: hash evidence received"
+                    );
                     if let Some(cache) = hash_cache {
                         cache.insert(
                             (evidence.pid, evidence.handle_value),

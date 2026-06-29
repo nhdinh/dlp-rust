@@ -1677,6 +1677,7 @@ mod tests {
             .expect("count syslog_config rows");
         assert_eq!(count, 1, "syslog_config must have exactly one seed row");
 
+        #[allow(clippy::type_complexity)]
         let (
             host,
             port,

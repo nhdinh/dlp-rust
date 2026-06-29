@@ -20,6 +20,7 @@ const TEST_JWT_SECRET: &str = "dlp-server-dev-secret-change-me";
 
 /// Builds a fresh test router backed by a temporary SQLite file.
 fn build_test_app() -> (axum::Router, Arc<db::Pool>) {
+    #[allow(clippy::let_unit_value)]
     let _ = set_jwt_secret(TEST_JWT_SECRET.to_string());
     let tmp = NamedTempFile::new().expect("create temp db");
     let pool = Arc::new(db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));

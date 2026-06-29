@@ -42,9 +42,10 @@ const TEST_JWT_SECRET: &str = "dlp-server-dev-secret-change-me";
 /// binary that sets a different secret, tokens minted in *this* binary may fail
 /// validation if that binary's `set_jwt_secret` call wins the race.
 ///
-/// The `let _ = ...` assignment explicitly acknowledges the ignored return value
+/// The `set_jwt_secret` call explicitly acknowledges the ignored return value
 /// on subsequent calls (the `OnceLock` already holds the correct secret).
 fn build_test_app() -> (axum::Router, Arc<db::Pool>) {
+    #[allow(clippy::let_unit_value)]
     let _ = set_jwt_secret(TEST_JWT_SECRET.to_string());
     let tmp = NamedTempFile::new().expect("create temp db");
     let pool = Arc::new(db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));

@@ -37,8 +37,8 @@ mod tests {
         assert_eq!(CLOUD_CONFIG_ROW_COUNT, 3);
         assert_eq!(CLOUD_CONFIG_SAVE_ROW, 1);
         assert_eq!(CLOUD_CONFIG_BACK_ROW, 2);
-        assert!(CLOUD_CONFIG_SAVE_ROW < CLOUD_CONFIG_ROW_COUNT);
-        assert!(CLOUD_CONFIG_BACK_ROW < CLOUD_CONFIG_ROW_COUNT);
-        assert!(CLOUD_CONFIG_SAVE_ROW < CLOUD_CONFIG_BACK_ROW);
+        const _: () = assert!(CLOUD_CONFIG_SAVE_ROW < CLOUD_CONFIG_ROW_COUNT);
+        const _: () = assert!(CLOUD_CONFIG_BACK_ROW < CLOUD_CONFIG_ROW_COUNT);
+        const _: () = assert!(CLOUD_CONFIG_SAVE_ROW < CLOUD_CONFIG_BACK_ROW);
     }
 }

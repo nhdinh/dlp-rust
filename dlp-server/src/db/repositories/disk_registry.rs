@@ -232,7 +232,7 @@ mod tests {
         // Explicit scope so the write connection is dropped before list_all acquires.
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             DiskRegistryRepository::insert(&uow, &row).expect("insert");
             uow.commit().expect("commit");
         } // conn dropped here — returns to pool
@@ -280,7 +280,7 @@ mod tests {
 
         for row in &rows_to_insert {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             DiskRegistryRepository::insert(&uow, row).expect("insert");
             uow.commit().expect("commit");
         }
@@ -323,7 +323,7 @@ mod tests {
 
         for row in &rows_to_insert {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             DiskRegistryRepository::insert(&uow, row).expect("insert");
             uow.commit().expect("commit");
         }
@@ -357,7 +357,7 @@ mod tests {
         // First insert must succeed.
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             DiskRegistryRepository::insert(&uow, &row).expect("first insert");
             uow.commit().expect("commit");
         }
@@ -374,7 +374,7 @@ mod tests {
         );
         let result = {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             DiskRegistryRepository::insert(&uow, &duplicate)
         };
         assert!(
@@ -404,7 +404,7 @@ mod tests {
         // Insert the original row.
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             DiskRegistryRepository::insert(&uow, &original).expect("first insert");
             uow.commit().expect("commit");
         }
@@ -419,7 +419,7 @@ mod tests {
         );
         let result = {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             DiskRegistryRepository::insert(&uow, &upgraded)
         };
         assert!(result.is_err(), "second insert must return Err (D-05)");
@@ -446,14 +446,14 @@ mod tests {
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             DiskRegistryRepository::insert(&uow, &row).expect("insert");
             uow.commit().expect("commit");
         }
 
         {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             let affected =
                 DiskRegistryRepository::delete_by_id(&uow, "uuid-1").expect("delete_by_id");
             uow.commit().expect("commit");
@@ -468,7 +468,7 @@ mod tests {
     fn test_delete_by_id_nonexistent_returns_zero() {
         let pool = make_pool();
         let mut conn = pool.get().expect("get connection");
-        let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+        let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
         let affected = DiskRegistryRepository::delete_by_id(&uow, "does-not-exist")
             .expect("delete_by_id on missing UUID must not error");
         uow.commit().expect("commit");
@@ -492,7 +492,7 @@ mod tests {
         );
         let result = {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             DiskRegistryRepository::insert(&uow, &bad_row)
         };
         assert!(result.is_err(), "invalid encryption_status must return Err");
@@ -534,7 +534,7 @@ mod tests {
 
         for row in &rows_to_insert {
             let mut conn = pool.get().expect("get connection");
-            let uow = UnitOfWork::new(&mut *conn).expect("begin transaction");
+            let uow = UnitOfWork::new(&mut conn).expect("begin transaction");
             DiskRegistryRepository::insert(&uow, row).expect("insert");
             uow.commit().expect("commit");
         }

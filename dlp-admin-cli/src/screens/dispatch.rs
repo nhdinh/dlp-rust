@@ -1774,8 +1774,8 @@ mod ldap_config_tests {
         assert_eq!(LDAP_ROW_COUNT, 7);
         assert_eq!(LDAP_SAVE_ROW, 5);
         assert_eq!(LDAP_BACK_ROW, 6);
-        assert!(LDAP_SAVE_ROW < LDAP_ROW_COUNT);
-        assert!(LDAP_BACK_ROW < LDAP_ROW_COUNT);
+        const _: () = assert!(LDAP_SAVE_ROW < LDAP_ROW_COUNT);
+        const _: () = assert!(LDAP_BACK_ROW < LDAP_ROW_COUNT);
     }
 
     #[test]

@@ -129,7 +129,11 @@ pub fn emit_health_snapshot() -> dlp_common::hook_ipc::HookHealthSnapshot {
     let hits = CACHE_HITS_60S.swap(0, Ordering::Relaxed);
     let misses = CACHE_MISSES_60S.swap(0, Ordering::Relaxed);
     let total = hits + misses;
-    let hit_rate = if total > 0 { (hits as f64) / (total as f64) } else { 0.0 };
+    let hit_rate = if total > 0 {
+        (hits as f64) / (total as f64)
+    } else {
+        0.0
+    };
 
     dlp_common::hook_ipc::HookHealthSnapshot {
         injected_pids: INJECTED_PIDS.load(Ordering::Relaxed),

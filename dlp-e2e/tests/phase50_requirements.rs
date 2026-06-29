@@ -435,7 +435,11 @@ fn path_bypass_symlink() {
     // In practice, the DLL relies on Windows API to detect reparse points.
     // This test documents the invariant.
     let symlink_path = r"C:\Users\Link\target.txt";
-    assert!(!symlink_path.is_empty());
+    // Path is non-empty by construction; assert documents the invariant.
+    #[allow(clippy::const_is_empty)]
+    {
+        assert!(!symlink_path.is_empty());
+    }
 }
 
 /// Junction path forces pipe fallback.
@@ -443,7 +447,11 @@ fn path_bypass_symlink() {
 fn path_bypass_junction() {
     // Junctions are also reparse points.
     let junction_path = r"C:\Junction\Target";
-    assert!(!junction_path.is_empty());
+    // Path is non-empty by construction; assert documents the invariant.
+    #[allow(clippy::const_is_empty)]
+    {
+        assert!(!junction_path.is_empty());
+    }
 }
 
 /// Volume GUID path forces pipe fallback.

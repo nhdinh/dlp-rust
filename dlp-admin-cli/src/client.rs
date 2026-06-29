@@ -720,45 +720,45 @@ mod client_tests {
     fn list_protected_paths_method_exists() {
         let client = EngineClient::for_test();
         // Method exists and is callable; runtime would fail on non-routable URL.
-        let _ = client.list_protected_paths();
+        let _future = client.list_protected_paths();
     }
 
     #[test]
     fn create_protected_path_method_exists() {
         let client = EngineClient::for_test();
         let body = serde_json::json!({"path": "C:\\Test", "source": "manual", "tier": "T3"});
-        let _ = client.create_protected_path(&body);
+        let _future = client.create_protected_path(&body);
     }
 
     #[test]
     fn update_protected_path_method_exists() {
         let client = EngineClient::for_test();
         let body = serde_json::json!({"path": "C:\\Test", "source": "manual", "tier": "T3"});
-        let _ = client.update_protected_path("test-id", &body);
+        let _future = client.update_protected_path("test-id", &body);
     }
 
     #[test]
     fn delete_protected_path_method_exists() {
         let client = EngineClient::for_test();
-        let _ = client.delete_protected_path("test-id");
+        let _future = client.delete_protected_path("test-id");
     }
 
     #[test]
     fn sync_protected_paths_method_exists() {
         let client = EngineClient::for_test();
-        let _ = client.sync_protected_paths();
+        let _future = client.sync_protected_paths();
     }
 
     #[test]
     fn list_bypass_alerts_method_exists() {
         let client = EngineClient::for_test();
-        let _ = client.list_bypass_alerts(Some("crit"), Some(false), 20, 0);
+        let _future = client.list_bypass_alerts(Some("crit"), Some(false), 20, 0);
     }
 
     #[test]
     fn list_bypass_alerts_all_filters_none() {
         let client = EngineClient::for_test();
-        let _ = client.list_bypass_alerts(None, None, 20, 0);
+        let _future = client.list_bypass_alerts(None, None, 20, 0);
     }
 
     #[test]
@@ -812,7 +812,7 @@ mod client_tests {
     #[test]
     fn ack_bypass_alert_method_exists() {
         let client = EngineClient::for_test();
-        let _ = client.ack_bypass_alert(42);
+        let _future = client.ack_bypass_alert(42);
     }
 
     #[test]
@@ -820,18 +820,18 @@ mod client_tests {
         let client = EngineClient::for_test_with_url("http://127.0.0.1:9999".to_string());
         // Verify the URL is built correctly by inspecting the method signature.
         // The actual HTTP call would fail at runtime against a non-routable address.
-        let _ = client.ack_bypass_alert(123);
+        let _future = client.ack_bypass_alert(123);
     }
 
     #[test]
     fn test_list_audit_integrity_method_exists() {
         let client = EngineClient::for_test();
-        let _ = client.list_audit_integrity(None);
+        let _future = client.list_audit_integrity(None);
     }
 
     #[test]
     fn test_list_audit_integrity_with_agent_id() {
         let client = EngineClient::for_test_with_url("http://127.0.0.1:9999".to_string());
-        let _ = client.list_audit_integrity(Some("agent-001"));
+        let _future = client.list_audit_integrity(Some("agent-001"));
     }
 }

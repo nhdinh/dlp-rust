@@ -1,7 +1,7 @@
 use std::ptr;
 
 use windows::core::PSTR;
-use windows::Win32::Foundation::{CloseHandle, HANDLE, LocalFree};
+use windows::Win32::Foundation::{CloseHandle, LocalFree, HANDLE};
 use windows::Win32::Security::Authorization::ConvertSidToStringSidA;
 use windows::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
@@ -27,13 +27,7 @@ pub fn get_current_user_sid() -> String {
 
         // 2. Determine the required buffer size for TOKEN_USER.
         let mut return_length: u32 = 0;
-        let _ = GetTokenInformation(
-            token_handle,
-            TokenUser,
-            None,
-            0,
-            &mut return_length,
-        );
+        let _ = GetTokenInformation(token_handle, TokenUser, None, 0, &mut return_length);
 
         // The first call is expected to fail with ERROR_INSUFFICIENT_BUFFER;
         // return_length now holds the required size.
@@ -81,7 +75,9 @@ pub fn get_current_user_sid() -> String {
 
         // 6. Free the allocated string and close the token handle.
         if !string_sid_ptr.0.is_null() {
-            let _ = LocalFree(Some(windows::Win32::Foundation::HLOCAL(string_sid_ptr.0 as *mut _)));
+            let _ = LocalFree(Some(windows::Win32::Foundation::HLOCAL(
+                string_sid_ptr.0 as *mut _,
+            )));
         }
         let _ = CloseHandle(token_handle);
 

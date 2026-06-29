@@ -74,8 +74,8 @@ mod tests {
         assert_eq!(USB_ENFORCEMENT_ROW_COUNT, 5);
         assert_eq!(USB_ENFORCEMENT_SAVE_ROW, 3);
         assert_eq!(USB_ENFORCEMENT_BACK_ROW, 4);
-        assert!(USB_ENFORCEMENT_SAVE_ROW < USB_ENFORCEMENT_ROW_COUNT);
-        assert!(USB_ENFORCEMENT_BACK_ROW < USB_ENFORCEMENT_ROW_COUNT);
+        const _: () = assert!(USB_ENFORCEMENT_SAVE_ROW < USB_ENFORCEMENT_ROW_COUNT);
+        const _: () = assert!(USB_ENFORCEMENT_BACK_ROW < USB_ENFORCEMENT_ROW_COUNT);
     }
 
     #[test]

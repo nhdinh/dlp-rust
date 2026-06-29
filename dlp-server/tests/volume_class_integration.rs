@@ -49,6 +49,7 @@ fn make_copy_context(
 }
 
 /// Inserts a policy into the DB and invalidates the store cache.
+#[allow(clippy::too_many_arguments)]
 fn seed_policy(
     pool: &dlp_server::db::Pool,
     store: &dlp_server::policy_store::PolicyStore,

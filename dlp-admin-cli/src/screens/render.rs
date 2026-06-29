@@ -3404,7 +3404,7 @@ mod usb_scan_render_tests {
         let entry = sample_entry("0951", "1666", "SN1234", "Kingston USB", Some("read_only"));
         term.draw(|frame| {
             let area = frame.area();
-            draw_usb_scan(frame, area, &[entry.clone()], 0);
+            draw_usb_scan(frame, area, std::slice::from_ref(&entry), 0);
         })
         .expect("draw");
         let buf = term.backend().buffer().clone();
@@ -5370,9 +5370,10 @@ mod disk_registry_render_tests {
     #[test]
     fn test_format_enforcement_mode_field() {
         use crate::app::PolicyFormState;
-        let mut form = PolicyFormState::default();
-
-        form.enforcement_mode = 0;
+        let mut form = PolicyFormState {
+            enforcement_mode: 0,
+            ..Default::default()
+        };
         let line = format_enforcement_mode_field("Enforcement Mode", &form);
         let s: String = line.spans.iter().map(|sp| sp.content.as_ref()).collect();
         assert!(s.contains("Audit"), "expected Audit, got: {s}");

@@ -74,9 +74,9 @@ mod tests {
         assert_eq!(PRINT_CONFIG_ROW_COUNT, 6);
         assert_eq!(PRINT_CONFIG_SAVE_ROW, 4);
         assert_eq!(PRINT_CONFIG_BACK_ROW, 5);
-        assert!(PRINT_CONFIG_SAVE_ROW < PRINT_CONFIG_ROW_COUNT);
-        assert!(PRINT_CONFIG_BACK_ROW < PRINT_CONFIG_ROW_COUNT);
-        assert!(PRINT_CONFIG_SAVE_ROW < PRINT_CONFIG_BACK_ROW);
+        const _: () = assert!(PRINT_CONFIG_SAVE_ROW < PRINT_CONFIG_ROW_COUNT);
+        const _: () = assert!(PRINT_CONFIG_BACK_ROW < PRINT_CONFIG_ROW_COUNT);
+        const _: () = assert!(PRINT_CONFIG_SAVE_ROW < PRINT_CONFIG_BACK_ROW);
     }
 
     #[test]
