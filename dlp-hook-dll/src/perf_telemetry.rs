@@ -56,7 +56,7 @@ const EMIT_INTERVAL: u64 = 1000;
 // ---------------------------------------------------------------------------
 
 /// Health snapshot emission interval: every 100 pipe round-trips (D-09).
-const HEALTH_EMIT_INTERVAL: u64 = 100;
+pub const HEALTH_EMIT_INTERVAL: u64 = 100;
 
 /// Process-level counter for pipe round-trips (cache misses that hit the pipe).
 static PIPE_ROUND_TRIPS: AtomicU64 = AtomicU64::new(0);
@@ -77,7 +77,7 @@ static INJECTED_PIDS: AtomicU64 = AtomicU64::new(0);
 static PATCHED_MODULES: AtomicU64 = AtomicU64::new(0);
 
 /// Counter for health snapshot emission cadence.
-static HEALTH_EMIT_COUNTER: AtomicU64 = AtomicU64::new(0);
+pub static HEALTH_EMIT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 /// Record a pipe round-trip (cache miss that required a pipe call).
 pub fn record_pipe_round_trip() {

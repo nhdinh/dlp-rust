@@ -100,6 +100,19 @@ fn get_fail_state() -> &'static Arc<FailModeState> {
     })
 }
 
+/// DIFF-04: Record a pipe round-trip and emit a health snapshot every
+/// `HEALTH_EMIT_INTERVAL` round-trips.
+fn record_pipe_round_trip_and_maybe_emit() {
+    crate::perf_telemetry::record_pipe_round_trip();
+    let health_count =
+        crate::perf_telemetry::HEALTH_EMIT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            + 1;
+    if health_count % crate::perf_telemetry::HEALTH_EMIT_INTERVAL == 0 {
+        let snapshot = crate::perf_telemetry::emit_health_snapshot();
+        let _ = crate::pipe_client::send_health_snapshot(crate::DEFAULT_PIPE_NAME, &snapshot);
+    }
+}
+
 /// Performs the common classification, logging, and decision routing for
 /// path-based trampolines.
 ///
@@ -191,6 +204,7 @@ fn classify_and_log_path(
 
         let mut cache_classification: Option<Classification> = None;
         let mut cache_version: u64 = 0;
+        let mut is_cache_hit = false;
 
         if let Some(cache) = cache_lookup {
             // Check thread-local LRU first.
@@ -201,14 +215,24 @@ fn classify_and_log_path(
             {
                 // LRU hit — use this classification for fail-mode decisions.
                 cache_classification = Some(classification);
+                is_cache_hit = true;
             } else {
                 // LRU miss — check shared-memory cache.
                 if let Some(classification) = cache.lookup(path, op, now_secs) {
                     // Cache hit — warm LRU.
                     crate::classification_cache::lru::insert(path, classification, cache_version);
                     cache_classification = Some(classification);
+                    is_cache_hit = true;
                 }
             }
+        }
+
+        // DIFF-04: Record cache hit/miss counters.
+        if is_cache_hit {
+            crate::perf_telemetry::record_cache_hit();
+        } else if cache_lookup.is_some() {
+            // Cache was available but we missed (no classification found).
+            crate::perf_telemetry::record_cache_miss();
         }
 
         // 3. Get fail-mode state.
@@ -245,6 +269,7 @@ fn classify_and_log_path(
                             || resp.decision == crate::Decision::AllowWithLog =>
                     {
                         fail_state.record_pipe_success(cache_version);
+                        record_pipe_round_trip_and_maybe_emit();
                         let msg = format!("[dlp-hook] ALLOW {} hash={:016x}\0", fn_name, path_hash);
                         crate::debug_log(&msg);
                         None
@@ -256,6 +281,7 @@ fn classify_and_log_path(
                     {
                         // DIFF-01: Approval override granted — allow the operation.
                         fail_state.record_pipe_success(cache_version);
+                        record_pipe_round_trip_and_maybe_emit();
                         let msg = format!(
                             "[dlp-hook] ALLOW(override) {} hash={:016x}\0",
                             fn_name, path_hash
@@ -265,12 +291,14 @@ fn classify_and_log_path(
                     }
                     Ok(_) => {
                         fail_state.record_pipe_success(cache_version);
+                        record_pipe_round_trip_and_maybe_emit();
                         let msg = format!("[dlp-hook] DENY {} hash={:016x}\0", fn_name, path_hash);
                         crate::debug_log(&msg);
                         Some(crate::fail_closed::DenyReturn::BoolFalse)
                     }
                     Err(_) => {
                         fail_state.record_pipe_failure();
+                        record_pipe_round_trip_and_maybe_emit();
                         let msg = format!(
                             "[dlp-hook] DENY(fail-closed) {} hash={:016x}\0",
                             fn_name, path_hash
@@ -309,6 +337,7 @@ fn classify_and_log_path(
                                 || resp.decision == crate::Decision::AllowWithLog =>
                         {
                             fail_state.record_pipe_success(cache_version);
+                            record_pipe_round_trip_and_maybe_emit();
                             None
                         }
                         Ok(ref resp)
@@ -318,14 +347,17 @@ fn classify_and_log_path(
                         {
                             // DIFF-01: Approval override granted.
                             fail_state.record_pipe_success(cache_version);
+                            record_pipe_round_trip_and_maybe_emit();
                             None
                         }
                         Ok(_) => {
                             fail_state.record_pipe_success(cache_version);
+                            record_pipe_round_trip_and_maybe_emit();
                             Some(crate::fail_closed::DenyReturn::BoolFalse)
                         }
                         Err(_) => {
                             fail_state.record_pipe_failure();
+                            record_pipe_round_trip_and_maybe_emit();
                             crate::fail_mode::decide_degraded(cache_classification, op)
                         }
                     }
@@ -388,6 +420,7 @@ fn classify_and_log_path(
                             || resp.decision == crate::Decision::AllowWithLog =>
                     {
                         fail_state.record_pipe_success(cache_version);
+                        record_pipe_round_trip_and_maybe_emit();
                         None
                     }
                     Ok(ref resp)
@@ -397,14 +430,17 @@ fn classify_and_log_path(
                     {
                         // DIFF-01: Approval override granted.
                         fail_state.record_pipe_success(cache_version);
+                        record_pipe_round_trip_and_maybe_emit();
                         None
                     }
                     Ok(_) => {
                         fail_state.record_pipe_success(cache_version);
+                        record_pipe_round_trip_and_maybe_emit();
                         Some(crate::fail_closed::DenyReturn::BoolFalse)
                     }
                     Err(_) => {
                         fail_state.record_pipe_failure();
+                        record_pipe_round_trip_and_maybe_emit();
                         Some(crate::fail_closed::DenyReturn::BoolFalse)
                     }
                 }
@@ -553,6 +589,7 @@ fn classify_and_log_handle(
             if resp.decision == crate::Decision::ALLOW
                 || resp.decision == crate::Decision::AllowWithLog =>
         {
+            record_pipe_round_trip_and_maybe_emit();
             let msg = format!(
                 "[dlp-hook] ALLOW {} handle={} latency={}us\0",
                 fn_name,
@@ -563,6 +600,7 @@ fn classify_and_log_handle(
             None
         }
         Ok(ref resp) if resp.decision.is_denied() && resp.approval_override == Some(true) => {
+            record_pipe_round_trip_and_maybe_emit();
             // DIFF-01: Approval override granted — allow the operation.
             let msg = format!(
                 "[dlp-hook] ALLOW(override) {} handle={} latency={}us\0",
@@ -574,6 +612,7 @@ fn classify_and_log_handle(
             None
         }
         Ok(ref resp) if resp.decision.is_denied() => {
+            record_pipe_round_trip_and_maybe_emit();
             let msg = format!(
                 "[dlp-hook] DENY {} handle={} latency={}us\0",
                 fn_name,
@@ -584,6 +623,7 @@ fn classify_and_log_handle(
             Some(crate::fail_closed::DenyReturn::BoolFalse)
         }
         _ => {
+            record_pipe_round_trip_and_maybe_emit();
             let msg = format!(
                 "[dlp-hook] DENY(fail-closed) {} handle={} latency={}us\0",
                 fn_name,
