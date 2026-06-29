@@ -35,6 +35,29 @@ fn send_envelope(pipe: windows::Win32::Foundation::HANDLE, envelope: &IpcEnvelop
     bincode::deserialize(&frame).expect("deserialize envelope")
 }
 
+/// Gracefully shuts down a spawned `HookIpcServer` thread.
+///
+/// Sets the global shutdown flag, connects a dummy client to unblock the
+/// server's `ConnectNamedPipe`, and joins the thread with a 2-second timeout.
+/// This prevents pipe/thread exhaustion when many serial tests run back-to-back.
+fn shutdown_and_join(
+    handle: std::thread::JoinHandle<()>,
+    pipe_name: &str,
+) {
+    dlp_agent::service::request_shutdown();
+    // Connect a dummy client to unblock ConnectNamedPipe so the server
+    // can see the shutdown flag and exit its accept loop.
+    if let Ok(client) = dlp_agent::hook_ipc::connect_client(pipe_name) {
+        dlp_agent::hook_ipc::close_pipe(client);
+    }
+    // Give the server a moment to clean up, then join.
+    std::thread::sleep(std::time::Duration::from_millis(50));
+    if handle.join().is_err() {
+        eprintln!("WARN: server thread did not join cleanly");
+    }
+    dlp_agent::service::reset_shutdown_signal();
+}
+
 // ---------------------------------------------------------------------------
 // Test: consolidated server routes all four frame types
 // ---------------------------------------------------------------------------
@@ -109,11 +132,7 @@ fn test_consolidated_server_routes_request_frame() {
 
     dlp_agent::hook_ipc::close_pipe(client);
 
-    // Detach the server thread. It will block on the next ConnectNamedPipe
-    // until the integration test binary exits, at which point the OS terminates
-    // it. Joining is not required for this test and avoids a shutdown-race.
-    let _ = handle;
-    dlp_agent::service::reset_shutdown_signal();
+    shutdown_and_join(handle, pipe_name);
 }
 
 /// Test that `HookIpcServer` routes `PullDiagnostics` to the diagnostics handler
@@ -192,8 +211,7 @@ fn test_consolidated_server_routes_diagnostics_frame_with_snapshots() {
 
     dlp_agent::hook_ipc::close_pipe(client);
 
-    let _ = handle;
-    dlp_agent::service::reset_shutdown_signal();
+    shutdown_and_join(handle, pipe_name);
 }
 
 /// Test that `HookIpcServer` routes `PullHealth` to the health handler.
@@ -257,11 +275,7 @@ fn test_consolidated_server_routes_health_frame() {
 
     dlp_agent::hook_ipc::close_pipe(client);
 
-    // Detach the server thread. It will block on the next ConnectNamedPipe
-    // until the integration test binary exits, at which point the OS terminates
-    // it. Joining is not required for this test and avoids a shutdown-race.
-    let _ = handle;
-    dlp_agent::service::reset_shutdown_signal();
+    shutdown_and_join(handle, pipe_name);
 }
 
 /// Test that `HookIpcServer` routes `RequestOverride` to the override
@@ -337,11 +351,7 @@ fn test_consolidated_server_routes_override_frame() {
 
     assert_eq!(override_count.load(Ordering::SeqCst), 1);
 
-    // Detach the server thread. It will block on the next ConnectNamedPipe
-    // until the integration test binary exits, at which point the OS terminates
-    // it. Joining is not required for this test and avoids a shutdown-race.
-    let _ = handle;
-    dlp_agent::service::reset_shutdown_signal();
+    shutdown_and_join(handle, pipe_name);
 }
 
 /// Test that the consolidated server returns ALLOW for COPY and DENY for DELETE
@@ -439,11 +449,7 @@ fn test_consolidated_server_volume_class_allow_deny() {
         dlp_agent::hook_ipc::close_pipe(client);
     }
 
-    // Detach the server thread. It will block on the next ConnectNamedPipe
-    // until the integration test binary exits, at which point the OS terminates
-    // it. Joining is not required for this test and avoids a shutdown-race.
-    let _ = handle;
-    dlp_agent::service::reset_shutdown_signal();
+    shutdown_and_join(handle, pipe_name);
 }
 
 // ---------------------------------------------------------------------------
@@ -527,9 +533,7 @@ fn test_consolidated_server_ingests_health_response() {
     assert!((snap.cache_hit_rate_60s - 0.85).abs() < f64::EPSILON);
     assert_eq!(snap.current_fail_state, 0);
 
-    // Detach the server thread.
-    let _ = handle;
-    dlp_agent::service::reset_shutdown_signal();
+    shutdown_and_join(handle, pipe_name);
 }
 
 /// Test that `HealthResponse` frames without an aggregator configured are
@@ -593,8 +597,7 @@ fn test_consolidated_server_health_response_without_aggregator() {
 
     dlp_agent::hook_ipc::close_pipe(client);
 
-    let _ = handle;
-    dlp_agent::service::reset_shutdown_signal();
+    shutdown_and_join(handle, pipe_name);
 }
 
 /// Test that multiple consecutive HealthResponse frames build up history in the
@@ -664,8 +667,7 @@ fn test_health_response_builds_aggregator_history() {
 
     dlp_agent::hook_ipc::close_pipe(client);
 
-    let _ = handle;
-    dlp_agent::service::reset_shutdown_signal();
+    shutdown_and_join(handle, pipe_name);
 }
 
 // ---------------------------------------------------------------------------
@@ -752,8 +754,7 @@ fn test_pull_diagnostics_after_deny() {
 
     dlp_agent::hook_ipc::close_pipe(client);
 
-    let _ = handle;
-    dlp_agent::service::reset_shutdown_signal();
+    shutdown_and_join(handle, pipe_name);
 }
 
 /// Test that `PullHealth` returns a valid snapshot.
@@ -825,8 +826,7 @@ fn test_pull_health_returns_snapshot() {
 
     dlp_agent::hook_ipc::close_pipe(client);
 
-    let _ = handle;
-    dlp_agent::service::reset_shutdown_signal();
+    shutdown_and_join(handle, pipe_name);
 }
 
 /// Test that `HealthResponse` frames from the hook DLL are ingested into the
@@ -906,8 +906,7 @@ fn test_health_response_ingestion() {
         "HealthAggregator should have exactly 1 snapshot after ingestion"
     );
 
-    let _ = handle;
-    dlp_agent::service::reset_shutdown_signal();
+    shutdown_and_join(handle, pipe_name);
 }
 
 /// Test that a blocked write audit event contains `content_sha256` via mocked
@@ -997,6 +996,5 @@ fn test_blocked_write_audit_contains_hash() {
     assert!(!found.hash_truncated);
     assert!(!found.hash_skipped);
 
-    let _ = handle;
-    dlp_agent::service::reset_shutdown_signal();
+    shutdown_and_join(handle, pipe_name);
 }
