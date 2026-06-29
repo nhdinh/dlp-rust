@@ -165,6 +165,44 @@ pub fn send_hash_evidence(
     };
     send_raw_oneway(pipe_name, &payload)
 }
+
+/// Fire-and-send helper for health snapshot frames that does not wait for a response.
+///
+/// Connects to the named pipe, serializes the [`HookHealthSnapshot`] into an
+/// [`IpcEnvelope::V1(IpcPayloadV1::HealthResponse(...))`], writes it with length-prefix
+/// framing, and immediately closes the handle. No read is performed.
+///
+/// # Arguments
+///
+/// * `pipe_name` — The named pipe path (e.g., `r"\\.\pipe\DlpHookPipe"`).
+/// * `snapshot` — The health snapshot to send.
+///
+/// # Returns
+///
+/// `Ok(())` if the payload was written successfully, or [`PipeError`] on failure.
+///
+/// # Errors
+///
+/// Returns `PipeError::ConnectionRefused` if the pipe does not exist.
+/// Returns `PipeError::Malformed` if bincode serialization fails.
+/// Returns `PipeError::Win32(u32)` for unexpected Win32 errors.
+pub fn send_health_snapshot(
+    pipe_name: &str,
+    snapshot: &dlp_common::hook_ipc::HookHealthSnapshot,
+) -> Result<(), PipeError> {
+    let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+        payload: dlp_common::hook_ipc::IpcPayloadV1::HealthResponse(
+            dlp_common::hook_ipc::HealthResponse {
+                snapshot: snapshot.clone(),
+            },
+        ),
+    });
+    let payload = match bincode::serialize(&envelope) {
+        Ok(p) => p,
+        Err(_) => return Err(PipeError::Malformed),
+    };
+    send_raw_oneway(pipe_name, &payload)
+}
 ///
 /// Connects to the named pipe, writes the payload with length-prefix framing,
 /// and immediately closes the handle. No read is performed, avoiding deadlock

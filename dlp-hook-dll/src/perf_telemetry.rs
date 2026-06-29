@@ -19,7 +19,7 @@
 //! - State transitions emitted immediately via `tracing::warn!`.
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
 use crate::fail_mode::FailState;
 
@@ -50,6 +50,93 @@ const BUCKET_COUNT: usize = 8;
 
 /// Emit aggregated telemetry every N calls.
 const EMIT_INTERVAL: u64 = 1000;
+
+// ---------------------------------------------------------------------------
+// Health snapshot counters (DIFF-04)
+// ---------------------------------------------------------------------------
+
+/// Health snapshot emission interval: every 100 pipe round-trips (D-09).
+const HEALTH_EMIT_INTERVAL: u64 = 100;
+
+/// Process-level counter for pipe round-trips (cache misses that hit the pipe).
+static PIPE_ROUND_TRIPS: AtomicU64 = AtomicU64::new(0);
+
+/// Counter for cache hits in the last 60-second window.
+static CACHE_HITS_60S: AtomicU64 = AtomicU64::new(0);
+
+/// Counter for cache misses in the last 60-second window.
+static CACHE_MISSES_60S: AtomicU64 = AtomicU64::new(0);
+
+/// Current fail-mode state as u8 (0=Healthy, 1=Degraded, 2=Isolated, 3=Resync).
+static CURRENT_FAIL_STATE: AtomicU8 = AtomicU8::new(0);
+
+/// Number of injected PIDs (populated by injection logic).
+static INJECTED_PIDS: AtomicU64 = AtomicU64::new(0);
+
+/// Number of patched modules (populated by init logic).
+static PATCHED_MODULES: AtomicU64 = AtomicU64::new(0);
+
+/// Counter for health snapshot emission cadence.
+static HEALTH_EMIT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Record a pipe round-trip (cache miss that required a pipe call).
+pub fn record_pipe_round_trip() {
+    PIPE_ROUND_TRIPS.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Record a cache hit.
+pub fn record_cache_hit() {
+    CACHE_HITS_60S.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Record a cache miss.
+pub fn record_cache_miss() {
+    CACHE_MISSES_60S.fetch_add(1, Ordering::Relaxed);
+}
+
+/// Set the current fail-mode state.
+pub fn set_fail_state(state: u8) {
+    CURRENT_FAIL_STATE.store(state, Ordering::Relaxed);
+}
+
+/// Set the number of injected PIDs.
+pub fn set_injected_pids(count: u64) {
+    INJECTED_PIDS.store(count, Ordering::Relaxed);
+}
+
+/// Set the number of patched modules.
+pub fn set_patched_modules(count: u64) {
+    PATCHED_MODULES.store(count, Ordering::Relaxed);
+}
+
+/// Emit a health snapshot from the current counter values.
+///
+/// Reads and resets PIPE_ROUND_TRIPS, CACHE_HITS_60S, and CACHE_MISSES_60S
+/// atomically, computes the cache hit rate, and constructs a
+/// [`dlp_common::hook_ipc::HookHealthSnapshot`].
+///
+/// # Returns
+///
+/// A [`HookHealthSnapshot`] with the current counter values.
+pub fn emit_health_snapshot() -> dlp_common::hook_ipc::HookHealthSnapshot {
+    let pipe_round_trips = PIPE_ROUND_TRIPS.swap(0, Ordering::Relaxed);
+    let hits = CACHE_HITS_60S.swap(0, Ordering::Relaxed);
+    let misses = CACHE_MISSES_60S.swap(0, Ordering::Relaxed);
+    let total = hits + misses;
+    let hit_rate = if total > 0 { (hits as f64) / (total as f64) } else { 0.0 };
+
+    dlp_common::hook_ipc::HookHealthSnapshot {
+        injected_pids: INJECTED_PIDS.load(Ordering::Relaxed),
+        patched_modules: PATCHED_MODULES.load(Ordering::Relaxed),
+        pipe_round_trips_60s: pipe_round_trips,
+        cache_hit_rate_60s: hit_rate,
+        current_fail_state: CURRENT_FAIL_STATE.load(Ordering::Relaxed),
+        timestamp_secs: std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs(),
+    }
+}
 
 // ---------------------------------------------------------------------------
 // PerfTelemetry struct
@@ -289,6 +376,10 @@ pub fn emit_state_transition_immediate(old_state: FailState, new_state: FailStat
             .as_secs(),
         "fail_mode state transition"
     );
+
+    // DIFF-04: Emit health snapshot on every state transition.
+    let snapshot = emit_health_snapshot();
+    let _ = crate::pipe_client::send_health_snapshot(crate::DEFAULT_PIPE_NAME, &snapshot);
 }
 
 // ---------------------------------------------------------------------------
@@ -503,5 +594,96 @@ mod tests {
     #[test]
     fn bucket_count_matches_latency_buckets() {
         assert_eq!(BUCKET_COUNT, LATENCY_BUCKETS.len());
+    }
+
+    // --- Task 7: Health counters (DIFF-04) ---
+
+    #[test]
+    fn health_counters_record_pipe_round_trip() {
+        // Reset counter first.
+        PIPE_ROUND_TRIPS.store(0, Ordering::Relaxed);
+        record_pipe_round_trip();
+        assert_eq!(PIPE_ROUND_TRIPS.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn health_counters_record_cache_hit() {
+        CACHE_HITS_60S.store(0, Ordering::Relaxed);
+        record_cache_hit();
+        assert_eq!(CACHE_HITS_60S.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn health_counters_record_cache_miss() {
+        CACHE_MISSES_60S.store(0, Ordering::Relaxed);
+        record_cache_miss();
+        assert_eq!(CACHE_MISSES_60S.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn health_counters_set_fail_state() {
+        CURRENT_FAIL_STATE.store(0, Ordering::Relaxed);
+        set_fail_state(2);
+        assert_eq!(CURRENT_FAIL_STATE.load(Ordering::Relaxed), 2);
+        set_fail_state(0);
+        assert_eq!(CURRENT_FAIL_STATE.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn health_counters_set_injected_pids() {
+        INJECTED_PIDS.store(0, Ordering::Relaxed);
+        set_injected_pids(5);
+        assert_eq!(INJECTED_PIDS.load(Ordering::Relaxed), 5);
+    }
+
+    #[test]
+    fn health_counters_set_patched_modules() {
+        PATCHED_MODULES.store(0, Ordering::Relaxed);
+        set_patched_modules(12);
+        assert_eq!(PATCHED_MODULES.load(Ordering::Relaxed), 12);
+    }
+
+    #[test]
+    fn emit_health_snapshot_resets_counters() {
+        // Set up known counter state.
+        PIPE_ROUND_TRIPS.store(10, Ordering::Relaxed);
+        CACHE_HITS_60S.store(8, Ordering::Relaxed);
+        CACHE_MISSES_60S.store(2, Ordering::Relaxed);
+        CURRENT_FAIL_STATE.store(1, Ordering::Relaxed);
+        INJECTED_PIDS.store(5, Ordering::Relaxed);
+        PATCHED_MODULES.store(12, Ordering::Relaxed);
+
+        let snapshot = emit_health_snapshot();
+
+        // Counters should be reset.
+        assert_eq!(PIPE_ROUND_TRIPS.load(Ordering::Relaxed), 0);
+        assert_eq!(CACHE_HITS_60S.load(Ordering::Relaxed), 0);
+        assert_eq!(CACHE_MISSES_60S.load(Ordering::Relaxed), 0);
+
+        // Snapshot should have the old values.
+        assert_eq!(snapshot.pipe_round_trips_60s, 10);
+        assert_eq!(snapshot.cache_hit_rate_60s, 0.8); // 8 / (8+2)
+        assert_eq!(snapshot.current_fail_state, 1);
+        assert_eq!(snapshot.injected_pids, 5);
+        assert_eq!(snapshot.patched_modules, 12);
+        assert!(snapshot.timestamp_secs > 0);
+    }
+
+    #[test]
+    fn emit_health_snapshot_zero_total_hit_rate_is_zero() {
+        PIPE_ROUND_TRIPS.store(0, Ordering::Relaxed);
+        CACHE_HITS_60S.store(0, Ordering::Relaxed);
+        CACHE_MISSES_60S.store(0, Ordering::Relaxed);
+
+        let snapshot = emit_health_snapshot();
+        assert_eq!(snapshot.cache_hit_rate_60s, 0.0);
+    }
+
+    #[test]
+    fn health_emit_counter_increments() {
+        HEALTH_EMIT_COUNTER.store(0, Ordering::Relaxed);
+        let count = HEALTH_EMIT_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
+        assert_eq!(count, 1);
+        assert_eq!(HEALTH_EMIT_COUNTER.load(Ordering::Relaxed), 1);
     }
 }
