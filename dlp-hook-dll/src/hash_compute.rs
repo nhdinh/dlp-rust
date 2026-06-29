@@ -164,6 +164,14 @@ pub unsafe fn compute_content_hash_offloaded(
     })
 }
 
+/// Test-only helper to reset the hash queue depth counter.
+///
+/// Used by unit tests to ensure clean counter state between tests.
+#[cfg(test)]
+pub fn reset_hash_queue_depth() {
+    HASH_QUEUE_DEPTH.store(0, Ordering::Relaxed);
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -211,6 +219,26 @@ mod tests {
             unsafe { compute_content_hash(oversized.as_ptr(), oversized.len() as u32) };
         assert!(hash.is_some());
         assert!(truncated, "expected truncated=true for oversized buffer");
+        assert!(!skipped);
+
+        // Verify the hash is the SHA-256 of the first HASH_CAP_BYTES bytes.
+        let mut hasher = Sha256::new();
+        hasher.update(&oversized[..HASH_CAP_BYTES]);
+        let expected = hex::encode(hasher.finalize());
+        assert_eq!(hash.unwrap(), expected);
+    }
+
+    #[test]
+    #[ignore = "allocates ~100MB; run with: cargo test -p dlp-hook-dll --lib -- hash_compute::tests::test_hash_truncation_100mb -- --ignored --nocapture"]
+    fn test_hash_truncation_100mb() {
+        // Create a buffer of exactly HASH_CAP_BYTES + 1000 bytes.
+        // This verifies the 100MB cap is enforced and the hash matches
+        // the first HASH_CAP_BYTES bytes.
+        let oversized = vec![0xABu8; HASH_CAP_BYTES + 1000];
+        let (hash, truncated, skipped) =
+            unsafe { compute_content_hash(oversized.as_ptr(), oversized.len() as u32) };
+        assert!(hash.is_some());
+        assert!(truncated, "expected truncated=true for 100MB+ buffer");
         assert!(!skipped);
 
         // Verify the hash is the SHA-256 of the first HASH_CAP_BYTES bytes.
