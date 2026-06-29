@@ -5,16 +5,16 @@ milestone_name: Real-Time File Access Prevention
 current_phase: 58.4
 current_phase_name: close-gap-diff-02-03-04-wire-differentiators-into-hook-dll-deny-paths
 status: executing
-stopped_at: Phase 58.3 context gathered
-last_updated: "2026-06-29T06:43:39.737Z"
+stopped_at: Completed 58.4-03-PLAN.md
+last_updated: "2026-06-29T07:28:19.660Z"
 last_activity: 2026-06-29
-last_activity_desc: Phase 58.4 execution started
+last_activity_desc: Phase 58.4 Plan 03 executed — DIFF-04 health snapshot emission and ingestion wired
 progress:
   total_phases: 46
   completed_phases: 36
   total_plans: 193
-  completed_plans: 168
-  percent: 78
+  completed_plans: 170
+  percent: 88
 ---
 
 # Project State
@@ -30,10 +30,10 @@ progress:
 ## Current Position
 
 Phase: 58.4 (close-gap-diff-02-03-04-wire-differentiators-into-hook-dll-deny-paths) — EXECUTING
-Plan: 3 of 5
-Status: Ready to execute
+Plan: 4 of 5
+Status: Plan 03 complete — DIFF-04 health snapshot emission and ingestion wired
 Verification: 10/10 must-haves verified, 0 gaps
-Last activity: 2026-06-29 — Phase 58.4 execution started
+Last activity: 2026-06-29 — Phase 58.4 Plan 03 executed (4 tasks, 7 files, 15 new tests)
 
 Phase: 59 — Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 Status: All 4 plans complete and verified (01: journal writes, 02: bypass correlator routing, 03: VERIFICATION.md artifacts, 04: OPS-04 UAT handoff)
@@ -179,7 +179,7 @@ Phase 59 and later are complete and shipped as part of v0.11.0.
 
 ## Session Continuity
 
-Last session: 2026-06-29T06:43:39.725Z
+Last session: 2026-06-29T07:28:19.647Z
 Stopped at: Phase 58.3 context gathered
 Resume file: .planning/phases/58.3-close-gap-ops-04-execute-physical-windows-11-uat/58.3-CONTEXT.md
 
@@ -218,6 +218,7 @@ Resume file: .planning/phases/58.3-close-gap-ops-04-execute-physical-windows-11-
 | Phase 55.1 P02 | 18m | 2 tasks | 1 file |
 | Phase 58.2 P02 | 25min | 2 tasks | 4 files |
 | Phase 58.2 P03 | ~45min | 4 tasks | 3 files |
+| Phase 58.4 P03 | 25min | 4 tasks | 7 files | DIFF-04 health snapshot emission + ingestion |
 
 ## Quick Tasks Completed
 
@@ -236,3 +237,7 @@ Resume file: .planning/phases/58.3-close-gap-ops-04-execute-physical-windows-11-
 - [Phase ?]: Hook DLL path approval override DEFERRED to follow-up phase — structural wiring only
 - [Phase 58.1]: Verification passed 14/14 truths. 0 gaps. 18 tests pass. All key links wired. 7 missing VERIFICATION.md files created. OPS-04 UAT handoff script and companion guide exist and are self-contained.
 - [Phase 58.2]: Verification passed 10/10 truths. 0 gaps. All must-haves from all three plans verified. `cargo check -p dlp-agent` passes. Integration tests pass. Targeted lib tests pass. See `58.2-VERIFICATION.md` for full report.
+- [Phase 58.4 Plan 03]: Health snapshots use separate HEALTH_EMIT_INTERVAL=100 (distinct from legacy telemetry EMIT_INTERVAL=1000) to give operators fresher dashboard data without altering the legacy telemetry stream.
+- [Phase 58.4 Plan 03]: IpcPayloadV1::HealthResponse is used for both agent response to PullHealth and one-way health snapshots pushed by the hook DLL; dual use is intentional for v0.10.0.
+- [Phase 58.4 Plan 03]: Health snapshot emission is best-effort: pipe errors are ignored so that health telemetry never blocks the hooked file-operation path.
+- [Phase 58.4 Plan 03]: DIFF-04 complete — 303 dlp-hook-dll tests pass, 899 dlp-agent tests pass, 8 integration tests pass, clippy clean. HookHealthSnapshot emitted every 100 pipe round-trips and on every FailState transition; agent-side HealthAggregator ingests one-way frames and maintains 12-snapshot rolling history.
