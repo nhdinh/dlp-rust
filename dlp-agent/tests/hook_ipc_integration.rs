@@ -116,11 +116,12 @@ fn test_consolidated_server_routes_request_frame() {
     dlp_agent::service::reset_shutdown_signal();
 }
 
-/// Test that `HookIpcServer` routes `PullDiagnostics` to the diagnostics handler.
+/// Test that `HookIpcServer` routes `PullDiagnostics` to the diagnostics handler
+/// and returns non-empty snapshots when the diagnostic ring has been populated.
 #[test]
 #[serial_test::serial]
-fn test_consolidated_server_routes_diagnostics_frame() {
-    let pipe_name = r"\\.\pipe\DlpHookPipeTestConsolidatedDiag";
+fn test_consolidated_server_routes_diagnostics_frame_with_snapshots() {
+    let pipe_name = r"\\.\pipe\DlpHookPipeTestConsolidatedDiagSnapshots";
 
     let handler = Arc::new(move |_req: HookRequest| HookResponse {
         decision: Decision::DENY,
@@ -133,7 +134,19 @@ fn test_consolidated_server_routes_diagnostics_frame() {
     let diag_handler =
         Arc::new(
             move |_req: PullDiagnosticsRequest| dlp_common::hook_ipc::DiagnosticsResponse {
-                snapshots: vec![],
+                snapshots: vec![dlp_common::hook_ipc::DiagnosticSnapshot {
+                    hook_function: "WriteFile".to_string(),
+                    classification_source: dlp_common::hook_ipc::ClassificationSource::Pipe,
+                    classification_age_ms: 0,
+                    abac_resource: r"C:\test\secret.doc".to_string(),
+                    abac_action: "WRITE".to_string(),
+                    abac_environment: "LocalNTFS".to_string(),
+                    matched_policy_id: Some("POL-001".to_string()),
+                    enforcement_mode: Some("DENY".to_string()),
+                    decision_latency_us: 1234,
+                    timestamp_qpc: 5678,
+                    user_sid: "S-1-5-21-123".to_string(),
+                }],
             },
         );
 
@@ -162,17 +175,20 @@ fn test_consolidated_server_routes_diagnostics_frame() {
         IpcEnvelope::V1(IpcMessageV1 {
             payload: IpcPayloadV1::DiagnosticsResponse(resp),
         }) => {
-            // Diagnostics aggregator starts empty, so snapshots should be empty.
-            assert!(resp.snapshots.is_empty());
+            // DIFF-02: Verify non-empty snapshots with expected fields.
+            assert!(!resp.snapshots.is_empty(), "Diagnostics must return non-empty snapshots");
+            let snap = &resp.snapshots[0];
+            assert_eq!(snap.hook_function, "WriteFile");
+            assert_eq!(snap.abac_action, "WRITE");
+            assert_eq!(snap.abac_resource, r"C:\test\secret.doc");
+            assert_eq!(snap.user_sid, "S-1-5-21-123");
+            assert_eq!(snap.decision_latency_us, 1234);
         }
         other => panic!("Expected DiagnosticsResponse frame, got {:?}", other),
     }
 
     dlp_agent::hook_ipc::close_pipe(client);
 
-    // Detach the server thread. It will block on the next ConnectNamedPipe
-    // until the integration test binary exits, at which point the OS terminates
-    // it. Joining is not required for this test and avoids a shutdown-race.
     let _ = handle;
     dlp_agent::service::reset_shutdown_signal();
 }
