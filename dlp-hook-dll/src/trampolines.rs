@@ -107,7 +107,7 @@ fn record_pipe_round_trip_and_maybe_emit() {
     let health_count =
         crate::perf_telemetry::HEALTH_EMIT_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
             + 1;
-    if health_count % crate::perf_telemetry::HEALTH_EMIT_INTERVAL == 0 {
+    if health_count.is_multiple_of(crate::perf_telemetry::HEALTH_EMIT_INTERVAL) {
         let snapshot = crate::perf_telemetry::emit_health_snapshot();
         let _ = crate::pipe_client::send_health_snapshot(crate::DEFAULT_PIPE_NAME, &snapshot);
     }

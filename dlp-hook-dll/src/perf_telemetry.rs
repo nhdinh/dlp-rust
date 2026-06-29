@@ -100,11 +100,17 @@ pub fn set_fail_state(state: u8) {
 }
 
 /// Set the number of injected PIDs.
+///
+/// Exposed for future agent-side injection tracking; currently not wired.
+#[allow(dead_code)]
 pub fn set_injected_pids(count: u64) {
     INJECTED_PIDS.store(count, Ordering::Relaxed);
 }
 
 /// Set the number of patched modules.
+///
+/// Exposed for future module-patching tracking; currently not wired.
+#[allow(dead_code)]
 pub fn set_patched_modules(count: u64) {
     PATCHED_MODULES.store(count, Ordering::Relaxed);
 }
