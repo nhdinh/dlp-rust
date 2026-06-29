@@ -6,15 +6,15 @@ current_phase: 59
 current_phase_name: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 status: completed
 stopped_at: Phase 58.3 context gathered
-last_updated: "2026-06-29T10:11:11.510Z"
+last_updated: "2026-06-29T11:41:56.067Z"
 last_activity: 2026-06-29
 last_activity_desc: Phase 58.4 complete, transitioned to Phase 59
 progress:
-  total_phases: 46
+  total_phases: 47
   completed_phases: 37
   total_plans: 193
   completed_plans: 171
-  percent: 80
+  percent: 79
 ---
 
 # Project State
@@ -205,6 +205,7 @@ Resume file: .planning/phases/58.3-close-gap-ops-04-execute-physical-windows-11-
 - Phase 58.2 inserted after Phase 58.1: Fix double HookIpcServer and wire volume classes (URGENT)
 - Phase 58.3 inserted after Phase 58.2: Close gap: OPS-04 — execute physical Windows 11 UAT (URGENT)
 - Phase 58.4 inserted after Phase 58.3: Close gap: DIFF-02/03/04 — wire differentiators into hook DLL deny paths (URGENT)
+- Phase 58.5 inserted after Phase 58.4: Unhook dlp_hook_dll.dll when dlp-agent is killed/exited (URGENT)
 
 ## Performance Metrics
 
