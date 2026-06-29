@@ -209,6 +209,7 @@ impl FailModeState {
 
         if new_state != old_state {
             self.state.store(new_state as u8, Ordering::Relaxed);
+            crate::perf_telemetry::set_fail_state(new_state as u8);
         }
 
         new_state
@@ -262,6 +263,7 @@ impl FailModeState {
 
         if new_state != old_state {
             self.state.store(new_state as u8, Ordering::Relaxed);
+            crate::perf_telemetry::set_fail_state(new_state as u8);
         }
 
         new_state
@@ -322,6 +324,7 @@ impl FailModeState {
     /// This should only be called after verifying all entry guards.
     pub fn set_state(&self, new_state: FailState) {
         self.state.store(new_state as u8, Ordering::Relaxed);
+        crate::perf_telemetry::set_fail_state(new_state as u8);
     }
 
     /// Transition to ISOLATED if the cache is stale.
@@ -367,6 +370,7 @@ impl FailModeState {
             self.consecutive_successes.store(0, Ordering::Relaxed);
             self.state
                 .store(FailState::Isolated as u8, Ordering::Relaxed);
+            crate::perf_telemetry::set_fail_state(FailState::Isolated as u8);
             FailState::Isolated
         } else {
             old_state
@@ -583,6 +587,10 @@ pub fn emit_state_transition(old: FailState, new: FailState, reason: &str) {
         pid = pid,
         "fail_mode state transition"
     );
+
+    // DIFF-04: Emit health snapshot on every state transition.
+    let snapshot = crate::perf_telemetry::emit_health_snapshot();
+    let _ = crate::pipe_client::send_health_snapshot(crate::DEFAULT_PIPE_NAME, &snapshot);
 
     // Note: SIEM pipe event is best-effort. If the pipe is unavailable
     // (which is likely during state transitions), the tracing log is the
