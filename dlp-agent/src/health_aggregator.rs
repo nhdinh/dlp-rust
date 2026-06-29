@@ -88,10 +88,16 @@ impl std::fmt::Debug for HealthAggregator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HealthAggregator")
             .field("history_len", &self.history_len())
-            .field("last_status", &self.last_status.lock().expect("poisoned"))
+            .field("last_status", &self.last_status.lock().unwrap_or_else(|e| {
+                tracing::error!("Mutex poisoned, recovering last_status");
+                e.into_inner()
+            }))
             .field(
                 "consecutive_degraded",
-                &self.consecutive_degraded.lock().expect("poisoned"),
+                &self.consecutive_degraded.lock().unwrap_or_else(|e| {
+                    tracing::error!("Mutex poisoned, recovering consecutive_degraded");
+                    e.into_inner()
+                }),
             )
             .finish()
     }
@@ -131,7 +137,10 @@ impl HealthAggregator {
     where
         F: Fn(&AuditEvent) + Send + 'static,
     {
-        let mut guard = self.alert_router.lock().expect("poisoned lock");
+        let mut guard = self.alert_router.lock().unwrap_or_else(|e| {
+            tracing::error!("Mutex poisoned, recovering alert_router");
+            e.into_inner()
+        });
         *guard = Some(Box::new(router));
     }
 
@@ -143,7 +152,10 @@ impl HealthAggregator {
     pub fn ingest_snapshot(&self, snapshot: HookHealthSnapshot) {
         // Push to history, evict oldest if over capacity.
         {
-            let mut history = self.history.lock().expect("poisoned lock");
+            let mut history = self.history.lock().unwrap_or_else(|e| {
+                tracing::error!("Mutex poisoned, recovering history");
+                e.into_inner()
+            });
             history.push_back(snapshot.clone());
             if history.len() > MAX_HISTORY_LEN {
                 history.pop_front();
@@ -153,7 +165,10 @@ impl HealthAggregator {
         // Compute new status from the snapshot.
         let new_status = Self::compute_status(&snapshot);
         let old_status = {
-            let mut last = self.last_status.lock().expect("poisoned lock");
+            let mut last = self.last_status.lock().unwrap_or_else(|e| {
+                tracing::error!("Mutex poisoned, recovering last_status");
+                e.into_inner()
+            });
             let old = *last;
             *last = new_status;
             old
@@ -162,7 +177,10 @@ impl HealthAggregator {
         // Handle transitions.
         match new_status {
             HealthStatus::Degraded => {
-                let mut count = self.consecutive_degraded.lock().expect("poisoned lock");
+                let mut count = self.consecutive_degraded.lock().unwrap_or_else(|e| {
+                    tracing::error!("Mutex poisoned, recovering consecutive_degraded");
+                    e.into_inner()
+                });
                 if old_status == HealthStatus::Healthy {
                     *count += 1;
                 }
@@ -174,13 +192,19 @@ impl HealthAggregator {
             }
             HealthStatus::Critical => {
                 {
-                    let mut count = self.consecutive_degraded.lock().expect("poisoned lock");
+                    let mut count = self.consecutive_degraded.lock().unwrap_or_else(|e| {
+                        tracing::error!("Mutex poisoned, recovering consecutive_degraded");
+                        e.into_inner()
+                    });
                     *count = 0;
                 }
                 self.emit_health_audit_event("crit", &snapshot, old_status, new_status);
             }
             HealthStatus::Healthy => {
-                let mut count = self.consecutive_degraded.lock().expect("poisoned lock");
+                let mut count = self.consecutive_degraded.lock().unwrap_or_else(|e| {
+                    tracing::error!("Mutex poisoned, recovering consecutive_degraded");
+                    e.into_inner()
+                });
                 *count = 0;
                 // Optionally emit an info-level recovery event.
                 if old_status != HealthStatus::Healthy {
@@ -196,22 +220,34 @@ impl HealthAggregator {
     /// Returns the current health status and most recent snapshot (if any).
     #[must_use]
     pub fn get_current_status(&self) -> Option<(HealthStatus, HookHealthSnapshot)> {
-        let history = self.history.lock().expect("poisoned lock");
-        let last_status = self.last_status.lock().expect("poisoned lock");
+        let history = self.history.lock().unwrap_or_else(|e| {
+            tracing::error!("Mutex poisoned, recovering history");
+            e.into_inner()
+        });
+        let last_status = self.last_status.lock().unwrap_or_else(|e| {
+            tracing::error!("Mutex poisoned, recovering last_status");
+            e.into_inner()
+        });
         history.back().cloned().map(|snap| (*last_status, snap))
     }
 
     /// Returns a copy of the full history.
     #[must_use]
     pub fn get_history(&self) -> Vec<HookHealthSnapshot> {
-        let history = self.history.lock().expect("poisoned lock");
+        let history = self.history.lock().unwrap_or_else(|e| {
+            tracing::error!("Mutex poisoned, recovering history");
+            e.into_inner()
+        });
         history.iter().cloned().collect()
     }
 
     /// Returns the number of history entries.
     #[must_use]
     pub fn history_len(&self) -> usize {
-        let history = self.history.lock().expect("poisoned lock");
+        let history = self.history.lock().unwrap_or_else(|e| {
+            tracing::error!("Mutex poisoned, recovering history");
+            e.into_inner()
+        });
         history.len()
     }
 
@@ -294,7 +330,10 @@ impl HealthAggregator {
 
         // Route through alert_router for crit severity.
         if severity == "crit" {
-            let router_guard = self.alert_router.lock().expect("poisoned lock");
+            let router_guard = self.alert_router.lock().unwrap_or_else(|e| {
+                tracing::error!("Mutex poisoned, recovering alert_router");
+                e.into_inner()
+            });
             if let Some(ref router) = *router_guard {
                 router(&event);
             } else {
