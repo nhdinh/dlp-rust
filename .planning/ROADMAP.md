@@ -74,7 +74,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 58.1: Close v0.10.0 ship-gap verification items (INSERTED)** — fix ETW journal writes in hook DLL trampolines, verify BypassCorrelator::run() consumes bypass_rx, execute OPS-04 UAT on physical Windows 11 hardware, and create missing VERIFICATION.md files. (completed 2026-06-23)
 - [x] **Phase 58.2: Fix double HookIpcServer and wire volume classes (INSERTED)** — eliminate duplicate hook IPC server initialization and complete volume-class attribute wiring through the ABAC enforcement path. (Plan 01 complete 2026-06-24; Plans 02-03 pending)
 - [ ] **Phase 58.3: Close gap: OPS-04 — execute physical Windows 11 UAT (INSERTED)** — execute the v0.10.0 UAT plan on physical Windows 11 hardware and record actual results in `.planning/milestones/v0.10.0-UAT.md`.
-- [ ] **Phase 58.4: Close gap: DIFF-02/03/04 — wire differentiators into hook DLL deny paths (INSERTED)** — invoke diagnostic snapshot capture, content SHA-256 hashing, and health snapshot ingestion from the hook DLL deny paths.
+- [x] **Phase 58.4: Close gap: DIFF-02/03/04 — wire differentiators into hook DLL deny paths (INSERTED)** — invoke diagnostic snapshot capture, content SHA-256 hashing, and health snapshot ingestion from the hook DLL deny paths. (completed 2026-06-29)
 
 ---
 
@@ -501,7 +501,7 @@ Plans:
   3. The hook DLL populates and sends `HookHealthSnapshot` to the agent health handler at regular intervals and on state transitions; the Self-Health Dashboard shows live counters.
   4. Existing unit and integration tests continue to pass; new tests prove each differentiator data path end-to-end.
 
-**Plans:** 4/5 plans executed
+**Plans:** 5/5 plans complete
 
 Plans:
 
@@ -509,7 +509,7 @@ Plans:
 - [x] 58.4-02-PLAN.md
 - [x] 58.4-03-PLAN.md
 - [x] 58.4-04-PLAN.md
-- [ ] 58.4-05-PLAN.md
+- [x] 58.4-05-PLAN.md
 
 - [ ] `58.4-01-PLAN.md` — Wire diagnostic snapshot capture into `classify_and_log_path` / `classify_and_log_handle` deny branches.
 - [ ] `58.4-02-PLAN.md` — Wire content SHA-256 hash computation into `HookWriteFile` / `HookWriteFileEx` deny branches.
@@ -704,7 +704,7 @@ Plans:
 | 58.1 | Close v0.10.0 ship-gap verification items (INSERTED) | 4/4 | Complete    | 2026-06-23 |
 | 58.2 | Fix double HookIpcServer and wire volume classes (INSERTED) | 3/3 | Complete    | 2026-06-24 |
 | 58.3 | Close gap: OPS-04 — execute physical Windows 11 UAT (INSERTED) | 3/3 | Not started | - |
-| 58.4 | Close gap: DIFF-02/03/04 — wire differentiators into hook DLL deny paths (INSERTED) | 4/5 | In Progress|  |
+| 58.4 | Close gap: DIFF-02/03/04 — wire differentiators into hook DLL deny paths (INSERTED) | 5/5 | Complete   | 2026-06-29 |
 | 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Complete | 2026-05-21 |
 | 60. Data Owner Review Queue + Admin TUI Screen | 1/1 | Complete | 2026-05-12 |
 | 61. Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature | 4/4 | Complete | 2026-05-14 |
