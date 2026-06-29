@@ -19,6 +19,7 @@
 //! is valid for the specified length.
 
 use sha2::{Digest, Sha256};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::OnceLock;
 
 /// Maximum bytes to hash (100MB cap per D-14).
@@ -32,6 +33,35 @@ const SMALL_BUFFER_THRESHOLD: usize = 64 * 1024;
 /// Initialized on the first call to `compute_content_hash_offloaded`,
 /// NEVER from `DllMain` (loader-lock safety).
 static HASH_POOL: OnceLock<rayon::ThreadPool> = OnceLock::new();
+
+/// Global counter tracking pending offloaded hash computations.
+///
+/// Incremented before submitting to the pool, decremented after
+/// completion (even on panic, via `QueueDepthGuard`).
+static HASH_QUEUE_DEPTH: AtomicU64 = AtomicU64::new(0);
+
+/// Maximum number of pending offloaded hashes before saturation.
+///
+/// Per D-07: if queue depth exceeds this threshold, skip hashing.
+const HASH_QUEUE_DEPTH_MAX: u64 = 4;
+
+/// RAII guard that increments queue depth on creation and decrements on drop.
+///
+/// Ensures the counter is always decremented even if the pool closure panics.
+struct QueueDepthGuard;
+
+impl QueueDepthGuard {
+    fn new() -> Self {
+        HASH_QUEUE_DEPTH.fetch_add(1, Ordering::Relaxed);
+        Self
+    }
+}
+
+impl Drop for QueueDepthGuard {
+    fn drop(&mut self) {
+        HASH_QUEUE_DEPTH.fetch_sub(1, Ordering::Relaxed);
+    }
+}
 
 /// Compute SHA-256 of a buffer inline.
 ///
@@ -104,7 +134,13 @@ pub unsafe fn compute_content_hash_offloaded(
         return unsafe { compute_content_hash(buffer, len) };
     }
 
-    // Large buffers: use thread pool.
+    // Large buffers: use thread pool with saturation check.
+    if HASH_QUEUE_DEPTH.load(Ordering::Relaxed) > HASH_QUEUE_DEPTH_MAX {
+        return (None, false, true);
+    }
+
+    let _guard = QueueDepthGuard::new();
+
     let pool = HASH_POOL.get_or_init(|| {
         rayon::ThreadPoolBuilder::new()
             .num_threads(2)
@@ -216,6 +252,44 @@ mod tests {
         assert!(hash.is_some());
         assert!(!truncated);
         assert!(!skipped);
+    }
+
+    #[test]
+    fn test_hash_skipped_on_pool_saturation() {
+        // Force saturation by manually setting queue depth above threshold.
+        HASH_QUEUE_DEPTH.store(HASH_QUEUE_DEPTH_MAX + 1, Ordering::Relaxed);
+
+        let buffer = vec![0xABu8; SMALL_BUFFER_THRESHOLD + 1];
+        let (hash, truncated, skipped) =
+            unsafe { compute_content_hash_offloaded(buffer.as_ptr(), buffer.len() as u32) };
+
+        // Restore queue depth so other tests are not affected.
+        HASH_QUEUE_DEPTH.store(0, Ordering::Relaxed);
+
+        assert!(hash.is_none());
+        assert!(!truncated);
+        assert!(skipped, "expected skipped=true when queue depth > MAX");
+    }
+
+    #[test]
+    fn test_queue_depth_guard_increments_and_decrements() {
+        // Reset to known state.
+        HASH_QUEUE_DEPTH.store(0, Ordering::Relaxed);
+
+        {
+            let _guard = QueueDepthGuard::new();
+            assert_eq!(
+                HASH_QUEUE_DEPTH.load(Ordering::Relaxed),
+                1,
+                "queue depth should be incremented"
+            );
+        }
+
+        assert_eq!(
+            HASH_QUEUE_DEPTH.load(Ordering::Relaxed),
+            0,
+            "queue depth should be decremented after guard drops"
+        );
     }
 
     #[test]
