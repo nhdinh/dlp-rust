@@ -5,16 +5,16 @@ milestone_name: Real-Time File Access Prevention
 current_phase: 58.4
 current_phase_name: close-gap-diff-02-03-04-wire-differentiators-into-hook-dll-deny-paths
 status: executing
-stopped_at: Completed 58.4-03-PLAN.md
-last_updated: "2026-06-29T07:28:19.660Z"
+stopped_at: Completed 58.4-04-PLAN.md
+last_updated: "2026-06-29T08:45:00.000Z"
 last_activity: 2026-06-29
-last_activity_desc: Phase 58.4 Plan 03 executed — DIFF-04 health snapshot emission and ingestion wired
+last_activity_desc: Phase 58.4 Plan 04 executed (3 tasks, 5 files, 8 new tests)
 progress:
   total_phases: 46
   completed_phases: 36
   total_plans: 193
-  completed_plans: 170
-  percent: 88
+  completed_plans: 171
+  percent: 89
 ---
 
 # Project State
@@ -30,7 +30,7 @@ progress:
 ## Current Position
 
 Phase: 58.4 (close-gap-diff-02-03-04-wire-differentiators-into-hook-dll-deny-paths) — EXECUTING
-Plan: 4 of 5
+Plan: 5 of 5
 Status: Plan 03 complete — DIFF-04 health snapshot emission and ingestion wired
 Verification: 10/10 must-haves verified, 0 gaps
 Last activity: 2026-06-29 — Phase 58.4 Plan 03 executed (4 tasks, 7 files, 15 new tests)
@@ -179,7 +179,7 @@ Phase 59 and later are complete and shipped as part of v0.11.0.
 
 ## Session Continuity
 
-Last session: 2026-06-29T07:28:19.647Z
+Last session: 2026-06-29T08:19:56.928Z
 Stopped at: Phase 58.3 context gathered
 Resume file: .planning/phases/58.3-close-gap-ops-04-execute-physical-windows-11-uat/58.3-CONTEXT.md
 
@@ -219,6 +219,7 @@ Resume file: .planning/phases/58.3-close-gap-ops-04-execute-physical-windows-11-
 | Phase 58.2 P02 | 25min | 2 tasks | 4 files |
 | Phase 58.2 P03 | ~45min | 4 tasks | 3 files |
 | Phase 58.4 P03 | 25min | 4 tasks | 7 files | DIFF-04 health snapshot emission + ingestion |
+| Phase 58.4 P04 | 25min | 3 tasks | 5 files |
 
 ## Quick Tasks Completed
 
@@ -241,3 +242,4 @@ Resume file: .planning/phases/58.3-close-gap-ops-04-execute-physical-windows-11-
 - [Phase 58.4 Plan 03]: IpcPayloadV1::HealthResponse is used for both agent response to PullHealth and one-way health snapshots pushed by the hook DLL; dual use is intentional for v0.10.0.
 - [Phase 58.4 Plan 03]: Health snapshot emission is best-effort: pipe errors are ignored so that health telemetry never blocks the hooked file-operation path.
 - [Phase 58.4 Plan 03]: DIFF-04 complete — 303 dlp-hook-dll tests pass, 899 dlp-agent tests pass, 8 integration tests pass, clippy clean. HookHealthSnapshot emitted every 100 pipe round-trips and on every FailState transition; agent-side HealthAggregator ingests one-way frames and maintains 12-snapshot rolling history.
+- [Phase 58.4]: Made start_agent_mock_server pub for cross-module test reuse in trampolines.rs
