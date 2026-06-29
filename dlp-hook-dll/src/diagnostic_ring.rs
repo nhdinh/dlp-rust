@@ -19,16 +19,12 @@ use std::sync::OnceLock;
 /// Maximum number of diagnostic snapshots in the ring buffer.
 const RING_CAPACITY: usize = 1000;
 
-/// Entry expiry in QPC ticks (1 hour).
+/// Entry expiry in seconds (1 hour).
 ///
-/// QPC frequency varies by hardware. Typical frequencies:
-/// - ~10 MHz (100ns/tick) on modern x64 → 36 billion ticks/hour
-/// - ~3.5 MHz on some systems → ~12.6 billion ticks/hour
-///
-/// We use a conservative value of 36 trillion (36e12) which corresponds
-/// to 1 hour at 10MHz. On systems with lower frequency, this represents
-/// a longer wall-clock time, which is acceptable for lazy eviction.
-const ENTRY_EXPIRY_QPC_TICKS: u64 = 36_000_000_000_000u64;
+/// QPC frequency varies by hardware, so we cannot hard-code a tick count.
+/// Instead, `drain_snapshots` queries `QueryPerformanceFrequency` at runtime
+/// and computes `one_hour_ticks = freq * 3600`.
+const ENTRY_EXPIRY_SECONDS: u64 = 3600;
 
 /// Global lock-free ring buffer for diagnostic snapshots.
 ///
@@ -81,8 +77,10 @@ pub fn drain_snapshots(limit: usize) -> Vec<DiagnosticSnapshot> {
     let ring = get_ring();
     let mut result = Vec::with_capacity(limit.min(RING_CAPACITY));
 
-    // Get current QPC for expiry check.
+    // Get current QPC and frequency for correct expiry calculation.
     let now_qpc = unsafe { query_performance_counter() };
+    let one_hour_ticks = unsafe { query_performance_frequency() }
+        .saturating_mul(ENTRY_EXPIRY_SECONDS);
 
     while result.len() < limit {
         let Some(snapshot) = ring.pop() else {
@@ -92,8 +90,8 @@ pub fn drain_snapshots(limit: usize) -> Vec<DiagnosticSnapshot> {
         // Skip expired entries (lazy eviction).
         // If now_qpc is 0 (QPC failed), skip expiry check to avoid evicting everything.
         // Also skip if timestamp_qpc is 0 (uninitialized).
-        let age = now_qpc.saturating_sub(snapshot.timestamp_qpc);
-        if now_qpc > 0 && snapshot.timestamp_qpc > 0 && age > ENTRY_EXPIRY_QPC_TICKS {
+        let age = now_qpc.wrapping_sub(snapshot.timestamp_qpc);
+        if now_qpc > 0 && snapshot.timestamp_qpc > 0 && age > one_hour_ticks {
             continue;
         }
 
@@ -126,6 +124,29 @@ unsafe fn query_performance_counter() -> u64 {
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
             .as_micros() as u64
+    }
+}
+
+/// Read the current QueryPerformanceFrequency value.
+///
+/// Returns ticks per second, or 0 on non-Windows platforms or if the call fails.
+unsafe fn query_performance_frequency() -> u64 {
+    #[cfg(windows)]
+    {
+        use windows::Win32::System::Performance::QueryPerformanceFrequency;
+        let mut freq = 0i64;
+        // SAFETY: QueryPerformanceFrequency writes to a valid i64 pointer.
+        let result = unsafe { QueryPerformanceFrequency(&mut freq) };
+        if result.is_ok() {
+            freq as u64
+        } else {
+            0
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        // On non-Windows, assume 1 MHz (microsecond resolution) as a coarse fallback.
+        1_000_000
     }
 }
 
@@ -248,12 +269,13 @@ mod tests {
         let _ = drain_snapshots(1000);
 
         let now = unsafe { query_performance_counter() };
+        let freq = unsafe { query_performance_frequency() };
         // Use a very old timestamp that is definitely expired.
-        // QPC ticks are ~10MHz (100ns each). ENTRY_EXPIRY_QPC_TICKS = 36 trillion.
-        // Any value less than now - 36 trillion is expired.
+        // Compute one_hour_ticks from actual QPC frequency.
+        let one_hour_ticks = freq.saturating_mul(ENTRY_EXPIRY_SECONDS);
         // If QPC returns 0 (failure), use a large value for now.
         let now = if now == 0 { 1_000_000_000_000u64 } else { now };
-        let old = now.saturating_sub(ENTRY_EXPIRY_QPC_TICKS + 1_000_000_000);
+        let old = now.wrapping_sub(one_hour_ticks + 1_000_000_000);
 
         push_snapshot(make_snapshot("recent", now));
         push_snapshot(make_snapshot("old", old));
@@ -265,9 +287,9 @@ mod tests {
             "recent snapshot must be present; drained={:?}",
             drained.iter().map(|s| &s.hook_function).collect::<Vec<_>>()
         );
-        // On this platform, QPC values are small (~1.2e12) which is less than
-        // ENTRY_EXPIRY_QPC_TICKS (36e12). This means the age calculation
-        // (now - old) is also small and does not exceed the threshold.
+        // On this platform, QPC values are small (~1.2e12) which may be less than
+        // one_hour_ticks (freq * 3600). This means the age calculation
+        // (now - old) may also be small and not exceed the threshold.
         // The expiry test is platform-dependent; we verify the logic is correct
         // by checking that old entries with timestamp_qpc=0 are NOT evicted
         // (our guard prevents eviction when QPC values are in an unexpected range).
