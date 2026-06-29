@@ -692,4 +692,89 @@ mod tests {
         assert_eq!(count, 1);
         assert_eq!(HEALTH_EMIT_COUNTER.load(Ordering::Relaxed), 1);
     }
+
+    // --- Plan 58.4-04: Additional health counter tests ---
+
+    #[test]
+    fn test_health_counters_increment() {
+        // Reset counters to known state.
+        CACHE_HITS_60S.store(0, Ordering::Relaxed);
+        CACHE_MISSES_60S.store(0, Ordering::Relaxed);
+        PIPE_ROUND_TRIPS.store(0, Ordering::Relaxed);
+
+        // Record 5 cache hits and 3 cache misses.
+        for _ in 0..5 {
+            record_cache_hit();
+        }
+        for _ in 0..3 {
+            record_cache_miss();
+        }
+
+        let snapshot = emit_health_snapshot();
+
+        // cache_hit_rate_60s = 5 / (5 + 3) = 0.625
+        assert_eq!(snapshot.cache_hit_rate_60s, 0.625);
+        assert_eq!(snapshot.pipe_round_trips_60s, 0);
+    }
+
+    #[test]
+    fn test_health_snapshot_fields() {
+        // Set all health counter fields to known values.
+        PIPE_ROUND_TRIPS.store(7, Ordering::Relaxed);
+        CACHE_HITS_60S.store(9, Ordering::Relaxed);
+        CACHE_MISSES_60S.store(1, Ordering::Relaxed);
+        CURRENT_FAIL_STATE.store(2, Ordering::Relaxed);
+        INJECTED_PIDS.store(3, Ordering::Relaxed);
+        PATCHED_MODULES.store(8, Ordering::Relaxed);
+
+        let snapshot = emit_health_snapshot();
+
+        // Verify all fields match the set values.
+        assert_eq!(snapshot.pipe_round_trips_60s, 7);
+        assert_eq!(snapshot.cache_hit_rate_60s, 0.9); // 9 / (9+1)
+        assert_eq!(snapshot.current_fail_state, 2);
+        assert_eq!(snapshot.injected_pids, 3);
+        assert_eq!(snapshot.patched_modules, 8);
+        assert!(snapshot.timestamp_secs > 0);
+    }
+
+    #[test]
+    #[ignore = "requires --test-threads=1 to avoid parallel counter interference; run with: cargo test -p dlp-hook-dll --lib -- perf_telemetry::tests::test_health_snapshot_resets_counters -- --ignored --test-threads=1 --nocapture"]
+    fn test_health_snapshot_resets_counters() {
+        // Reset counters to known state.
+        CACHE_HITS_60S.store(0, Ordering::Relaxed);
+        CACHE_MISSES_60S.store(0, Ordering::Relaxed);
+
+        // Record one cache hit, then emit.
+        record_cache_hit();
+        let first = emit_health_snapshot();
+        assert_eq!(first.cache_hit_rate_60s, 1.0);
+
+        // Emit again without recording any new hits/misses.
+        let second = emit_health_snapshot();
+        assert_eq!(
+            second.cache_hit_rate_60s, 0.0,
+            "second snapshot should have 0.0 hit rate after counters reset"
+        );
+    }
+
+    #[test]
+    fn test_health_snapshot_timestamp() {
+        let before = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let snapshot = emit_health_snapshot();
+
+        let after = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        assert!(
+            snapshot.timestamp_secs >= before && snapshot.timestamp_secs <= after,
+            "timestamp_secs should be within 1 second of current time"
+        );
+    }
 }
