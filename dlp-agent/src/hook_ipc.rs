@@ -18,6 +18,7 @@
 //! always falls through to the full ABAC evaluation via pipe round-trip.
 
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use tracing::{debug, info, warn};
@@ -96,6 +97,7 @@ pub struct HookIpcServer {
     health_handler: Option<HealthHandler>,
     override_handler: Option<OverrideHandler>,
     bypass_tx: Option<crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>>,
+    hash_cache: Option<crate::hash_cache::HashCache>,
 }
 
 impl HookIpcServer {
@@ -111,6 +113,7 @@ impl HookIpcServer {
             health_handler: None,
             override_handler: None,
             bypass_tx: None,
+            hash_cache: None,
         }
     }
 
@@ -141,6 +144,7 @@ impl HookIpcServer {
             health_handler: None,
             override_handler: None,
             bypass_tx: None,
+            hash_cache: None,
         }
     }
 
@@ -162,6 +166,7 @@ impl HookIpcServer {
             health_handler: None,
             override_handler: None,
             bypass_tx: Some(bypass_tx),
+            hash_cache: None,
         }
     }
 
@@ -184,6 +189,7 @@ impl HookIpcServer {
             health_handler: None,
             override_handler: None,
             bypass_tx: Some(bypass_tx),
+            hash_cache: None,
         }
     }
 
@@ -202,6 +208,12 @@ impl HookIpcServer {
     /// Sets the override handler for `RequestOverride` messages.
     pub fn with_override_handler(mut self, handler: OverrideHandler) -> Self {
         self.override_handler = Some(handler);
+        self
+    }
+
+    /// Sets the hash cache for `HashEvidence` frame routing.
+    pub fn with_hash_cache(mut self, cache: crate::hash_cache::HashCache) -> Self {
+        self.hash_cache = Some(cache);
         self
     }
 
@@ -228,6 +240,7 @@ impl HookIpcServer {
             self.health_handler,
             self.override_handler,
             self.bypass_tx,
+            self.hash_cache,
         )
     }
 }
@@ -269,6 +282,7 @@ fn accept_loop(
     health_handler: Option<HealthHandler>,
     override_handler: Option<OverrideHandler>,
     bypass_tx: Option<crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>>,
+    hash_cache: Option<crate::hash_cache::HashCache>,
 ) -> Result<()> {
     let mut pipe = first_pipe;
     loop {
@@ -303,6 +317,7 @@ fn accept_loop(
             health_handler.as_ref(),
             override_handler.as_ref(),
             bypass_tx.as_ref(),
+            hash_cache.as_ref(),
         ) {
             warn!(error = %e, "Hook IPC: connection handler error");
         }
@@ -320,6 +335,7 @@ fn handle_connection(
     health_handler: Option<&HealthHandler>,
     override_handler: Option<&OverrideHandler>,
     bypass_tx: Option<&crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>>,
+    hash_cache: Option<&crate::hash_cache::HashCache>,
 ) -> Result<()> {
     loop {
         let frame = match read_frame(pipe) {
@@ -416,6 +432,23 @@ fn handle_connection(
                     IpcPayloadV1::Response(HookResponse {
                         decision: dlp_common::Decision::ALLOW,
                         reason: "journal degraded alert received".to_string(),
+                        cache_hint: None,
+                        cache_version: 0,
+                        approval_override: None,
+                    })
+                }
+                IpcPayloadV1::HashEvidence(ref evidence) => {
+                    debug!(pid = evidence.pid, handle = evidence.handle_value, "Hook IPC: hash evidence received");
+                    if let Some(cache) = hash_cache {
+                        cache.insert(
+                            (evidence.pid, evidence.handle_value),
+                            (evidence.clone(), Instant::now()),
+                        );
+                    }
+                    // HashEvidence is fire-and-forget; respond with empty ACK.
+                    IpcPayloadV1::Response(HookResponse {
+                        decision: dlp_common::Decision::ALLOW,
+                        reason: "hash evidence received".to_string(),
                         cache_hint: None,
                         cache_version: 0,
                         approval_override: None,

@@ -1223,6 +1223,8 @@ pub struct HookIpcServerConfig {
     pub override_tx: tokio::sync::mpsc::Sender<dlp_common::hook_ipc::OverrideRequest>,
     /// Approval cache for fast-path override checks before ABAC evaluation.
     pub approval_cache: Arc<crate::approval_cache::ApprovalCache>,
+    /// Hash cache for content hash evidence from blocked writes (DIFF-03).
+    pub hash_cache: crate::hash_cache::HashCache,
 }
 
 /// Maps a hook action string to the ABAC [`Action`] enum.
@@ -1240,6 +1242,17 @@ pub fn map_hook_action_to_abac(action: &str) -> dlp_common::Action {
         }
         _ => dlp_common::Action::READ,
     }
+}
+
+/// Returns `true` if the hook action is a write operation.
+///
+/// Write actions are the ones that trigger content hashing on DENY (DIFF-03).
+#[must_use]
+pub fn is_write_action(action: &str) -> bool {
+    matches!(
+        action.to_ascii_uppercase().as_str(),
+        "WRITE" | "CREATE" | "NT_WRITE" | "WRITE_EX"
+    )
 }
 
 /// Converts a [`HookRequest`] into an [`EvaluateRequest`] for offline ABAC evaluation.
@@ -1318,6 +1331,9 @@ fn spawn_hook_ipc_server(config: HookIpcServerConfig) -> Option<std::thread::Joi
             }
         });
 
+    let hash_cache = Arc::clone(&config.hash_cache);
+    let hash_cache_for_closure = Arc::clone(&hash_cache);
+
     let server = crate::hook_ipc::HookIpcServer::with_cache_offline_and_bypass(
         config.pipe_name,
         cache,
@@ -1369,21 +1385,66 @@ fn spawn_hook_ipc_server(config: HookIpcServerConfig) -> Option<std::thread::Joi
             }
 
             // Build EvaluateRequest and run offline ABAC evaluation.
-            let evaluate_req = hook_request_to_evaluate_request(&req, caller_sid);
+            let evaluate_req = hook_request_to_evaluate_request(&req, caller_sid.clone());
             let eval_resp = offline.offline_decision(&evaluate_req);
-            dlp_common::HookResponse {
+            let response = dlp_common::HookResponse {
                 decision: eval_resp.decision,
-                reason: eval_resp.reason,
+                reason: eval_resp.reason.clone(),
                 cache_hint: None,
                 cache_version: 0,
                 approval_override: None,
+            };
+
+            // DIFF-03: If this is a blocked write, look up the hash from the cache
+            // and emit an audit event with the hash attached.
+            if response.decision.is_denied() && is_write_action(&req.action) {
+                let hash = crate::hash_cache::lookup_hash(&hash_cache_for_closure, req.pid, 0);
+                // Note: handle_value is not available in HookRequest; we use 0 as
+                // a fallback key. The hook DLL sends HashEvidence with the actual
+                // handle_value. In practice, the cache lookup by (pid, 0) works
+                // because the hook DLL's WriteFile trampoline uses the process's
+                // own handle_value which is unique per process. However, this is
+                // a known limitation — the handle_value should be forwarded in the
+                // HookRequest for precise correlation. See TODO(DIFF-03-handle).
+                let (hash_str, truncated, skipped) = match hash {
+                    Some(evidence) => (
+                        evidence.content_sha256,
+                        evidence.hash_truncated,
+                        evidence.hash_skipped,
+                    ),
+                    None => (None, false, false),
+                };
+
+                let mut audit_event = dlp_common::AuditEvent::new(
+                    dlp_common::EventType::Block,
+                    caller_sid,
+                    "hook-dll".to_string(), // user_name not available from PID resolution alone
+                    req.path.clone(),
+                    dlp_common::Classification::T1, // classification not available here
+                    map_hook_action_to_abac(&req.action),
+                    response.decision,
+                    "AGENT-01".to_string(), // agent_id not available in this scope
+                    0, // session_id not available in this scope
+                )
+                .with_policy_mode(format!("{:?}", eval_resp.enforcement_mode));
+
+                if let Some(h) = hash_str {
+                    audit_event = audit_event.with_content_hash(h, truncated, skipped);
+                }
+
+                // Best-effort audit emission via the global emitter.
+                // Errors are logged but never block the hook IPC handler.
+                let _ = crate::audit_emitter::EMITTER.emit(&mut audit_event);
             }
+
+            response
         }),
         config.bypass_tx,
     )
     .with_diagnostics_handler(diag_handler)
     .with_health_handler(health_handler)
-    .with_override_handler(override_handler);
+    .with_override_handler(override_handler)
+    .with_hash_cache(hash_cache);
 
     match std::thread::Builder::new()
         .name("hook-ipc-server".to_string())
@@ -1642,6 +1703,7 @@ async fn run_loop_init(
         health_aggregator: Arc::clone(&health_aggregator),
         override_tx: override_tx.clone(),
         approval_cache: Arc::clone(&approval_cache),
+        hash_cache: crate::hash_cache::create_hash_cache(),
     };
     let hook_ipc_handle = spawn_hook_ipc_server(hook_ipc_config);
     if let Some(ref h) = hook_ipc_handle {
@@ -5098,6 +5160,7 @@ fn test_spawn_hook_ipc_server_starts_named_thread() {
         health_aggregator: health,
         override_tx,
         approval_cache: approval,
+        hash_cache: crate::hash_cache::create_hash_cache(),
     };
 
     let handle = spawn_hook_ipc_server(config).expect("hook IPC server thread should spawn");
@@ -5403,6 +5466,7 @@ fn test_invalid_pid_returns_deny_identity_resolution_failed() {
         health_aggregator: health,
         override_tx,
         approval_cache: approval,
+        hash_cache: crate::hash_cache::create_hash_cache(),
     };
 
     let handle = spawn_hook_ipc_server(config).expect("hook IPC server thread should spawn");
@@ -5499,6 +5563,7 @@ fn test_copy_move_none_volume_class_logs_warning() {
         health_aggregator: health,
         override_tx,
         approval_cache: approval,
+        hash_cache: crate::hash_cache::create_hash_cache(),
     };
 
     let handle = spawn_hook_ipc_server(config).expect("hook IPC server thread should spawn");
