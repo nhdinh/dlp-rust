@@ -75,6 +75,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 58.2: Fix double HookIpcServer and wire volume classes (INSERTED)** — eliminate duplicate hook IPC server initialization and complete volume-class attribute wiring through the ABAC enforcement path. (Plan 01 complete 2026-06-24; Plans 02-03 pending)
 - [ ] **Phase 58.3: Close gap: OPS-04 — execute physical Windows 11 UAT (INSERTED)** — execute the v0.10.0 UAT plan on physical Windows 11 hardware and record actual results in `.planning/milestones/v0.10.0-UAT.md`.
 - [x] **Phase 58.4: Close gap: DIFF-02/03/04 — wire differentiators into hook DLL deny paths (INSERTED)** — invoke diagnostic snapshot capture, content SHA-256 hashing, and health snapshot ingestion from the hook DLL deny paths. (completed 2026-06-29)
+- [ ] **Phase 58.5: Unhook dlp_hook_dll.dll when dlp-agent is killed/exited (INSERTED)** — TBD. (not started)
 
 ---
 
@@ -488,6 +489,28 @@ Plans:
 - [ ] `58.3-01-PLAN.md` — Prepare physical Windows 11 host, peripherals, and cloud clients.
 - [ ] `58.3-02-PLAN.md` — Execute UAT scenarios A–J and capture artifacts.
 - [ ] `58.3-03-PLAN.md` — Record results, compute CRIT-04 overhead, and complete sign-off.
+
+### Phase 58.5: Unhook dlp_hook_dll.dll when dlp-agent is killed/exited (INSERTED)
+
+**Goal**: Ensure the DLP agent cleanly unhooks `dlp_hook_dll.dll` from all injected processes when the agent service is killed, exits, or restarts, restoring original IAT/ntdll trampolines and releasing shared-memory resources without crashing host processes.
+**Depends on**: Phase 58.4
+**Requirements**: TBD
+**Success Criteria** (what must be TRUE):
+
+  1. On agent graceful shutdown, every process injected with `dlp_hook_dll.dll` receives an unhook command and the DLL is unloaded or trampolines are restored to original bytes.
+  2. On agent crash or unexpected termination, a watchdog mechanism detects agent absence and triggers self-unload in hooked processes within a bounded timeout.
+  3. No host process crashes or hangs during unhook; original file I/O behavior is fully restored.
+  4. Shared-memory sections (`Global\\DlpClassificationCache`, per-process journal sections) are closed and released.
+  5. Audit events are emitted for unhook lifecycle (`agent_shutdown_unhook`, `watchdog_self_unload`, `unhook_failure`).
+
+**Plans:** 4/4 plans planned
+
+Plans:
+
+- [ ] `58.5-01-PLAN.md` — Add cooperative unhook IPC types and audit event types.
+- [ ] `58.5-02-PLAN.md` — Implement hook DLL self-unhook (UnhookAll, watchdog, UnhookCommand handler).
+- [ ] `58.5-03-PLAN.md` — Implement agent-side unhook dispatch and registry transitions.
+- [ ] `58.5-04-PLAN.md` — Write tests and run quality gates across all three crates.
 
 ### Phase 58.4: Close gap: DIFF-02/03/04 — wire differentiators into hook DLL deny paths (INSERTED)
 
