@@ -844,7 +844,7 @@ mod tests {
 
     /// Starts a [`HookIpcServer`] on a dedicated thread using the given
     /// handler, waits until the pipe is ready, and returns the thread handle.
-    fn start_agent_mock_server(
+    pub fn start_agent_mock_server(
         pipe_name: &str,
         handler: Arc<dyn Fn(HookRequest) -> HookResponse + Send + Sync>,
     ) -> std::thread::JoinHandle<()> {

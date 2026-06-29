@@ -2680,6 +2680,90 @@ mod tests {
         };
     }
 
+    // --- DIFF-02: Diagnostic snapshot on DENY ---
+
+    #[test]
+    #[ignore = "requires --test-threads=1 due to shared OnceLock and global counters"]
+    fn test_diagnostic_snapshot_on_deny_path() {
+        // Drain any leftover snapshots from prior tests.
+        crate::diagnostic_ring::drain_all_snapshots();
+
+        let pipe_name = r"\\.\pipe\DlpHookPipeTestDiagPath";
+        let handler = std::sync::Arc::new(|_req: dlp_common::HookRequest| dlp_common::HookResponse {
+            decision: dlp_common::Decision::DENY,
+            reason: "denied".to_string(),
+            cache_hint: None,
+            cache_version: 0,
+            approval_override: None,
+        });
+        let _server = crate::tests::start_agent_mock_server(pipe_name, handler);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        // Call classify_and_log_path with a test path and action.
+        // The mock server returns DENY, so this should push a diagnostic snapshot.
+        let result = classify_and_log_path(
+            r"C:\test\secret.txt",
+            "CREATE",
+            "CreateFileW",
+            0,
+            1,
+            None,
+            None,
+        );
+        assert!(result.is_some(), "expected DENY from mock server");
+
+        // Verify the diagnostic ring contains the expected snapshot.
+        let snapshots = crate::diagnostic_ring::drain_snapshots(10);
+        assert!(
+            !snapshots.is_empty(),
+            "expected at least one diagnostic snapshot after DENY"
+        );
+
+        let snapshot = &snapshots[0];
+        assert_eq!(snapshot.hook_function, "CreateFileW");
+        assert_eq!(snapshot.abac_resource, r"C:\test\secret.txt");
+        assert_eq!(snapshot.abac_action, "CREATE");
+        assert!(
+            !snapshot.user_sid.is_empty(),
+            "user_sid should be non-empty"
+        );
+        assert!(snapshot.timestamp_qpc > 0, "timestamp_qpc should be > 0");
+
+        // Clean up.
+        crate::diagnostic_ring::drain_all_snapshots();
+    }
+
+    #[test]
+    #[ignore = "requires --test-threads=1 due to shared OnceLock and global counters"]
+    fn test_diagnostic_snapshot_on_deny_handle() {
+        // Drain any leftover snapshots from prior tests.
+        crate::diagnostic_ring::drain_all_snapshots();
+
+        // classify_and_log_handle uses DEFAULT_PIPE_NAME internally.
+        // With no server running, it will fail-closed (DENY) and push a snapshot.
+        let result = classify_and_log_handle(0xABCD, "WRITE", "WriteFile", 2, "");
+        assert!(result.is_some(), "expected DENY (fail-closed)");
+
+        // Verify the diagnostic ring contains the expected snapshot.
+        let snapshots = crate::diagnostic_ring::drain_snapshots(10);
+        assert!(
+            !snapshots.is_empty(),
+            "expected at least one diagnostic snapshot after handle DENY"
+        );
+
+        let snapshot = &snapshots[0];
+        assert_eq!(snapshot.hook_function, "WriteFile");
+        assert_eq!(snapshot.abac_action, "WRITE");
+        assert!(
+            !snapshot.user_sid.is_empty(),
+            "user_sid should be non-empty"
+        );
+        assert!(snapshot.timestamp_qpc > 0, "timestamp_qpc should be > 0");
+
+        // Clean up.
+        crate::diagnostic_ring::drain_all_snapshots();
+    }
+
     // --- Phase 56: Volume class wiring tests ---
 
     #[test]

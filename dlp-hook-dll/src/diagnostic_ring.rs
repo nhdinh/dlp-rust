@@ -129,6 +129,17 @@ unsafe fn query_performance_counter() -> u64 {
     }
 }
 
+/// Test-only helper to drain all snapshots from the ring buffer.
+///
+/// This is used by unit tests to reset the global `DIAGNOSTIC_RING` state
+/// between test runs. Because `ArrayQueue` does not expose a `clear()`
+/// method, we drain it by repeatedly popping until empty.
+#[cfg(test)]
+pub fn drain_all_snapshots() {
+    let ring = get_ring();
+    while ring.pop().is_some() {}
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
