@@ -494,7 +494,7 @@ Plans:
 
 **Goal**: Ensure the DLP agent cleanly unhooks `dlp_hook_dll.dll` from all injected processes when the agent service is killed, exits, or restarts, restoring original IAT/ntdll trampolines and releasing shared-memory resources without crashing host processes.
 **Depends on**: Phase 58.4
-**Requirements**: TBD
+**Requirements**: SC-58.5-01, SC-58.5-02, SC-58.5-03, SC-58.5-04, SC-58.5-05
 **Success Criteria** (what must be TRUE):
 
   1. On agent graceful shutdown, every process injected with `dlp_hook_dll.dll` receives an unhook command and the DLL is unloaded or trampolines are restored to original bytes.
