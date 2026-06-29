@@ -1302,6 +1302,7 @@ pub fn hook_request_to_evaluate_request(
 fn spawn_hook_ipc_server(config: HookIpcServerConfig) -> Option<std::thread::JoinHandle<()>> {
     let diag = Arc::clone(&config.diagnostic_aggregator);
     let health = Arc::clone(&config.health_aggregator);
+    let health_for_handler = Arc::clone(&health);
     let override_tx = config.override_tx.clone();
     let approval = Arc::clone(&config.approval_cache);
     let offline = Arc::clone(&config.offline);
@@ -1317,7 +1318,7 @@ fn spawn_hook_ipc_server(config: HookIpcServerConfig) -> Option<std::thread::Joi
 
     let health_handler: crate::hook_ipc::HealthHandler =
         Arc::new(move |_req: dlp_common::hook_ipc::PullHealthRequest| {
-            let snapshot = health
+            let snapshot = health_for_handler
                 .get_current_status()
                 .map(|(_, s)| s)
                 .unwrap_or_default();
@@ -1444,7 +1445,8 @@ fn spawn_hook_ipc_server(config: HookIpcServerConfig) -> Option<std::thread::Joi
     .with_diagnostics_handler(diag_handler)
     .with_health_handler(health_handler)
     .with_override_handler(override_handler)
-    .with_hash_cache(hash_cache);
+    .with_hash_cache(hash_cache)
+    .with_health_aggregator(health);
 
     match std::thread::Builder::new()
         .name("hook-ipc-server".to_string())

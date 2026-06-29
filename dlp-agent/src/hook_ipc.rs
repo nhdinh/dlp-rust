@@ -98,6 +98,8 @@ pub struct HookIpcServer {
     override_handler: Option<OverrideHandler>,
     bypass_tx: Option<crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>>,
     hash_cache: Option<crate::hash_cache::HashCache>,
+    /// Phase 58: Health snapshot aggregator for ingesting one-way HealthResponse frames.
+    health_aggregator: Option<Arc<crate::health_aggregator::HealthAggregator>>,
 }
 
 impl HookIpcServer {
@@ -114,6 +116,7 @@ impl HookIpcServer {
             override_handler: None,
             bypass_tx: None,
             hash_cache: None,
+            health_aggregator: None,
         }
     }
 
@@ -145,6 +148,7 @@ impl HookIpcServer {
             override_handler: None,
             bypass_tx: None,
             hash_cache: None,
+            health_aggregator: None,
         }
     }
 
@@ -167,6 +171,7 @@ impl HookIpcServer {
             override_handler: None,
             bypass_tx: Some(bypass_tx),
             hash_cache: None,
+            health_aggregator: None,
         }
     }
 
@@ -190,6 +195,7 @@ impl HookIpcServer {
             override_handler: None,
             bypass_tx: Some(bypass_tx),
             hash_cache: None,
+            health_aggregator: None,
         }
     }
 
@@ -217,6 +223,12 @@ impl HookIpcServer {
         self
     }
 
+    /// Sets the health aggregator for one-way `HealthResponse` frame ingestion.
+    pub fn with_health_aggregator(mut self, aggregator: Arc<crate::health_aggregator::HealthAggregator>) -> Self {
+        self.health_aggregator = Some(aggregator);
+        self
+    }
+
     /// Runs the blocking accept loop on the current thread.
     ///
     /// Callers should spawn this in a dedicated `std::thread`.  Connections
@@ -241,6 +253,7 @@ impl HookIpcServer {
             self.override_handler,
             self.bypass_tx,
             self.hash_cache,
+            self.health_aggregator,
         )
     }
 }
@@ -283,6 +296,7 @@ fn accept_loop(
     override_handler: Option<OverrideHandler>,
     bypass_tx: Option<crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>>,
     hash_cache: Option<crate::hash_cache::HashCache>,
+    health_aggregator: Option<Arc<crate::health_aggregator::HealthAggregator>>,
 ) -> Result<()> {
     let mut pipe = first_pipe;
     loop {
@@ -318,6 +332,7 @@ fn accept_loop(
             override_handler.as_ref(),
             bypass_tx.as_ref(),
             hash_cache.as_ref(),
+            health_aggregator.as_ref(),
         ) {
             warn!(error = %e, "Hook IPC: connection handler error");
         }
@@ -336,6 +351,7 @@ fn handle_connection(
     override_handler: Option<&OverrideHandler>,
     bypass_tx: Option<&crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>>,
     hash_cache: Option<&crate::hash_cache::HashCache>,
+    health_aggregator: Option<&Arc<crate::health_aggregator::HealthAggregator>>,
 ) -> Result<()> {
     loop {
         let frame = match read_frame(pipe) {
@@ -449,6 +465,31 @@ fn handle_connection(
                     IpcPayloadV1::Response(HookResponse {
                         decision: dlp_common::Decision::ALLOW,
                         reason: "hash evidence received".to_string(),
+                        cache_hint: None,
+                        cache_version: 0,
+                        approval_override: None,
+                    })
+                }
+                // DIFF-04: Ingest one-way HealthResponse frames from the hook DLL.
+                // These are fire-and-send (no response expected by the DLL).
+                IpcPayloadV1::HealthResponse(ref health_resp) => {
+                    debug!(
+                        injected_pids = health_resp.snapshot.injected_pids,
+                        patched_modules = health_resp.snapshot.patched_modules,
+                        pipe_round_trips = health_resp.snapshot.pipe_round_trips_60s,
+                        cache_hit_rate = health_resp.snapshot.cache_hit_rate_60s,
+                        fail_state = health_resp.snapshot.current_fail_state,
+                        "Hook IPC: health snapshot received from DLL"
+                    );
+                    if let Some(aggregator) = health_aggregator {
+                        aggregator.ingest_snapshot(health_resp.snapshot.clone());
+                    } else {
+                        warn!("Hook IPC: health snapshot received but no aggregator configured");
+                    }
+                    // HealthResponse from DLL is one-way; respond with empty ACK.
+                    IpcPayloadV1::Response(HookResponse {
+                        decision: dlp_common::Decision::ALLOW,
+                        reason: "health snapshot ingested".to_string(),
                         cache_hint: None,
                         cache_version: 0,
                         approval_override: None,

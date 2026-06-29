@@ -442,3 +442,234 @@ fn test_consolidated_server_volume_class_allow_deny() {
     let _ = handle;
     dlp_agent::service::reset_shutdown_signal();
 }
+
+// ---------------------------------------------------------------------------
+// DIFF-04: HealthResponse one-way ingestion tests
+// ---------------------------------------------------------------------------
+
+/// Test that `HookIpcServer` ingests one-way `HealthResponse` frames into the
+/// `HealthAggregator` (DIFF-04).
+#[test]
+#[serial_test::serial]
+fn test_consolidated_server_ingests_health_response() {
+    let pipe_name = r"\\.\pipe\DlpHookPipeTestHealthResponseIngest";
+
+    let handler = Arc::new(move |_req: HookRequest| HookResponse {
+        decision: Decision::DENY,
+        reason: "default mock".to_string(),
+        cache_hint: None,
+        cache_version: 0,
+        approval_override: None,
+    });
+
+    let health_aggregator = Arc::new(dlp_agent::health_aggregator::HealthAggregator::new());
+    let health_aggregator_clone = Arc::clone(&health_aggregator);
+
+    let server = dlp_agent::hook_ipc::HookIpcServer::new(pipe_name, handler)
+        .with_health_aggregator(health_aggregator_clone);
+
+    let handle = std::thread::Builder::new()
+        .name("hook-ipc-server".to_string())
+        .spawn(move || {
+            if let Err(e) = server.run() {
+                eprintln!("Hook IPC server exited with error: {}", e);
+            }
+        })
+        .expect("server thread should spawn");
+
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+
+    // Send a one-way HealthResponse frame (as the hook DLL would).
+    let envelope = IpcEnvelope::V1(IpcMessageV1 {
+        payload: IpcPayloadV1::HealthResponse(dlp_common::hook_ipc::HealthResponse {
+            snapshot: dlp_common::hook_ipc::HookHealthSnapshot {
+                injected_pids: 42,
+                patched_modules: 7,
+                pipe_round_trips_60s: 200,
+                cache_hit_rate_60s: 0.85,
+                current_fail_state: 0,
+                timestamp_secs: 1_700_000_000,
+            },
+        }),
+    });
+
+    let payload = bincode::serialize(&envelope).expect("serialize envelope");
+    dlp_agent::ipc::frame::write_frame(client, &payload).expect("write frame");
+
+    // Read the ACK response (server always responds, even for one-way frames).
+    let frame = dlp_agent::ipc::frame::read_frame(client).expect("read ack frame");
+    let ack_envelope: IpcEnvelope = bincode::deserialize(&frame).expect("deserialize ack");
+    match ack_envelope {
+        IpcEnvelope::V1(IpcMessageV1 {
+            payload: IpcPayloadV1::Response(resp),
+        }) => {
+            assert_eq!(resp.decision, Decision::ALLOW);
+            assert!(resp.reason.contains("health snapshot ingested"));
+        }
+        other => panic!("Expected Response ACK frame, got {:?}", other),
+    }
+
+    dlp_agent::hook_ipc::close_pipe(client);
+
+    // Verify the aggregator ingested the snapshot.
+    let (status, snap) = health_aggregator
+        .get_current_status()
+        .expect("aggregator should have a snapshot");
+    assert_eq!(status, dlp_agent::health_aggregator::HealthStatus::Healthy);
+    assert_eq!(snap.injected_pids, 42);
+    assert_eq!(snap.patched_modules, 7);
+    assert_eq!(snap.pipe_round_trips_60s, 200);
+    assert!((snap.cache_hit_rate_60s - 0.85).abs() < f64::EPSILON);
+    assert_eq!(snap.current_fail_state, 0);
+
+    // Detach the server thread.
+    let _ = handle;
+    dlp_agent::service::reset_shutdown_signal();
+}
+
+/// Test that `HealthResponse` frames without an aggregator configured are
+/// handled gracefully (warn but do not panic).
+#[test]
+#[serial_test::serial]
+fn test_consolidated_server_health_response_without_aggregator() {
+    let pipe_name = r"\\.\pipe\DlpHookPipeTestHealthResponseNoAgg";
+
+    let handler = Arc::new(move |_req: HookRequest| HookResponse {
+        decision: Decision::DENY,
+        reason: "default mock".to_string(),
+        cache_hint: None,
+        cache_version: 0,
+        approval_override: None,
+    });
+
+    // No health aggregator configured.
+    let server = dlp_agent::hook_ipc::HookIpcServer::new(pipe_name, handler);
+
+    let handle = std::thread::Builder::new()
+        .name("hook-ipc-server".to_string())
+        .spawn(move || {
+            if let Err(e) = server.run() {
+                eprintln!("Hook IPC server exited with error: {}", e);
+            }
+        })
+        .expect("server thread should spawn");
+
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+
+    let envelope = IpcEnvelope::V1(IpcMessageV1 {
+        payload: IpcPayloadV1::HealthResponse(dlp_common::hook_ipc::HealthResponse {
+            snapshot: dlp_common::hook_ipc::HookHealthSnapshot {
+                injected_pids: 1,
+                patched_modules: 1,
+                pipe_round_trips_60s: 1,
+                cache_hit_rate_60s: 0.5,
+                current_fail_state: 1,
+                timestamp_secs: 1_700_000_001,
+            },
+        }),
+    });
+
+    let payload = bincode::serialize(&envelope).expect("serialize envelope");
+    dlp_agent::ipc::frame::write_frame(client, &payload).expect("write frame");
+
+    let frame = dlp_agent::ipc::frame::read_frame(client).expect("read ack frame");
+    let ack_envelope: IpcEnvelope = bincode::deserialize(&frame).expect("deserialize ack");
+    match ack_envelope {
+        IpcEnvelope::V1(IpcMessageV1 {
+            payload: IpcPayloadV1::Response(resp),
+        }) => {
+            assert_eq!(resp.decision, Decision::ALLOW);
+            assert!(resp.reason.contains("health snapshot ingested"));
+        }
+        other => panic!("Expected Response ACK frame, got {:?}", other),
+    }
+
+    dlp_agent::hook_ipc::close_pipe(client);
+
+    let _ = handle;
+    dlp_agent::service::reset_shutdown_signal();
+}
+
+/// Test that multiple consecutive HealthResponse frames build up history in the
+/// HealthAggregator.
+#[test]
+#[serial_test::serial]
+fn test_health_response_builds_aggregator_history() {
+    let pipe_name = r"\\.\pipe\DlpHookPipeTestHealthResponseHistory";
+
+    let handler = Arc::new(move |_req: HookRequest| HookResponse {
+        decision: Decision::DENY,
+        reason: "default mock".to_string(),
+        cache_hint: None,
+        cache_version: 0,
+        approval_override: None,
+    });
+
+    let health_aggregator = Arc::new(dlp_agent::health_aggregator::HealthAggregator::new());
+    let health_aggregator_clone = Arc::clone(&health_aggregator);
+
+    let server = dlp_agent::hook_ipc::HookIpcServer::new(pipe_name, handler)
+        .with_health_aggregator(health_aggregator_clone);
+
+    let handle = std::thread::Builder::new()
+        .name("hook-ipc-server".to_string())
+        .spawn(move || {
+            if let Err(e) = server.run() {
+                eprintln!("Hook IPC server exited with error: {}", e);
+            }
+        })
+        .expect("server thread should spawn");
+
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+
+    // Send 5 health snapshots with different hit rates to trigger status transitions.
+    for i in 0..5 {
+        let hit_rate = if i % 2 == 0 { 0.85 } else { 0.70 };
+        let envelope = IpcEnvelope::V1(IpcMessageV1 {
+            payload: IpcPayloadV1::HealthResponse(dlp_common::hook_ipc::HealthResponse {
+                snapshot: dlp_common::hook_ipc::HookHealthSnapshot {
+                    injected_pids: 5,
+                    patched_modules: 10,
+                    pipe_round_trips_60s: 100 + i as u64,
+                    cache_hit_rate_60s: hit_rate,
+                    current_fail_state: 0,
+                    timestamp_secs: 1_700_000_000 + i as u64,
+                },
+            }),
+        });
+        let payload = bincode::serialize(&envelope).expect("serialize envelope");
+        dlp_agent::ipc::frame::write_frame(client, &payload).expect("write frame");
+
+        // Read ACK for each frame.
+        let frame = dlp_agent::ipc::frame::read_frame(client).expect("read ack frame");
+        let ack: IpcEnvelope = bincode::deserialize(&frame).expect("deserialize ack");
+        match ack {
+            IpcEnvelope::V1(IpcMessageV1 {
+                payload: IpcPayloadV1::Response(resp),
+            }) => {
+                assert_eq!(resp.decision, Decision::ALLOW);
+            }
+            other => panic!("Expected Response ACK frame, got {:?}", other),
+        }
+    }
+
+    dlp_agent::hook_ipc::close_pipe(client);
+
+    // Verify history has all 5 entries.
+    assert_eq!(health_aggregator.history_len(), 5);
+    let history = health_aggregator.get_history();
+    assert_eq!(history.len(), 5);
+    // Verify timestamps are in order.
+    for (i, snap) in history.iter().enumerate() {
+        assert_eq!(snap.timestamp_secs, 1_700_000_000 + i as u64);
+    }
+
+    let _ = handle;
+    dlp_agent::service::reset_shutdown_signal();
+}
