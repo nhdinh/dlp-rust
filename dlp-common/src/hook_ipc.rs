@@ -123,6 +123,12 @@ pub enum IpcPayloadV1 {
     /// ring buffer cannot accept an entry. The ABAC decision is preserved;
     /// this alert is for monitoring and SIEM routing only.
     JournalDegraded(JournalDegradedAlert),
+    /// A hash evidence frame from the hook DLL to the agent.
+    ///
+    /// Sent when a blocked write operation's content has been hashed.
+    /// The agent stores this in a short-lived HashCache and attaches it
+    /// to the AuditEvent. Fire-and-forget; no response expected.
+    HashEvidence(HashEvidenceFrame),
 }
 
 /// Request sent by the hook DLL to the agent for classification.
@@ -461,6 +467,29 @@ pub struct HealthResponse {
     /// The health snapshot.
     #[serde(default)]
     pub snapshot: HookHealthSnapshot,
+}
+
+/// Hash evidence frame sent from hook DLL to agent after a blocked write.
+///
+/// The agent stores this in a TTL-governed HashCache keyed by (pid, handle_value)
+/// and attaches it to the AuditEvent via `with_content_hash`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+pub struct HashEvidenceFrame {
+    /// Process ID of the hooked process.
+    pub pid: u32,
+    /// The raw HANDLE value cast to u64 for cross-architecture safety.
+    pub handle_value: u64,
+    /// SHA-256 hex digest of the content, or None if hashing failed.
+    #[serde(default)]
+    pub content_sha256: Option<String>,
+    /// Whether the hash was truncated due to the 100MB cap.
+    #[serde(default)]
+    pub hash_truncated: bool,
+    /// Whether hashing was skipped due to thread pool saturation.
+    #[serde(default)]
+    pub hash_skipped: bool,
+    /// Unix timestamp when the hash was computed.
+    pub timestamp_secs: u64,
 }
 
 /// Current protocol version.
