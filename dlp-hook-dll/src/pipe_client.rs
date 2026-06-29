@@ -161,7 +161,10 @@ pub fn send_hash_evidence(
     });
     let payload = match bincode::serialize(&envelope) {
         Ok(p) => p,
-        Err(_) => return Err(PipeError::Malformed),
+        Err(e) => {
+            tracing::warn!(error = %e, "send_hash_evidence: bincode serialization failed");
+            return Err(PipeError::Malformed);
+        }
     };
     send_raw_oneway(pipe_name, &payload)
 }
@@ -199,7 +202,10 @@ pub fn send_health_snapshot(
     });
     let payload = match bincode::serialize(&envelope) {
         Ok(p) => p,
-        Err(_) => return Err(PipeError::Malformed),
+        Err(e) => {
+            tracing::warn!(error = %e, "send_health_snapshot: bincode serialization failed");
+            return Err(PipeError::Malformed);
+        }
     };
     send_raw_oneway(pipe_name, &payload)
 }
