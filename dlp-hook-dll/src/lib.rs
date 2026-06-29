@@ -61,6 +61,7 @@ pub mod ntdll_patcher;
 mod pe_utils;
 mod perf_telemetry;
 mod pipe_client;
+pub mod sid;
 pub mod thread_suspender;
 pub mod trampolines;
 pub mod volume_class_cache;
@@ -82,6 +83,9 @@ pub use fail_mode::{decide_isolated, is_cache_stale, FailModeState, FailState};
 // Re-export hook_journal for integration tests (journal_integration.rs, journal_degraded_test.rs).
 #[cfg(any(test, feature = "test-helpers"))]
 pub use hook_journal::{emit_journal_degraded_alert, journal_write, JournalEntry, JournalHeader};
+
+// Re-export sid helper for diagnostic snapshot capture.
+pub use sid::get_current_user_sid;
 
 /// Default pipe name used by the hook DLL.
 pub(crate) const DEFAULT_PIPE_NAME: &str = r"\\.\pipe\DlpHookPipe";
