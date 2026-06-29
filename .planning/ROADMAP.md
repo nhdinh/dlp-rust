@@ -697,6 +697,8 @@ Plans:
 | 58. Differentiators Bundle (cuttable to v0.10.1) | 6/6 | Complete | 2026-06-09 |
 | 58.1 | Close v0.10.0 ship-gap verification items (INSERTED) | 4/4 | Complete    | 2026-06-23 |
 | 58.2 | Fix double HookIpcServer and wire volume classes (INSERTED) | 3/3 | Complete    | 2026-06-24 |
+| 58.3 | Close gap: OPS-04 — execute physical Windows 11 UAT (INSERTED) | 3/3 | Not started | - |
+| 58.4 | Close gap: DIFF-02/03/04 — wire differentiators into hook DLL deny paths (INSERTED) | 4/4 | Not started | - |
 | 59. Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | 4/4 | Complete | 2026-05-21 |
 | 60. Data Owner Review Queue + Admin TUI Screen | 1/1 | Complete | 2026-05-12 |
 | 61. Approval Workflow Engine — T3 Data Owner + T4 Board Digital Signature | 4/4 | Complete | 2026-05-14 |
