@@ -67,6 +67,7 @@ pub fn get_current_user_sid() -> String {
 
         let sid_string = if result.is_ok() && !string_sid_ptr.0.is_null() {
             // SAFETY: ConvertSidToStringSidA guarantees a valid null-terminated C string on success.
+            // We verify the pointer is non-null before creating CStr as defense-in-depth.
             let cstr = std::ffi::CStr::from_ptr(string_sid_ptr.0 as *const i8);
             cstr.to_string_lossy().into_owned()
         } else {
