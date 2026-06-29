@@ -595,6 +595,24 @@ fn classify_and_log_handle(
         }
     };
 
+    // DIFF-02: Push diagnostic snapshot on every DENY branch.
+    if result.is_some() {
+        let snapshot = dlp_common::hook_ipc::DiagnosticSnapshot {
+            hook_function: fn_name.to_string(),
+            classification_source: ClassificationSource::Pipe,
+            classification_age_ms: 0,
+            abac_resource: path.to_string(),
+            abac_action: action.to_string(),
+            abac_environment: String::new(),
+            matched_policy_id: None,
+            enforcement_mode: None,
+            decision_latency_us: latency.as_micros() as u64,
+            timestamp_qpc: crate::perf_telemetry::query_performance_counter(),
+            user_sid: crate::get_current_user_sid(),
+        };
+        let _ = crate::diagnostic_ring::push_snapshot(snapshot);
+    }
+
     // Write to hook journal BEFORE returning the decision (per D-23).
     crate::hook_journal::journal_write_from_trampoline(handle_value, journal_op, path);
 
