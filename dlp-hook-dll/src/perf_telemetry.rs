@@ -230,7 +230,7 @@ where
 /// Read the current QueryPerformanceCounter value.
 ///
 /// Returns 0 on non-Windows platforms or if the call fails.
-fn query_performance_counter() -> u64 {
+pub fn query_performance_counter() -> u64 {
     #[cfg(windows)]
     {
         use windows::Win32::System::Performance::QueryPerformanceCounter;

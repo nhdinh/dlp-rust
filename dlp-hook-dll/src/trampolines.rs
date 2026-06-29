@@ -69,6 +69,7 @@ use windows::Win32::Foundation::{HANDLE, NTSTATUS};
 
 use crate::fail_mode::{FailModeState, FailState};
 use dlp_common::Classification;
+use dlp_common::hook_ipc::ClassificationSource;
 
 // ---------------------------------------------------------------------------
 // Helper: shared classification + logging + deny/allow logic
@@ -152,6 +153,8 @@ fn classify_and_log_path(
     };
 
     // Wrap entire decision logic with QPC latency measurement.
+    // Track classification source for diagnostic snapshots (DIFF-02).
+    let mut classification_source = ClassificationSource::Pipe;
     let (decision, elapsed_qpc) = crate::perf_telemetry::measure(|| {
         // 1. Check allowlist first (fastest path).
         // Get cache header for operator-extended allowlist.
@@ -217,6 +220,7 @@ fn classify_and_log_path(
             FailState::Healthy => {
                 // HEALTHY: attempt pipe on cache miss, or use cache decision on hit.
                 if let Some(classification) = cache_classification {
+                    classification_source = ClassificationSource::CacheHit;
                     let msg = format!(
                         "[dlp-hook] ALLOW(cache) {} hash={:016x} tier={}\0",
                         fn_name, path_hash, classification
@@ -279,6 +283,7 @@ fn classify_and_log_path(
             FailState::Degraded => {
                 // DEGRADED: use cache decision if available; retry pipe every 10th call.
                 if let Some(classification) = cache_classification {
+                    classification_source = ClassificationSource::CacheHit;
                     let msg = format!(
                         "[dlp-hook] ALLOW(cache-degraded) {} hash={:016x} tier={}\0",
                         fn_name, path_hash, classification
@@ -331,6 +336,9 @@ fn classify_and_log_path(
             }
             FailState::Isolated => {
                 // ISOLATED: cache-only, no pipe attempts.
+                if cache_classification.is_some() {
+                    classification_source = ClassificationSource::CacheHit;
+                }
                 let decision = crate::fail_mode::decide_isolated(cache_classification, op);
                 let tier_str = cache_classification
                     .map(|c| c.to_string())
@@ -360,6 +368,7 @@ fn classify_and_log_path(
 
                 // Retry from Healthy path.
                 if let Some(classification) = cache_classification {
+                    classification_source = ClassificationSource::CacheHit;
                     if let Some(deny) = cache_lookup.and_then(|c| c.decide(classification, op)) {
                         return Some(deny);
                     }
@@ -415,6 +424,24 @@ fn classify_and_log_path(
 
         result
     });
+
+    // DIFF-02: Push diagnostic snapshot on every DENY branch.
+    if decision.is_some() {
+        let snapshot = dlp_common::hook_ipc::DiagnosticSnapshot {
+            hook_function: fn_name.to_string(),
+            classification_source,
+            classification_age_ms: 0,
+            abac_resource: path.to_string(),
+            abac_action: action.to_string(),
+            abac_environment: format!("{:?}", source_volume_class),
+            matched_policy_id: None,
+            enforcement_mode: None,
+            decision_latency_us: elapsed_qpc,
+            timestamp_qpc: crate::perf_telemetry::query_performance_counter(),
+            user_sid: crate::get_current_user_sid(),
+        };
+        let _ = crate::diagnostic_ring::push_snapshot(snapshot);
+    }
 
     // Record latency telemetry.
     let is_cache_hit = decision.is_none()
