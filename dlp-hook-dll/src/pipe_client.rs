@@ -132,7 +132,39 @@ pub fn send_raw_request(
     Ok(frame)
 }
 
-/// Fire-and-send helper for bypass alerts that does not wait for a response.
+/// Fire-and-send helper for hash evidence frames that does not wait for a response.
+///
+/// Connects to the named pipe, serializes the [`HashEvidenceFrame`] into an
+/// [`IpcEnvelope::V1(IpcPayloadV1::HashEvidence)`], writes it with length-prefix
+/// framing, and immediately closes the handle. No read is performed.
+///
+/// # Arguments
+///
+/// * `pipe_name` — The named pipe path (e.g., `r"\\.\pipe\DlpHookPipe"`).
+/// * `frame` — The hash evidence to send.
+///
+/// # Returns
+///
+/// `Ok(())` if the payload was written successfully, or [`PipeError`] on failure.
+///
+/// # Errors
+///
+/// Returns `PipeError::ConnectionRefused` if the pipe does not exist.
+/// Returns `PipeError::Malformed` if bincode serialization fails.
+/// Returns `PipeError::Win32(u32)` for unexpected Win32 errors.
+pub fn send_hash_evidence(
+    pipe_name: &str,
+    frame: &dlp_common::hook_ipc::HashEvidenceFrame,
+) -> Result<(), PipeError> {
+    let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+        payload: dlp_common::hook_ipc::IpcPayloadV1::HashEvidence(frame.clone()),
+    });
+    let payload = match bincode::serialize(&envelope) {
+        Ok(p) => p,
+        Err(_) => return Err(PipeError::Malformed),
+    };
+    send_raw_oneway(pipe_name, &payload)
+}
 ///
 /// Connects to the named pipe, writes the payload with length-prefix framing,
 /// and immediately closes the handle. No read is performed, avoiding deadlock

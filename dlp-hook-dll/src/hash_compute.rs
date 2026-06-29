@@ -26,7 +26,7 @@ use std::sync::OnceLock;
 pub const HASH_CAP_BYTES: usize = 100 * 1024 * 1024;
 
 /// Buffers below this threshold are hashed inline (64KB).
-const SMALL_BUFFER_THRESHOLD: usize = 64 * 1024;
+pub const SMALL_BUFFER_THRESHOLD: usize = 64 * 1024;
 
 /// Lazily initialized thread pool for offloaded hashing.
 ///

@@ -829,6 +829,46 @@ pub unsafe extern "system" fn HookWriteFile(
                     if let Some(_deny) =
                         classify_and_log_handle(handle_value, "WRITE", "WriteFile", 2, "")
                     {
+                        // DIFF-03: Compute content hash from lpBuffer / nNumberOfBytesToWrite.
+                        let (hash, truncated, skipped) =
+                            if !lpbuffer.is_null() && nnumberofbytestowrite > 0 {
+                                if (nnumberofbytestowrite as usize)
+                                    < crate::hash_compute::SMALL_BUFFER_THRESHOLD
+                                {
+                                    unsafe {
+                                        crate::hash_compute::compute_content_hash(
+                                            lpbuffer,
+                                            nnumberofbytestowrite,
+                                        )
+                                    }
+                                } else {
+                                    unsafe {
+                                        crate::hash_compute::compute_content_hash_offloaded(
+                                            lpbuffer,
+                                            nnumberofbytestowrite,
+                                        )
+                                    }
+                                }
+                            } else {
+                                (None, false, false)
+                            };
+
+                        let evidence = dlp_common::hook_ipc::HashEvidenceFrame {
+                            pid: std::process::id(),
+                            handle_value,
+                            content_sha256: hash,
+                            hash_truncated: truncated,
+                            hash_skipped: skipped,
+                            timestamp_secs: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs(),
+                        };
+                        let _ = crate::pipe_client::send_hash_evidence(
+                            crate::DEFAULT_PIPE_NAME,
+                            &evidence,
+                        );
+
                         return crate::fail_closed!(BoolFalse);
                     }
                     let original = crate::ORIGINAL_WRITE_FILE.unwrap_or_else(|| {
@@ -908,6 +948,46 @@ pub unsafe extern "system" fn HookWriteFileEx(
                     if let Some(_deny) =
                         classify_and_log_handle(handle_value, "WRITE_EX", "WriteFileEx", 2, "")
                     {
+                        // DIFF-03: Compute content hash from lpBuffer / nNumberOfBytesToWrite.
+                        let (hash, truncated, skipped) =
+                            if !lpbuffer.is_null() && nnumberofbytestowrite > 0 {
+                                if (nnumberofbytestowrite as usize)
+                                    < crate::hash_compute::SMALL_BUFFER_THRESHOLD
+                                {
+                                    unsafe {
+                                        crate::hash_compute::compute_content_hash(
+                                            lpbuffer,
+                                            nnumberofbytestowrite,
+                                        )
+                                    }
+                                } else {
+                                    unsafe {
+                                        crate::hash_compute::compute_content_hash_offloaded(
+                                            lpbuffer,
+                                            nnumberofbytestowrite,
+                                        )
+                                    }
+                                }
+                            } else {
+                                (None, false, false)
+                            };
+
+                        let evidence = dlp_common::hook_ipc::HashEvidenceFrame {
+                            pid: std::process::id(),
+                            handle_value,
+                            content_sha256: hash,
+                            hash_truncated: truncated,
+                            hash_skipped: skipped,
+                            timestamp_secs: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs(),
+                        };
+                        let _ = crate::pipe_client::send_hash_evidence(
+                            crate::DEFAULT_PIPE_NAME,
+                            &evidence,
+                        );
+
                         return crate::fail_closed!(BoolFalse);
                     }
                     let original = crate::ORIGINAL_WRITE_FILE_EX.unwrap_or_else(|| {
