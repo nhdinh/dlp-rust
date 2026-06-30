@@ -5517,6 +5517,13 @@ fn test_spawn_hook_ipc_server_starts_named_thread() {
         approval_cache: approval,
         hash_cache: crate::hash_cache::create_hash_cache(),
         process_registry: Arc::new(crate::process_registry::ProcessRegistry::new()),
+        audit_ctx: crate::audit_emitter::EmitContext {
+            agent_id: "AGENT-TEST".to_string(),
+            session_id: 0,
+            user_sid: "S-1-5-18".to_string(),
+            user_name: "SYSTEM".to_string(),
+            machine_name: None,
+        },
     };
 
     let handle = spawn_hook_ipc_server(config).expect("hook IPC server thread should spawn");
@@ -5828,6 +5835,13 @@ fn test_invalid_pid_returns_deny_identity_resolution_failed() {
         approval_cache: approval,
         hash_cache: crate::hash_cache::create_hash_cache(),
         process_registry: Arc::new(crate::process_registry::ProcessRegistry::new()),
+        audit_ctx: crate::audit_emitter::EmitContext {
+            agent_id: "AGENT-TEST".to_string(),
+            session_id: 0,
+            user_sid: "S-1-5-18".to_string(),
+            user_name: "SYSTEM".to_string(),
+            machine_name: None,
+        },
     };
 
     let handle = spawn_hook_ipc_server(config).expect("hook IPC server thread should spawn");
@@ -5927,6 +5941,13 @@ fn test_copy_move_none_volume_class_logs_warning() {
         approval_cache: approval,
         hash_cache: crate::hash_cache::create_hash_cache(),
         process_registry: Arc::new(crate::process_registry::ProcessRegistry::new()),
+        audit_ctx: crate::audit_emitter::EmitContext {
+            agent_id: "AGENT-TEST".to_string(),
+            session_id: 0,
+            user_sid: "S-1-5-18".to_string(),
+            user_name: "SYSTEM".to_string(),
+            machine_name: None,
+        },
     };
 
     let handle = spawn_hook_ipc_server(config).expect("hook IPC server thread should spawn");
