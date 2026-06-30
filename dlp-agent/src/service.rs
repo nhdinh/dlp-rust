@@ -1325,6 +1325,8 @@ pub struct HookIpcServerConfig {
     pub hash_cache: crate::hash_cache::HashCache,
     /// Phase 58.5: Process registry for PollControl validation and UnhookAck routing.
     pub process_registry: Arc<crate::process_registry::ProcessRegistry>,
+    /// Phase 58.5: Audit emit context for unhook failure events.
+    pub audit_ctx: crate::audit_emitter::EmitContext,
 }
 
 /// Maps a hook action string to the ABAC [`Action`] enum.
@@ -1547,7 +1549,8 @@ fn spawn_hook_ipc_server(config: HookIpcServerConfig) -> Option<std::thread::Joi
     .with_override_handler(override_handler)
     .with_hash_cache(hash_cache)
     .with_health_aggregator(health)
-    .with_registry(config.process_registry);
+    .with_registry(config.process_registry)
+    .with_audit_ctx(config.audit_ctx);
 
     match std::thread::Builder::new()
         .name("hook-ipc-server".to_string())
@@ -1841,6 +1844,10 @@ async fn run_loop_init(
     )
     .await;
 
+    // Phase 58.5: Build the audit context early so it can be shared with the
+    // hook IPC server for unhook failure events.
+    let audit_ctx = build_audit_ctx(machine_name);
+
     let hook_ipc_config = HookIpcServerConfig {
         pipe_name: crate::hook_ipc::DEFAULT_PIPE_NAME.to_string(),
         cache: classification_cache_dyn,
@@ -1852,6 +1859,7 @@ async fn run_loop_init(
         approval_cache: Arc::clone(&approval_cache),
         hash_cache: crate::hash_cache::create_hash_cache(),
         process_registry: Arc::clone(&process_registry),
+        audit_ctx: audit_ctx.clone(),
     };
 
     let hook_ipc_handle = spawn_hook_ipc_server(hook_ipc_config);
@@ -1892,8 +1900,6 @@ async fn run_loop_init(
 
     // ── Per-session identity map ───────────────────────────────────────────
     let session_map = init_session_map();
-
-    let audit_ctx = build_audit_ctx(machine_name);
 
     // Initialise the clipboard listener's audit emit context.
     crate::clipboard::listener::init_emit_context(audit_ctx.clone());

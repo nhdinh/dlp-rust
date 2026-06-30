@@ -102,6 +102,8 @@ pub struct HookIpcServer {
     health_aggregator: Option<Arc<crate::health_aggregator::HealthAggregator>>,
     /// Phase 58.5: Process registry for unhook ack routing and PollControl validation.
     registry: Option<Arc<crate::process_registry::ProcessRegistry>>,
+    /// Phase 58.5: Audit emit context for unhook failure events.
+    audit_ctx: Option<crate::audit_emitter::EmitContext>,
 }
 
 impl HookIpcServer {
@@ -120,6 +122,7 @@ impl HookIpcServer {
             hash_cache: None,
             health_aggregator: None,
             registry: None,
+            audit_ctx: None,
         }
     }
 
@@ -153,6 +156,7 @@ impl HookIpcServer {
             hash_cache: None,
             health_aggregator: None,
             registry: None,
+            audit_ctx: None,
         }
     }
 
@@ -177,6 +181,7 @@ impl HookIpcServer {
             hash_cache: None,
             health_aggregator: None,
             registry: None,
+            audit_ctx: None,
         }
     }
 
@@ -202,6 +207,7 @@ impl HookIpcServer {
             hash_cache: None,
             health_aggregator: None,
             registry: None,
+            audit_ctx: None,
         }
     }
 
@@ -248,6 +254,12 @@ impl HookIpcServer {
         self
     }
 
+    /// Phase 58.5: Sets the audit context used for unhook failure events.
+    pub fn with_audit_ctx(mut self, ctx: crate::audit_emitter::EmitContext) -> Self {
+        self.audit_ctx = Some(ctx);
+        self
+    }
+
     /// Runs the blocking accept loop on the current thread.
     ///
     /// Callers should spawn this in a dedicated `std::thread`.  Connections
@@ -274,6 +286,7 @@ impl HookIpcServer {
             self.hash_cache,
             self.health_aggregator,
             self.registry,
+            self.audit_ctx.as_ref(),
         )
     }
 }
@@ -319,6 +332,7 @@ fn accept_loop(
     hash_cache: Option<crate::hash_cache::HashCache>,
     health_aggregator: Option<Arc<crate::health_aggregator::HealthAggregator>>,
     registry: Option<Arc<crate::process_registry::ProcessRegistry>>,
+    audit_ctx: Option<&crate::audit_emitter::EmitContext>,
 ) -> Result<()> {
     let mut pipe = first_pipe;
     loop {
@@ -356,6 +370,7 @@ fn accept_loop(
             hash_cache.as_ref(),
             health_aggregator.as_ref(),
             registry.as_ref(),
+            audit_ctx,
         ) {
             warn!(error = %e, "Hook IPC: connection handler error");
         }
@@ -377,6 +392,7 @@ fn handle_connection(
     hash_cache: Option<&crate::hash_cache::HashCache>,
     health_aggregator: Option<&Arc<crate::health_aggregator::HealthAggregator>>,
     registry: Option<&Arc<crate::process_registry::ProcessRegistry>>,
+    audit_ctx: Option<&crate::audit_emitter::EmitContext>,
 ) -> Result<()> {
     loop {
         let frame = match read_frame(pipe) {
@@ -576,15 +592,9 @@ fn handle_connection(
                         if let Some(r) = registry {
                             r.record_unhooked(&key);
                         }
-                    } else if let Some(ref err) = ack.error {
+                    } else if let (Some(ctx), Some(ref err)) = (audit_ctx, &ack.error) {
                         crate::audit_emitter::emit_unhook_audit(
-                            &crate::audit_emitter::EmitContext {
-                                agent_id: "AGENT-01".to_string(),
-                                session_id: 0,
-                                user_sid: "S-1-5-18".to_string(),
-                                user_name: "SYSTEM".to_string(),
-                                machine_name: None,
-                            },
+                            ctx,
                             dlp_common::EventType::UnhookFailure,
                             ack.pid,
                             false,
