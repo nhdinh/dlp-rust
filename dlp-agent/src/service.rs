@@ -2061,7 +2061,9 @@ async fn run_loop_init(
         dacl_watcher_handle_opt,
         dacl_poll_handle_opt,
         dacl_staging_opt,
+        dacl_gc_shutdown_opt,
         dacl_gc_handle_opt,
+        dacl_removal_shutdown_opt,
         dacl_removal_handle_opt,
     ) = init_dacl_watcher(&agent_config, ad_client.as_ref().as_ref()).await;
 
@@ -2222,9 +2224,9 @@ async fn run_loop_init(
         dacl_watcher_handle: dacl_watcher_handle_opt,
         dacl_poll_handle: dacl_poll_handle_opt,
         dacl_staging: dacl_staging_opt,
-        dacl_gc_shutdown: None,
+        dacl_gc_shutdown: dacl_gc_shutdown_opt,
         dacl_gc_handle: dacl_gc_handle_opt,
-        dacl_removal_shutdown: None,
+        dacl_removal_shutdown: dacl_removal_shutdown_opt,
         dacl_removal_handle: dacl_removal_handle_opt,
         // Phase 53: ETW Kernel-File consumer.
         etw_consumer: Some(etw_consumer),
@@ -2573,12 +2575,14 @@ async fn init_dacl_watcher(
     Option<tokio::task::JoinHandle<()>>,
     Option<tokio::task::JoinHandle<()>>,
     Option<Arc<crate::dacl_staging::DaclStaging>>,
+    Option<tokio::sync::watch::Sender<bool>>,
     Option<tokio::task::JoinHandle<()>>,
+    Option<tokio::sync::watch::Sender<bool>>,
     Option<tokio::task::JoinHandle<()>>,
 ) {
     if agent_config.monitored_paths.is_empty() {
         info!("no monitored paths configured — skipping DaclWatcher");
-        return (None, None, None, None, None, None, None);
+        return (None, None, None, None, None, None, None, None, None);
     }
 
     // Phase 52-07: Create staging layer for two-phase removal protocol.
@@ -2694,11 +2698,11 @@ async fn init_dacl_watcher(
     let poll_handle = watcher.start_poll_backstop(60, poll_shutdown_rx);
 
     // Phase 52-07: Spawn GC task for expired staging rows (5-minute TTL, 60s interval).
-    let (_gc_shutdown_tx, gc_shutdown_rx) = tokio::sync::watch::channel(false);
+    let (gc_shutdown_tx, gc_shutdown_rx) = tokio::sync::watch::channel(false);
     let gc_handle = crate::dacl_staging::spawn_gc_task(Arc::clone(&staging), 60, 5, gc_shutdown_rx);
 
     // Phase 52-07: Spawn removal application task (30s interval).
-    let (_removal_shutdown_tx, removal_shutdown_rx) = tokio::sync::watch::channel(false);
+    let (removal_shutdown_tx, removal_shutdown_rx) = tokio::sync::watch::channel(false);
     let watcher_arc = std::sync::Arc::new(watcher);
     let removal_handle = spawn_removal_application_task(
         Arc::clone(&staging),
@@ -2714,7 +2718,9 @@ async fn init_dacl_watcher(
         Some(repair_handle),
         Some(poll_handle),
         Some(staging),
+        Some(gc_shutdown_tx),
         Some(gc_handle),
+        Some(removal_shutdown_tx),
         Some(removal_handle),
     )
 }
@@ -2730,11 +2736,13 @@ async fn init_dacl_watcher_without_staging(
     Option<tokio::task::JoinHandle<()>>,
     Option<tokio::task::JoinHandle<()>>,
     Option<Arc<crate::dacl_staging::DaclStaging>>,
+    Option<tokio::sync::watch::Sender<bool>>,
     Option<tokio::task::JoinHandle<()>>,
+    Option<tokio::sync::watch::Sender<bool>>,
     Option<tokio::task::JoinHandle<()>>,
 ) {
     if agent_config.monitored_paths.is_empty() {
-        return (None, None, None, None, None, None, None);
+        return (None, None, None, None, None, None, None, None, None);
     }
 
     let watcher = crate::dacl_repair_watcher::DaclWatcher::new();
@@ -2791,6 +2799,8 @@ async fn init_dacl_watcher_without_staging(
         Some(repair_shutdown_tx),
         Some(repair_handle),
         Some(poll_handle),
+        None,
+        None,
         None,
         None,
         None,
