@@ -323,6 +323,14 @@ pub struct AgentConfig {
     /// config push. Defaults to `PerPolicy` for backward compatibility.
     #[serde(default)]
     pub enforcement: EnforcementConfig,
+
+    /// Phase 58.5: Maximum time in milliseconds to wait for injected processes
+    /// to acknowledge an unhook request during agent shutdown.
+    ///
+    /// When `None`, defaults to 30,000 ms (30 s). Values below 1,000 ms are
+    /// clamped up to 1,000 ms to avoid a degenerate wait.
+    #[serde(default)]
+    pub unhook_wait_budget_ms: Option<u64>,
 }
 
 impl AgentConfig {
