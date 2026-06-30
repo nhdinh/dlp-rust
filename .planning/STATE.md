@@ -6,14 +6,14 @@ current_phase: 59
 current_phase_name: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 status: completed
 stopped_at: Phase 58.3 context gathered
-last_updated: "2026-06-29T11:41:56.067Z"
+last_updated: "2026-06-30T02:10:16.109Z"
 last_activity: 2026-06-29
 last_activity_desc: Phase 58.4 complete, transitioned to Phase 59
 progress:
   total_phases: 47
   completed_phases: 37
-  total_plans: 193
-  completed_plans: 171
+  total_plans: 197
+  completed_plans: 172
   percent: 79
 ---
 
@@ -179,7 +179,7 @@ Phase 59 and later are complete and shipped as part of v0.11.0.
 
 ## Session Continuity
 
-Last session: 2026-06-29T09:52:26.463Z
+Last session: 2026-06-30T02:07:48.802Z
 Stopped at: Phase 58.3 context gathered
 Resume file: .planning/phases/58.3-close-gap-ops-04-execute-physical-windows-11-uat/58.3-CONTEXT.md
 
@@ -221,6 +221,7 @@ Resume file: .planning/phases/58.3-close-gap-ops-04-execute-physical-windows-11-
 | Phase 58.2 P03 | ~45min | 4 tasks | 3 files |
 | Phase 58.4 P03 | 25min | 4 tasks | 7 files | DIFF-04 health snapshot emission + ingestion |
 | Phase 58.4 P04 | 25min | 3 tasks | 5 files |
+| Phase 58.5 P01 | 18 min | 2 tasks | 2 files |
 
 ## Quick Tasks Completed
 
@@ -244,3 +245,6 @@ Resume file: .planning/phases/58.3-close-gap-ops-04-execute-physical-windows-11-
 - [Phase 58.4 Plan 03]: Health snapshot emission is best-effort: pipe errors are ignored so that health telemetry never blocks the hooked file-operation path.
 - [Phase 58.4 Plan 03]: DIFF-04 complete — 303 dlp-hook-dll tests pass, 899 dlp-agent tests pass, 8 integration tests pass, clippy clean. HookHealthSnapshot emitted every 100 pipe round-trips and on every FailState transition; agent-side HealthAggregator ingests one-way frames and maintains 12-snapshot rolling history.
 - [Phase 58.4]: Made start_agent_mock_server pub for cross-module test reuse in trampolines.rs
+- [Phase ?]: Placed new IpcPayloadV1 variants after HashEvidence to preserve existing bincode discriminant indexes
+- [Phase ?]: Included creation_time in PollControl and UnhookAck to support PID-reuse-safe ProcessKey correlation in later waves
+- [Phase ?]: UnhookFailure triggers_alert=true; AgentShutdownUnhook and WatchdogSelfUnload trigger no real-time alert
