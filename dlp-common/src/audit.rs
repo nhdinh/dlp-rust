@@ -234,6 +234,12 @@ pub enum EventType {
     /// Emitted when the agent's health state machine transitions between
     /// DeviceHealthStatus variants.
     DeviceHealthChange,
+    /// Phase 58.5: Agent initiated unhook of all injected processes during graceful shutdown.
+    AgentShutdownUnhook,
+    /// Phase 58.5: Hook DLL watchdog detected agent absence and self-unhooked.
+    WatchdogSelfUnload,
+    /// Phase 58.5: Unhook command failed or ack was not received.
+    UnhookFailure,
 }
 
 impl EventType {
@@ -273,6 +279,9 @@ impl EventType {
                 | Self::VolumeArrival
                 | Self::ChainBreakDetected
                 | Self::DeviceHealthChange
+                | Self::AgentShutdownUnhook
+                | Self::WatchdogSelfUnload
+                | Self::UnhookFailure
         )
     }
 
@@ -289,6 +298,7 @@ impl EventType {
                 | Self::BypassAlertDetected
                 | Self::ChainBreakDetected
                 | Self::DeviceHealthChange
+                | Self::UnhookFailure
         )
     }
 }
@@ -1910,5 +1920,61 @@ mod tests {
         assert!(event.content_sha256.is_none());
         assert!(event.hash_truncated.is_none());
         assert!(event.hash_skipped.is_none());
+    }
+
+    // --- Phase 58.5: Unhook lifecycle event types ---
+
+    #[test]
+    fn test_agent_shutdown_unhook_routed_to_siem() {
+        assert!(EventType::AgentShutdownUnhook.routed_to_siem());
+    }
+
+    #[test]
+    fn test_watchdog_self_unload_routed_to_siem() {
+        assert!(EventType::WatchdogSelfUnload.routed_to_siem());
+    }
+
+    #[test]
+    fn test_unhook_failure_routed_to_siem() {
+        assert!(EventType::UnhookFailure.routed_to_siem());
+    }
+
+    #[test]
+    fn test_unhook_failure_triggers_alert() {
+        assert!(EventType::UnhookFailure.triggers_alert());
+    }
+
+    #[test]
+    fn test_agent_shutdown_unhook_does_not_trigger_alert() {
+        assert!(!EventType::AgentShutdownUnhook.triggers_alert());
+    }
+
+    #[test]
+    fn test_watchdog_self_unload_does_not_trigger_alert() {
+        assert!(!EventType::WatchdogSelfUnload.triggers_alert());
+    }
+
+    #[test]
+    fn test_unhook_event_types_serde_roundtrip() {
+        for event_type in [
+            EventType::AgentShutdownUnhook,
+            EventType::WatchdogSelfUnload,
+            EventType::UnhookFailure,
+        ] {
+            let event = AuditEvent::new(
+                event_type,
+                "S-1-5-21-1".to_string(),
+                "jsmith".to_string(),
+                r"C:\Data\Secret.docx".to_string(),
+                Classification::T3,
+                Action::WRITE,
+                Decision::DENY,
+                "AGENT-01".to_string(),
+                1,
+            );
+            let json = serde_json::to_string(&event).unwrap();
+            let rt: AuditEvent = serde_json::from_str(&json).unwrap();
+            assert_eq!(rt.event_type, event_type);
+        }
     }
 }
