@@ -169,6 +169,82 @@ pub fn send_hash_evidence(
     send_raw_oneway(pipe_name, &payload)
 }
 
+/// Send an `UnhookAck` frame to the agent over the named pipe.
+///
+/// This is a fire-and-send helper used by the hook DLL to acknowledge an
+/// `UnhookCommand`. No response is expected.
+///
+/// # Arguments
+///
+/// * `pipe_name` — The named pipe path (e.g., `r"\\.\pipe\DlpHookPipe"`).
+/// * `ack` — The acknowledgement payload.
+///
+/// # Errors
+///
+/// Returns `PipeError::ConnectionRefused` if the pipe does not exist.
+/// Returns `PipeError::Malformed` if bincode serialization fails.
+/// Returns `PipeError::Win32(u32)` for unexpected Win32 errors.
+pub fn send_unhook_ack(
+    pipe_name: &str,
+    ack: &dlp_common::hook_ipc::UnhookAck,
+) -> Result<(), PipeError> {
+    let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+        payload: dlp_common::hook_ipc::IpcPayloadV1::UnhookAck(ack.clone()),
+    });
+    let payload = match bincode::serialize(&envelope) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "send_unhook_ack: bincode serialization failed");
+            return Err(PipeError::Malformed);
+        }
+    };
+    send_raw_oneway(pipe_name, &payload)
+}
+
+/// Poll the agent for a pending control command.
+///
+/// Sends a `PollControl` request and returns the agent's `ControlResponse`.
+/// If the pipe is unreachable or the response is malformed, returns an error
+/// and the caller should treat it as a no-op (no unhook action).
+///
+/// # Arguments
+///
+/// * `pipe_name` — The named pipe path.
+/// * `poll` — The poll payload containing this process's pid and creation_time.
+///
+/// # Errors
+///
+/// Returns `PipeError::ConnectionRefused` if the pipe does not exist.
+/// Returns `PipeError::Timeout` if the response takes longer than `timeout_ms`.
+/// Returns `PipeError::Malformed` if the response cannot be decoded.
+pub fn poll_control(
+    pipe_name: &str,
+    poll: &dlp_common::hook_ipc::PollControl,
+    timeout_ms: u32,
+) -> Result<dlp_common::hook_ipc::ControlResponse, PipeError> {
+    let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+        payload: dlp_common::hook_ipc::IpcPayloadV1::PollControl(poll.clone()),
+    });
+    let request_payload = match bincode::serialize(&envelope) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "poll_control: bincode serialization failed");
+            return Err(PipeError::Malformed);
+        }
+    };
+    let response_bytes = send_raw_request(pipe_name, &request_payload, timeout_ms)?;
+    match bincode::deserialize(&response_bytes) {
+        Ok(dlp_common::hook_ipc::IpcEnvelope::V1(msg)) => match msg.payload {
+            dlp_common::hook_ipc::IpcPayloadV1::ControlResponse(resp) => Ok(resp),
+            _ => Err(PipeError::Malformed),
+        },
+        Err(e) => {
+            tracing::warn!(error = %e, "poll_control: bincode deserialization failed");
+            Err(PipeError::Malformed)
+        }
+    }
+}
+
 /// Fire-and-send helper for health snapshot frames that does not wait for a response.
 ///
 /// Connects to the named pipe, serializes the [`HookHealthSnapshot`] into an

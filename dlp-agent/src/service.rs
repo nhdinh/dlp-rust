@@ -2060,6 +2060,12 @@ async fn run_loop_init(
         "enforcement subsystems started"
     );
 
+    // ── Phase 58.5: Reconcile watchdog self-unload evidence ─────────────────
+    reconcile_watchdog_evidence(
+        &audit_ctx,
+        Some(Arc::clone(&process_registry)),
+    );
+
     RunLoopContext {
         file_handle,
         file_monitor: file_monitor_for_shutdown,
@@ -2132,6 +2138,114 @@ async fn run_loop_init(
         health_push_handle: None,
         // Phase 58-06: Override request processing task (DIFF-01).
         override_handle: Some(override_handle),
+    }
+}
+
+/// Reconcile watchdog self-unload evidence persisted by the hook DLL.
+///
+/// When the hook DLL's watchdog detects that the agent is unreachable, it
+/// persists a small JSON file to `C:\ProgramData\DLP\WatchdogSelfUnload` and
+/// self-unloads. On agent restart, this function reads those files, emits audit
+/// events, and removes them.
+///
+/// # Arguments
+///
+/// * `audit_ctx` — The audit emit context.
+/// * `process_registry` — Optional process registry to mark processes as exited.
+fn reconcile_watchdog_evidence(
+    audit_ctx: &crate::audit_emitter::EmitContext,
+    process_registry: Option<Arc<crate::process_registry::ProcessRegistry>>,
+) {
+    use dlp_common::{Action, AuditEvent, Classification, Decision, EventType};
+
+    let dir = std::path::PathBuf::from(r"C:\ProgramData\DLP\WatchdogSelfUnload");
+    if !dir.exists() {
+        return;
+    }
+
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(e) => e,
+        Err(e) => {
+            warn!(dir = %dir.display(), error = %e, "cannot read watchdog evidence directory");
+            return;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path
+            .extension()
+            .is_some_and(|ext| ext.eq_ignore_ascii_case("json"))
+        {
+            continue;
+        }
+
+        let content = match std::fs::read_to_string(&path) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!(path = %path.display(), error = %e, "cannot read watchdog evidence file");
+                continue;
+            }
+        };
+
+        let evidence: serde_json::Value = match serde_json::from_str(&content) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!(path = %path.display(), error = %e, "cannot parse watchdog evidence file");
+                continue;
+            }
+        };
+
+        let pid = evidence
+            .get("pid")
+            .and_then(|v| v.as_u64())
+            .map(|v| v as u32);
+        let creation_time = evidence
+            .get("creation_time")
+            .and_then(|v| v.as_u64());
+        let reason = evidence
+            .get("reason")
+            .and_then(|v| v.as_str())
+            .unwrap_or("watchdog_timeout");
+
+        let resource_path = pid.map_or_else(
+            || "unknown".to_string(),
+            |p| format!(r"process://{}/watchdog_self_unload", p),
+        );
+
+        let mut event = AuditEvent::new(
+            EventType::WatchdogSelfUnload,
+            audit_ctx.user_sid.clone(),
+            audit_ctx.user_name.clone(),
+            resource_path,
+            Classification::T1,
+            Action::READ,
+            Decision::ALLOW,
+            audit_ctx.agent_id.clone(),
+            audit_ctx.session_id,
+        );
+
+        // Stash the raw evidence JSON and reason in fields that are serialized
+        // to the audit log for forensics. `justification` carries the reason;
+        // `correlation_id` is overwritten by `AuditEvent::new`, so we preserve
+        // the evidence content via `policy_name` (diagnostic only).
+        event.justification = Some(format!("reason={}; evidence={}", reason, content));
+
+        crate::audit_emitter::emit_audit(audit_ctx, &mut event);
+
+        // Mark the process as exited in the registry, if available.
+        if let (Some(pid), Some(creation_time), Some(ref registry)) =
+            (pid, creation_time, &process_registry)
+        {
+            registry.record_exited(crate::process_registry::ProcessKey {
+                pid,
+                creation_time,
+            });
+        }
+
+        if let Err(e) = std::fs::remove_file(&path) {
+            warn!(path = %path.display(), error = %e, "cannot remove watchdog evidence file");
+        }
     }
 }
 

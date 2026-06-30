@@ -30,6 +30,7 @@ windows = { version = "0.62", features = [
     "Wdk_System_Threading",
 ] }
 serde = { workspace = true }
+serde_json = { workspace = true }
 bincode = "1.3"
 tracing = { workspace = true }
 # Phase 51: Detours-style ntdll syscall-stub trampolines.

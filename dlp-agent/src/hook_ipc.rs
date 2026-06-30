@@ -504,6 +504,57 @@ fn handle_connection(
                         approval_override: None,
                     })
                 }
+                IpcPayloadV1::PollControl(ref poll) => {
+                    debug!(pid = poll.pid, creation_time = poll.creation_time, "Hook IPC: poll control received");
+                    // Default response is no pending command. Plan 58.5-03 will
+                    // wire the agent's shutdown orchestration to reply with
+                    // ControlResponse { command: Some(UnhookCommand) }.
+                    IpcPayloadV1::ControlResponse(dlp_common::hook_ipc::ControlResponse {
+                        command: None,
+                    })
+                }
+                IpcPayloadV1::UnhookAck(ref ack) => {
+                    debug!(
+                        pid = ack.pid,
+                        creation_time = ack.creation_time,
+                        success = ack.success,
+                        "Hook IPC: unhook ack received"
+                    );
+                    // Forward to bypass correlator for now; Plan 58.5-03 will
+                    // route this to the process registry and audit emitter.
+                    if let Some(tx) = bypass_tx {
+                        let bypass_alert = dlp_common::hook_ipc::BypassAlert {
+                            reason: dlp_common::hook_ipc::BypassReason::HookOverwritten,
+                            stub_name: "unhook_ack".to_string(),
+                            pid: ack.pid,
+                            timestamp_secs: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs(),
+                            version: 2,
+                            agent_id: String::new(),
+                            image_path: String::new(),
+                            image_sha256: None,
+                            file_path: String::new(),
+                            operation: "unhook".to_string(),
+                            file_object: 0,
+                            qpc_timestamp: 0,
+                            severity: if ack.success { "info".to_string() } else { "warn".to_string() },
+                            correlation_reason: ack
+                                .error
+                                .clone()
+                                .unwrap_or_else(|| "UnhookAck received".to_string()),
+                        };
+                        let _ = tx.send(bypass_alert);
+                    }
+                    IpcPayloadV1::Response(HookResponse {
+                        decision: dlp_common::Decision::ALLOW,
+                        reason: "unhook ack received".to_string(),
+                        cache_hint: None,
+                        cache_version: 0,
+                        approval_override: None,
+                    })
+                }
                 // Agent-to-DLL responses should not arrive on the server.
                 other => {
                     warn!(payload = ?other, "Hook IPC: unexpected payload from DLL");
