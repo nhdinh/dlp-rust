@@ -376,9 +376,11 @@ struct WatchdogEvidence {
     reason: String,
 }
 
-/// Read the current process creation time from the PEB.
+/// Read the current process creation time.
 ///
-/// Returns the creation time as a Unix timestamp in seconds, or None on failure.
+/// Returns the raw 64-bit FILETIME value (100-ns intervals since 1601-01-01)
+/// so it matches the agent's registry [`ProcessKey.creation_time`]. Returns
+/// `None` on failure.
 fn process_creation_time() -> Option<u64> {
     unsafe {
         let mut creation: i64 = 0;
@@ -395,10 +397,8 @@ fn process_creation_time() -> Option<u64> {
         if result.is_err() {
             return None;
         }
-        let filetime = creation as u64;
-        // Convert FILETIME (100ns since 1601-01-01) to Unix seconds.
-        let unix = filetime.saturating_sub(116_444_736_000_000_000) / 10_000_000;
-        Some(unix)
+        // Return the raw FILETIME so it matches the agent registry key.
+        Some(creation as u64)
     }
 }
 

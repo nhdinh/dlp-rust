@@ -543,7 +543,8 @@ pub struct UnhookCommand {
 pub struct UnhookAck {
     /// Process ID that was unhooked.
     pub pid: u32,
-    /// Process creation time (FILETIME low + high parts) for PID-reuse-safe correlation.
+    /// Process creation time as a raw 64-bit FILETIME value (100-ns intervals
+    /// since 1601-01-01) for PID-reuse-safe correlation.
     pub creation_time: u64,
     /// Whether the unhook succeeded.
     pub success: bool,
@@ -558,7 +559,8 @@ pub struct UnhookAck {
 pub struct PollControl {
     /// Process ID of the polling hooked process.
     pub pid: u32,
-    /// Process creation time (FILETIME low + high parts) for PID-reuse-safe correlation.
+    /// Process creation time as a raw 64-bit FILETIME value (100-ns intervals
+    /// since 1601-01-01) for PID-reuse-safe correlation.
     pub creation_time: u64,
 }
 
