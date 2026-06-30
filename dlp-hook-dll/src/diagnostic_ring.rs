@@ -79,8 +79,8 @@ pub fn drain_snapshots(limit: usize) -> Vec<DiagnosticSnapshot> {
 
     // Get current QPC and frequency for correct expiry calculation.
     let now_qpc = unsafe { query_performance_counter() };
-    let one_hour_ticks = unsafe { query_performance_frequency() }
-        .saturating_mul(ENTRY_EXPIRY_SECONDS);
+    let one_hour_ticks =
+        unsafe { query_performance_frequency() }.saturating_mul(ENTRY_EXPIRY_SECONDS);
 
     while result.len() < limit {
         let Some(snapshot) = ring.pop() else {

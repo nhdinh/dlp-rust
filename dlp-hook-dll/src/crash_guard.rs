@@ -226,9 +226,13 @@ pub fn with_reentrancy_guard<T>(f: impl FnOnce() -> T, fallback: impl FnOnce() -
     if REENTRANT.get() {
         return fallback();
     }
+    if !crate::enter_hook_call() {
+        return fallback();
+    }
     REENTRANT.set(true);
     let result = f();
     REENTRANT.set(false);
+    crate::exit_hook_call();
     result
 }
 
