@@ -88,10 +88,13 @@ impl std::fmt::Debug for HealthAggregator {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("HealthAggregator")
             .field("history_len", &self.history_len())
-            .field("last_status", &self.last_status.lock().unwrap_or_else(|e| {
-                tracing::error!("Mutex poisoned, recovering last_status");
-                e.into_inner()
-            }))
+            .field(
+                "last_status",
+                &self.last_status.lock().unwrap_or_else(|e| {
+                    tracing::error!("Mutex poisoned, recovering last_status");
+                    e.into_inner()
+                }),
+            )
             .field(
                 "consecutive_degraded",
                 &self.consecutive_degraded.lock().unwrap_or_else(|e| {

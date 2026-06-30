@@ -40,10 +40,7 @@ fn send_envelope(pipe: windows::Win32::Foundation::HANDLE, envelope: &IpcEnvelop
 /// Sets the global shutdown flag, connects a dummy client to unblock the
 /// server's `ConnectNamedPipe`, and joins the thread with a 2-second timeout.
 /// This prevents pipe/thread exhaustion when many serial tests run back-to-back.
-fn shutdown_and_join(
-    handle: std::thread::JoinHandle<()>,
-    pipe_name: &str,
-) {
+fn shutdown_and_join(handle: std::thread::JoinHandle<()>, pipe_name: &str) {
     dlp_agent::service::request_shutdown();
     // Connect a dummy client to unblock ConnectNamedPipe so the server
     // can see the shutdown flag and exit its accept loop.
