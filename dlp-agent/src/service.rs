@@ -2079,22 +2079,6 @@ async fn run_loop_init(
         Some(enforcer)
     };
 
-    // ── Phase 49: Universal Injection (ETW Process Watcher + Universal Injector) ──
-    let (
-        process_watcher_opt,
-        universal_injector_opt,
-        process_registry,
-        allowlist_matcher,
-        backstop_shutdown_tx,
-        backstop_handle,
-        retry_shutdown_tx,
-        retry_handle,
-    ) = init_universal_injection(
-        hook_injector_opt.as_ref(),
-        agent_config.universal_injection_enabled.unwrap_or(false),
-    )
-    .await;
-
     // ── Phase 53: ETW Kernel-File consumer + Bypass Correlator ────────────
     let mut etw_consumer = crate::etw_kernel_file::EtwKernelFileConsumer::new();
     let etw_consumer_state = etw_consumer.start(&agent_config);
