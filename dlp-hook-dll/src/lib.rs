@@ -712,8 +712,12 @@ pub(crate) unsafe fn resolve_nt_create_file() -> Option<NtCreateFileFn> {
 ///
 /// Called by the agent before unloading the DLL from a target process,
 /// automatically on `DLL_PROCESS_DETACH`, and by the watchdog self-unload path.
-#[unsafe(no_mangle)]
-pub extern "system" fn UnhookAll() {
+/// Internal implementation of `UnhookAll` that reports whether every hook
+/// entry could be restored and active calls drained.
+///
+/// The exported `UnhookAll` ignores the result for FFI compatibility; the
+/// `handle_unhook_command` path uses it to set `UnhookAck.success`.
+pub(crate) fn unhook_all_internal() -> bool {
     debug_log("[dlp-hook] UnhookAll called — entering shutdown\0");
     SHUTTING_DOWN.store(true, Ordering::SeqCst);
 
@@ -721,6 +725,7 @@ pub extern "system" fn UnhookAll() {
     const DRAIN_TIMEOUT_MS: u64 = 5_000;
     const DRAIN_POLL_US: u64 = 100;
     let deadline = std::time::Instant::now() + std::time::Duration::from_millis(DRAIN_TIMEOUT_MS);
+    let mut drain_timed_out = false;
     loop {
         let active = ACTIVE_CALLS.load(Ordering::SeqCst);
         if active == 0 {
@@ -728,18 +733,26 @@ pub extern "system" fn UnhookAll() {
         }
         if std::time::Instant::now() >= deadline {
             debug_log("[dlp-hook] UnhookAll: active-call drain timed out\0");
+            drain_timed_out = true;
             break;
         }
         std::thread::sleep(std::time::Duration::from_micros(DRAIN_POLL_US));
     }
 
     // Restore IAT entries.
+    let mut restore_success = true;
     unsafe {
         for hook in HOOKS.iter() {
             let iat_opt = *(hook.iat_ptr as *const Option<*mut usize>);
             let orig_opt = *(hook.original_ptr as *const Option<usize>);
-            if let (Some(iat), Some(orig)) = (iat_opt, orig_opt) {
-                let _ = restore_iat(iat, orig);
+            match (iat_opt, orig_opt) {
+                (Some(iat), Some(orig)) => {
+                    if !restore_iat(iat, orig) {
+                        restore_success = false;
+                    }
+                }
+                (Some(_), None) | (None, Some(_)) => restore_success = false,
+                (None, None) => {}
             }
         }
     }
@@ -756,6 +769,13 @@ pub extern "system" fn UnhookAll() {
     hook_journal::unmap_journal();
 
     debug_log("[dlp-hook] UnhookAll complete\0");
+
+    restore_success && !drain_timed_out
+}
+
+#[unsafe(no_mangle)]
+pub extern "system" fn UnhookAll() {
+    let _ = unhook_all_internal();
 }
 
 /// Returns true if the DLL is currently shutting down.
@@ -819,6 +839,13 @@ impl ActiveCallGuard {
 }
 
 #[cfg(any(test, feature = "test-helpers"))]
+impl Default for ActiveCallGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(any(test, feature = "test-helpers"))]
 impl Drop for ActiveCallGuard {
     fn drop(&mut self) {
         if self.active {
@@ -852,6 +879,16 @@ pub unsafe fn self_unload() -> ! {
             GetModuleHandleW(None).unwrap_or_default().into()
         });
     FreeLibraryAndExitThread(instance.into(), 0);
+}
+
+/// Test-only accessor that returns the DLL instance captured in `DllMain`.
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn self_unload_check() -> Option<HINSTANCE> {
+    DLL_INSTANCE
+        .lock()
+        .ok()
+        .and_then(|g| *g)
+        .map(|raw| HINSTANCE(raw as *mut std::ffi::c_void))
 }
 
 // ---------------------------------------------------------------------------
@@ -987,9 +1024,15 @@ pub(crate) unsafe fn extract_nt_path(objectattributes: *mut std::ffi::c_void) ->
 mod tests {
     use super::*;
     use dlp_agent::hook_ipc::HookIpcServer;
+    use dlp_common::hook_ipc::{ControlResponse, UnhookCommand, UnhookReason};
     use dlp_common::{Decision, HookRequest, HookResponse};
     use std::sync::Arc;
     use std::time::Duration;
+
+    /// Serializes Phase 58.5 tests that mutate process-global hook state
+    /// (IAT restore, ntdll patcher, control thread lifecycle, shared-memory
+    /// mappings). Prevents parallel tests from corrupting each other's state.
+    pub(crate) static PHASE_58_5_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     /// Starts a [`HookIpcServer`] on a dedicated thread using the given
     /// handler, waits until the pipe is ready, and returns the thread handle.
@@ -1159,6 +1202,7 @@ mod tests {
 
     #[test]
     fn unhook_all_is_idempotent() {
+        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
         UnhookAll();
         UnhookAll();
     }
@@ -1277,5 +1321,398 @@ mod tests {
                 );
             }
         }
+    }
+
+    // --- Phase 58.5: Unhook protocol tests ---
+
+    #[test]
+    fn unhook_all_sets_shutting_down() {
+        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        // Ensure we start from a clean state.
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+        UnhookAll();
+        assert!(SHUTTING_DOWN.load(Ordering::SeqCst));
+        // Reset for subsequent tests.
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn unhook_all_unpatches_ntdll_stubs() {
+        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+        INITIALISED.store(true, Ordering::SeqCst);
+
+        // Seed the global patcher with simulated Patched states.
+        let _ = lazy_init_ntdll_patcher(true);
+        if let Some(patcher_lock) = NTDLL_PATCHER.get() {
+            let mut patcher = patcher_lock.lock().unwrap();
+            patcher.set_stub_state_for_test(
+                crate::ntdll_patcher::StubName::NtCreateFile,
+                crate::ntdll_patcher::StubPatchState::Patched,
+            );
+            patcher.set_stub_state_for_test(
+                crate::ntdll_patcher::StubName::NtOpenFile,
+                crate::ntdll_patcher::StubPatchState::Patched,
+            );
+        }
+
+        UnhookAll();
+
+        if let Some(patcher_lock) = NTDLL_PATCHER.get() {
+            let patcher = patcher_lock.lock().unwrap();
+            assert_eq!(
+                *patcher.stub_state(crate::ntdll_patcher::StubName::NtCreateFile),
+                crate::ntdll_patcher::StubPatchState::Unpatched
+            );
+            assert_eq!(
+                *patcher.stub_state(crate::ntdll_patcher::StubName::NtOpenFile),
+                crate::ntdll_patcher::StubPatchState::Unpatched
+            );
+        }
+
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn unhook_all_unmaps_shared_memory() {
+        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+
+        // Seed the journal global with a dummy None; unmap_journal should clear it.
+        // We cannot easily create a real mapping here without Windows APIs, so we
+        // verify the public unmap functions are idempotent and reset globals.
+        crate::hook_journal::unmap_journal();
+        crate::classification_cache::unmap_cache();
+
+        UnhookAll();
+
+        // After UnhookAll the globals should remain None / empty.
+        assert!(crate::hook_journal::HookJournal::get().is_none());
+        assert!(crate::classification_cache::CacheLookup::get().is_none());
+    }
+
+    #[test]
+    fn unhook_all_infallible_per_stub() {
+        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        use windows::Win32::System::Memory::{
+            VirtualAlloc, MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE,
+        };
+
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+        INITIALISED.store(true, Ordering::SeqCst);
+
+        unsafe {
+            // Allocate a page to act as a corrupted IAT entry. restore_iat will
+            // attempt to write the original value back; using a real page avoids
+            // an access violation while still exercising the infallible loop.
+            let page = VirtualAlloc(None, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+            assert!(!page.is_null());
+            let iat = page as *mut usize;
+            *iat = 0xDEADBEEF;
+
+            IAT_CREATE_FILE_W = Some(iat);
+            // Write the original value as a usize bit-pattern through the same
+            // address that UnhookAll reads via the HOOKS table. The HOOKS table
+            // stores this static's address as *mut usize and reads it as
+            // Option<usize>, so the bit pattern is what matters for the test.
+            let original_ptr = &raw mut ORIGINAL_CREATE_FILE_W as *mut Option<usize>;
+            *original_ptr = Some(0xBEEFDEAD);
+
+            UnhookAll();
+
+            // The corrupted entry should have been processed without panic.
+            // restore_iat writes the original value into the IAT page.
+            assert_eq!(*iat, 0xBEEFDEAD);
+
+            // Reset globals so later tests do not dereference the freed page.
+            IAT_CREATE_FILE_W = None;
+            ORIGINAL_CREATE_FILE_W = None;
+
+            let _ = windows::Win32::System::Memory::VirtualFree(
+                page,
+                0,
+                windows::Win32::System::Memory::VIRTUAL_FREE_TYPE(0x8000),
+            );
+        }
+
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn unhook_all_drains_active_calls() {
+        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+        ACTIVE_CALLS.store(0, Ordering::SeqCst);
+
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let barrier_clone = Arc::clone(&barrier);
+
+        let handle = std::thread::spawn(move || {
+            ACTIVE_CALLS.fetch_add(1, Ordering::SeqCst);
+            barrier_clone.wait();
+            // Hold the active call for a short time while UnhookAll drains.
+            std::thread::sleep(Duration::from_millis(50));
+            ACTIVE_CALLS.fetch_sub(1, Ordering::SeqCst);
+        });
+
+        barrier.wait();
+        // Give the spawned thread time to increment ACTIVE_CALLS.
+        std::thread::sleep(Duration::from_millis(10));
+        assert!(ACTIVE_CALLS.load(Ordering::SeqCst) > 0);
+
+        UnhookAll();
+
+        handle.join().unwrap();
+        // UnhookAll either waited for the active call to finish or timed out.
+        // In either case it should complete without panic.
+        assert_eq!(ACTIVE_CALLS.load(Ordering::SeqCst), 0);
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn handle_unhook_command_sends_success_ack() {
+        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+        crate::control_thread::reset_watchdog_test_state();
+        ACTIVE_CALLS.store(0, Ordering::SeqCst);
+
+        // Ensure no stale hook entries interfere with UnhookAll.
+        unsafe {
+            IAT_CREATE_FILE_W = None;
+            ORIGINAL_CREATE_FILE_W = None;
+        }
+
+        // Enable the mock ack sink.
+        std::env::set_var("DLP_HOOK_TEST_MOCK_ACK", "1");
+        let cmd = UnhookCommand {
+            reason: UnhookReason::AgentShutdown,
+            timestamp_secs: 1_700_000_000,
+        };
+        crate::control_thread::handle_unhook_command(cmd, std::process::id(), 12345);
+        std::env::remove_var("DLP_HOOK_TEST_MOCK_ACK");
+
+        let captured = {
+            let mut sink = crate::pipe_client::MOCK_UNHOOK_ACK_SINK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            sink.pop()
+        };
+        assert!(captured.is_some(), "expected an UnhookAck to be sent");
+        let captured = captured.unwrap();
+        assert!(captured.success);
+        assert_eq!(captured.pid, std::process::id());
+        assert_eq!(captured.creation_time, 12345);
+
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn handle_unhook_command_sends_failure_ack() {
+        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+        crate::control_thread::reset_watchdog_test_state();
+        ACTIVE_CALLS.store(0, Ordering::SeqCst);
+
+        // Force UnhookAll to report failure by creating an inconsistent hook
+        // entry: an IAT address is present but the saved original pointer is
+        // missing, so the restore cannot succeed.
+        std::env::set_var("DLP_HOOK_TEST_MOCK_ACK", "1");
+        let mut dummy_iat: usize = 0;
+        unsafe {
+            IAT_CREATE_FILE_W = Some(&mut dummy_iat as *mut usize);
+            ORIGINAL_CREATE_FILE_W = None;
+        }
+        let cmd = UnhookCommand {
+            reason: UnhookReason::AgentShutdown,
+            timestamp_secs: 1_700_000_000,
+        };
+        crate::control_thread::handle_unhook_command(cmd, std::process::id(), 12345);
+        std::env::remove_var("DLP_HOOK_TEST_MOCK_ACK");
+
+        unsafe {
+            IAT_CREATE_FILE_W = None;
+            ORIGINAL_CREATE_FILE_W = None;
+        }
+
+        let captured = {
+            let mut sink = crate::pipe_client::MOCK_UNHOOK_ACK_SINK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            sink.pop()
+        };
+        assert!(captured.is_some(), "expected an UnhookAck to be sent");
+        let captured = captured.unwrap();
+        assert!(
+            !captured.success,
+            "expected ack.success == false when UnhookAll fails"
+        );
+
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn control_poll_thread_starts_from_post_attach_path() {
+        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        // Reset control thread state so enter_hook_call will start it.
+        crate::control_thread::shutdown_control_thread();
+
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+        let started = crate::enter_hook_call();
+        assert!(started);
+
+        // Give the control thread time to transition to Running.
+        std::thread::sleep(Duration::from_millis(50));
+
+        crate::exit_hook_call();
+        crate::control_thread::shutdown_control_thread();
+    }
+
+    #[test]
+    fn control_poll_thread_triggers_after_grace_and_failures() {
+        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        crate::control_thread::reset_watchdog_test_state();
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+
+        // Provide three consecutive failures with a very short watchdog timeout.
+        // The first iteration establishes last_agent_response, so the watchdog
+        // should fire on the third failure.
+        let failures: Vec<_> = (0..4)
+            .map(|_| Err(crate::pipe_client::PipeError::ConnectionRefused))
+            .collect();
+
+        // Use a watchdog timeout (2500 ms) longer than one poll interval
+        // (1000 ms) so the first two failures fall inside the grace window
+        // and the third failure exceeds it.
+        let (iterations, triggered) =
+            crate::control_thread::run_control_loop_for_test(failures, 2_500, 5);
+
+        assert!(triggered, "watchdog should trigger after grace period");
+        assert!(
+            iterations >= 3,
+            "should take at least three iterations to exceed the window"
+        );
+
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn control_poll_thread_resets_on_success() {
+        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        crate::control_thread::reset_watchdog_test_state();
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+
+        // Two failures followed by a successful no-op response.
+        let results = vec![
+            Err(crate::pipe_client::PipeError::ConnectionRefused),
+            Err(crate::pipe_client::PipeError::ConnectionRefused),
+            Ok(ControlResponse { command: None }),
+        ];
+
+        // Use a watchdog timeout (2500 ms) longer than the two failures so
+        // the successful poll resets the timer before the watchdog fires.
+        let (_iterations, triggered) =
+            crate::control_thread::run_control_loop_for_test(results, 2_500, 5);
+
+        assert!(
+            !triggered,
+            "successful poll should reset failure counter and avoid watchdog"
+        );
+
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn control_poll_thread_handles_unhook_command() {
+        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        crate::control_thread::reset_watchdog_test_state();
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+        std::env::set_var("DLP_HOOK_TEST_MOCK_ACK", "1");
+
+        let results = vec![Ok(ControlResponse {
+            command: Some(UnhookCommand {
+                reason: UnhookReason::AgentShutdown,
+                timestamp_secs: 1_700_000_000,
+            }),
+        })];
+
+        let (_iterations, triggered) =
+            crate::control_thread::run_control_loop_for_test(results, 30_000, 5);
+
+        assert!(!triggered);
+        let captured = {
+            let mut sink = crate::pipe_client::MOCK_UNHOOK_ACK_SINK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            sink.pop()
+        };
+        assert!(captured.is_some(), "expected an UnhookAck");
+        let captured = captured.unwrap();
+        assert!(captured.success);
+
+        std::env::remove_var("DLP_HOOK_TEST_MOCK_ACK");
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn shutting_down_passes_through_create_file_w() {
+        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        crate::set_shutting_down_for_test(true);
+        // classify_and_log_path is the internal helper used by HookCreateFileW.
+        // When shutting down it must return None without attempting a pipe call.
+        let result = crate::trampolines::classify_and_log_path(
+            r"C:\test.txt",
+            "CREATE",
+            "CreateFileW",
+            0,
+            1,
+            None,
+            None,
+        );
+        crate::set_shutting_down_for_test(false);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn shutting_down_passes_through_nt_create_file() {
+        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        crate::set_shutting_down_for_test(true);
+        let result = crate::trampolines::classify_and_log_path(
+            r"C:\test.txt",
+            "CREATE",
+            "NtCreateFile",
+            0,
+            1,
+            None,
+            None,
+        );
+        crate::set_shutting_down_for_test(false);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn trampoline_entry_counts_active_calls() {
+        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        crate::set_shutting_down_for_test(false);
+        ACTIVE_CALLS.store(0, Ordering::SeqCst);
+
+        let before = crate::active_call_count();
+        {
+            let guard = crate::ActiveCallGuard::new();
+            assert!(guard.is_active());
+            assert_eq!(crate::active_call_count(), before + 1);
+        }
+        assert_eq!(crate::active_call_count(), before);
+    }
+
+    #[test]
+    fn dll_hinstance_captured_in_tests() {
+        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        // In the test binary DllMain is not invoked, so seed the instance and
+        // verify the test accessor returns it.
+        let host = unsafe { GetModuleHandleW(None).unwrap_or_default() };
+        if let Ok(mut guard) = DLL_INSTANCE.lock() {
+            *guard = Some(host.0 as isize);
+        }
+        assert!(crate::self_unload_check().is_some());
     }
 }

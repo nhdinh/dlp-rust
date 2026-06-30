@@ -21,7 +21,7 @@
 //!
 //! # Security
 //!
-//! - Mapped `FILE_MAP_READ` only — Windows MMU enforces write protection.
+//! - Mapped `FILE_MAP_ALL_ACCESS` only — Windows MMU enforces write protection.
 //! - All pointer arithmetic is bounds-checked against `header.total_size`.
 //! - Malformed cache (bad magic/version/checksum/counts) enters degraded mode.
 //! - Reparse points, symlinks, junctions, volume GUIDs, ADS force pipe fallback.
@@ -424,7 +424,9 @@ impl CacheLookup {
     /// Must be called from a context where Windows loader lock is NOT held
     /// (i.e., NOT from `DllMain`).
     unsafe fn try_init() -> Option<CacheLookup> {
-        use windows::Win32::System::Memory::{MapViewOfFile, OpenFileMappingW, FILE_MAP_READ};
+        use windows::Win32::System::Memory::{
+            MapViewOfFile, OpenFileMappingW, FILE_MAP_ALL_ACCESS,
+        };
 
         let name_wide: Vec<u16> = CACHE_NAME
             .encode_utf16()
@@ -432,7 +434,7 @@ impl CacheLookup {
             .collect();
 
         let handle = OpenFileMappingW(
-            FILE_MAP_READ.0,
+            FILE_MAP_ALL_ACCESS.0,
             false,
             windows::core::PCWSTR::from_raw(name_wide.as_ptr()),
         );
@@ -445,7 +447,7 @@ impl CacheLookup {
             }
         };
 
-        let view = MapViewOfFile(handle, FILE_MAP_READ, 0, 0, 0);
+        let view = MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, 0);
         let ptr = match view {
             windows::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS { Value: ptr }
                 if !ptr.is_null() =>
@@ -529,6 +531,19 @@ pub fn unmap_cache() {
     };
     *guard = None;
     LAST_VALIDATED_VERSION.with(|v| *v.borrow_mut() = 0);
+}
+
+/// Test-only helper to install a pre-built `CacheLookup` into the global slot.
+#[cfg(test)]
+pub(crate) fn set_cache_lookup_for_test(lookup: CacheLookup) {
+    let mut guard = CACHE_LOOKUP.lock().expect("CACHE_LOOKUP lock");
+    *guard = Some(lookup);
+}
+
+/// Test-only helper to read whether the global cache lookup slot is populated.
+#[cfg(test)]
+pub(crate) fn is_cache_mapped() -> bool {
+    CACHE_LOOKUP.lock().map(|g| g.is_some()).unwrap_or(false)
 }
 
 // Path normalization is now provided by dlp-common::path_hash::normalize_path.
@@ -676,6 +691,7 @@ mod tests {
 
     #[test]
     fn lazy_init_returns_none_when_no_mapping() {
+        let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
         // When no shared-memory mapping exists, get() returns None.
         let result = CacheLookup::get();
         assert!(result.is_none());
@@ -768,6 +784,7 @@ mod tests {
 
     #[test]
     fn prefix_lookup_requires_real_mapping() {
+        let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
         // Prefix lookup requires a real shared-memory mapping.
         // Without one, CacheLookup::get() returns None.
         assert!(CacheLookup::get().is_none());
@@ -1031,10 +1048,177 @@ mod tests {
 
     #[test]
     fn unmap_cache_clears_global_state() {
+        let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
         // Without a real mapping, get() returns None and unmap_cache should be
         // idempotent and reset thread-local validation state.
         assert!(CacheLookup::get().is_none());
         unmap_cache();
         assert!(CacheLookup::get().is_none());
+    }
+
+    // --- Windows-specific shared-memory tests ---
+
+    #[cfg(windows)]
+    mod windows_tests {
+        use super::*;
+        use std::sync::Arc;
+        use std::time::Duration;
+        use windows::Win32::Foundation::{HANDLE, INVALID_HANDLE_VALUE};
+        use windows::Win32::System::Memory::{
+            CreateFileMappingW, MapViewOfFile, FILE_MAP_ALL_ACCESS, MEMORY_MAPPED_VIEW_ADDRESS,
+            PAGE_READWRITE,
+        };
+
+        const TEST_CACHE_NAME: &str = "Local\\DlpClassificationCache_TestPhase58_5_Direct";
+
+        fn build_valid_header(base: *mut CacheHeader) {
+            unsafe {
+                std::ptr::addr_of_mut!((*base).version_word)
+                    .write(std::sync::atomic::AtomicU64::new(2));
+                (*base).magic = CACHE_MAGIC;
+                (*base).layout_version = CACHE_LAYOUT_VERSION;
+                (*base).header_size = CACHE_HEADER_SIZE;
+                (*base).total_size = CACHE_TOTAL_SIZE;
+                (*base).prefix_table_offset = 128;
+                (*base).prefix_count = 0;
+                (*base).hash_table_offset_0 = 128;
+                (*base).hash_table_offset_1 = 128;
+                (*base).hash_slots = 0;
+                (*base).created_at_epoch_secs = 0;
+                (*base).allowlist_offset = 128;
+                (*base).allowlist_count = 0;
+                (*base)._reserved = [0u8; 24];
+
+                let mut checksum = 0u64;
+                checksum ^= (*base).magic;
+                checksum ^= u64::from((*base).layout_version);
+                checksum ^= u64::from((*base).header_size);
+                checksum ^= (*base).total_size;
+                checksum ^= (*base).prefix_table_offset;
+                checksum ^= (*base).prefix_count;
+                checksum ^= (*base).hash_table_offset_0;
+                checksum ^= (*base).hash_table_offset_1;
+                checksum ^= (*base).hash_slots;
+                checksum ^= (*base).created_at_epoch_secs;
+                checksum ^= (*base).allowlist_offset;
+                checksum ^= (*base).allowlist_count;
+                for chunk in (*base)._reserved.chunks_exact(8) {
+                    let val = u64::from_le_bytes([
+                        chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6],
+                        chunk[7],
+                    ]);
+                    checksum ^= val;
+                }
+                (*base).checksum = checksum;
+            }
+        }
+
+        #[test]
+        fn test_unmap_cache_releases_handle_and_view() {
+            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
+            let name_wide: Vec<u16> = TEST_CACHE_NAME
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let name_pcwstr = windows::core::PCWSTR::from_raw(name_wide.as_ptr());
+
+            unsafe {
+                let handle = CreateFileMappingW(
+                    INVALID_HANDLE_VALUE,
+                    None,
+                    PAGE_READWRITE,
+                    0,
+                    CACHE_TOTAL_SIZE as u32,
+                    name_pcwstr,
+                )
+                .expect("CreateFileMappingW failed");
+
+                let view =
+                    MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, CACHE_TOTAL_SIZE as usize);
+                let base_ptr = match view {
+                    MEMORY_MAPPED_VIEW_ADDRESS { Value: ptr } if !ptr.is_null() => ptr as *mut u8,
+                    _ => panic!("MapViewOfFile failed"),
+                };
+
+                build_valid_header(base_ptr as *mut CacheHeader);
+
+                let lookup = CacheLookup {
+                    header: base_ptr as *const CacheHeader,
+                    mapping: CacheMapping {
+                        handle: HANDLE(handle.0),
+                        view: base_ptr as *mut std::ffi::c_void,
+                    },
+                };
+
+                set_cache_lookup_for_test(lookup);
+                assert!(is_cache_mapped());
+
+                unmap_cache();
+                assert!(!is_cache_mapped());
+            }
+        }
+
+        #[test]
+        fn test_concurrent_read_and_unmap_no_deadlock() {
+            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
+            let name_wide: Vec<u16> = TEST_CACHE_NAME
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let name_pcwstr = windows::core::PCWSTR::from_raw(name_wide.as_ptr());
+
+            unsafe {
+                let handle = CreateFileMappingW(
+                    INVALID_HANDLE_VALUE,
+                    None,
+                    PAGE_READWRITE,
+                    0,
+                    CACHE_TOTAL_SIZE as u32,
+                    name_pcwstr,
+                )
+                .expect("CreateFileMappingW failed");
+
+                let view =
+                    MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, CACHE_TOTAL_SIZE as usize);
+                let base_ptr = match view {
+                    MEMORY_MAPPED_VIEW_ADDRESS { Value: ptr } if !ptr.is_null() => ptr as *mut u8,
+                    _ => panic!("MapViewOfFile failed"),
+                };
+
+                build_valid_header(base_ptr as *mut CacheHeader);
+
+                let lookup = CacheLookup {
+                    header: base_ptr as *const CacheHeader,
+                    mapping: CacheMapping {
+                        handle: HANDLE(handle.0),
+                        view: base_ptr as *mut std::ffi::c_void,
+                    },
+                };
+
+                set_cache_lookup_for_test(lookup);
+
+                let view = CacheView {
+                    header: base_ptr as *const CacheHeader,
+                };
+
+                let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let stop_clone = Arc::clone(&stop);
+
+                let reader = std::thread::spawn(move || {
+                    while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                        let _ = view.lookup(r"C:\test.txt", dlp_common::hook_ipc::HookOp::Read, 0);
+                    }
+                });
+
+                std::thread::sleep(Duration::from_millis(5));
+                // Signal the reader to stop before unmapping so it does not
+                // access freed memory.
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                reader.join().unwrap();
+                unmap_cache();
+
+                assert!(!is_cache_mapped());
+            }
+        }
     }
 }

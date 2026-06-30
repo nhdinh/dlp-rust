@@ -490,6 +490,12 @@ impl NtdllPatcher {
     pub fn stub_states(&self) -> [StubPatchState; 4] {
         self.stubs.clone()
     }
+
+    /// Test-only helper to set the patch state of a stub.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn set_stub_state_for_test(&mut self, name: StubName, state: StubPatchState) {
+        self.stubs[name.index()] = state;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1034,5 +1040,36 @@ mod tests {
         // A high arbitrary address should not match.
         let far_addr = 0xFFFF_FFFF_FFFF_0000 as *mut u8;
         assert!(!is_target_in_our_trampoline_range(far_addr));
+    }
+
+    #[test]
+    fn test_unpatch_all_stubs_transitions_patched_to_unpatched() {
+        let mut patcher = NtdllPatcher::new(true);
+
+        // Simulate all four stubs being patched.
+        for name in [
+            StubName::NtCreateFile,
+            StubName::NtOpenFile,
+            StubName::NtWriteFile,
+            StubName::NtSetInformationFile,
+        ] {
+            patcher.stubs[name.index()] = StubPatchState::Patched;
+        }
+
+        patcher.unpatch_all_stubs();
+
+        for name in [
+            StubName::NtCreateFile,
+            StubName::NtOpenFile,
+            StubName::NtWriteFile,
+            StubName::NtSetInformationFile,
+        ] {
+            assert_eq!(
+                *patcher.stub_state(name),
+                StubPatchState::Unpatched,
+                "{} should be Unpatched",
+                name.as_str()
+            );
+        }
     }
 }

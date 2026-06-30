@@ -16,7 +16,7 @@
       - Runs CRIT-04 benchmark with warm-up, 3 baseline + 3 hooked runs, median
       - Generates results.json, crit04_results.json, and UAT-Summary.md
 
-.PARAMETER WhatIf
+.PARAMETER DryRun
     When present, prints all scenario IDs and descriptions without executing.
 
 .EXAMPLE
@@ -25,14 +25,14 @@
     Runs the full UAT suite interactively.
 
 .EXAMPLE
-    .\Uat-Execute-v0.10.0.ps1 -WhatIf
+    .\Uat-Execute-v0.10.0.ps1 -DryRun
 
     Lists all 36 scenarios without executing anything.
 #>
 [CmdletBinding()]
 param(
     [Parameter()]
-    [switch]$WhatIf
+    [switch]$DryRun
 )
 
 $ErrorActionPreference = 'Stop'
@@ -277,8 +277,8 @@ function Prompt-ScenarioResult {
     )
     Write-Host "`n=== Scenario $ScenarioId ===" -ForegroundColor Cyan
     Write-Host $Description -ForegroundColor White
-    if ($WhatIf) {
-        Write-Host "[WhatIf] Would prompt: Pass / Fail / N-A" -ForegroundColor Yellow
+    if ($DryRun) {
+        Write-Host "[DryRun] Would prompt: Pass / Fail / N-A" -ForegroundColor Yellow
         return 'N-A'
     }
     do {
@@ -390,8 +390,8 @@ function Invoke-Crit04Benchmark {
     #>
     Write-Host "`n--- Category I: CRIT-04 Performance Benchmark ---" -ForegroundColor Green
 
-    if ($WhatIf) {
-        Write-Host "[WhatIf] Would run CRIT-04 benchmark with warm-up + 3 baseline + 3 hooked runs" -ForegroundColor Yellow
+    if ($DryRun) {
+        Write-Host "[DryRun] Would run CRIT-04 benchmark with warm-up + 3 baseline + 3 hooked runs" -ForegroundColor Yellow
         return
     }
 
@@ -722,9 +722,9 @@ else {
 Initialize-UatEnvironment
 $envData = Capture-Environment
 
-# WhatIf mode: list all scenarios and exit
-if ($WhatIf) {
-    Write-Host "`n=== WhatIf Mode: Scenario Listing ===" -ForegroundColor Yellow
+# DryRun mode: list all scenarios and exit
+if ($DryRun) {
+    Write-Host "`n=== DryRun Mode: Scenario Listing ===" -ForegroundColor Yellow
     foreach ($cat in $SCRIPT:Categories) {
         Write-Host "`nCategory $($cat.Id): $($cat.Name)" -ForegroundColor Cyan
         foreach ($sid in $cat.Scenarios) {
@@ -732,7 +732,7 @@ if ($WhatIf) {
             Write-Host "  $sid - $($meta.Description)" -ForegroundColor White
         }
     }
-    Write-Host "`n[WhatIf] No scenarios executed. Run without -WhatIf to execute." -ForegroundColor Yellow
+    Write-Host "`n[DryRun] No scenarios executed. Run without -DryRun to execute." -ForegroundColor Yellow
     exit 0
 }
 

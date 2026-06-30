@@ -258,6 +258,7 @@ async fn test_diagnostics_with_data_returns_snapshots() {
 
 #[tokio::test]
 async fn test_diagnostics_pagination() {
+    set_jwt_secret(TEST_JWT_SECRET.to_string());
     let store = Arc::new(diagnostic_store::DiagnosticSnapshotStore::new());
     let mut snapshots = Vec::new();
     for i in 0..5 {
@@ -388,6 +389,7 @@ async fn test_diagnostics_requires_auth() {
 
 #[tokio::test]
 async fn test_diagnostics_filter_by_user_sid() {
+    set_jwt_secret(TEST_JWT_SECRET.to_string());
     let store = Arc::new(diagnostic_store::DiagnosticSnapshotStore::new());
     store.ingest(
         "AGENT-01",

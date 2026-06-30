@@ -234,15 +234,12 @@ pub fn set_current_capture_token(token: u64) {
 /// Tests that assert on captured audit events should hold this guard to avoid
 /// interleaving with other serial tests that also emit events. The guard also
 /// drains any stale events from the in-process sink before the test runs.
-#[cfg(test)]
 pub fn audit_test_lock() -> AuditTestGuard {
     AuditTestGuard
 }
 
-#[cfg(test)]
 pub struct AuditTestGuard;
 
-#[cfg(test)]
 impl Drop for AuditTestGuard {
     fn drop(&mut self) {
         // Drain any events left behind by the test so the next serial test
@@ -251,7 +248,6 @@ impl Drop for AuditTestGuard {
     }
 }
 
-#[cfg(test)]
 /// Drain stale events that may have accumulated before the current test's
 /// capture token was enabled. This is used by `audit_test_lock` to ensure a
 /// clean state at the start of a test.

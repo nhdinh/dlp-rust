@@ -354,6 +354,19 @@ pub fn unmap_journal() {
     *guard = None;
 }
 
+/// Test-only helper to install a pre-built `HookJournal` into the global slot.
+#[cfg(test)]
+pub(crate) fn set_journal_for_test(journal: HookJournal) {
+    let mut guard = JOURNAL.lock().expect("JOURNAL lock");
+    *guard = Some(journal);
+}
+
+/// Test-only helper to read whether the global journal slot is populated.
+#[cfg(test)]
+pub(crate) fn is_journal_mapped() -> bool {
+    JOURNAL.lock().map(|g| g.is_some()).unwrap_or(false)
+}
+
 /// Write a journal entry for a file-I/O operation.
 ///
 /// This function is called from every trampoline BEFORE returning the
@@ -527,6 +540,8 @@ mod tests {
     #[cfg(windows)]
     mod windows_tests {
         use super::*;
+        use std::sync::Arc;
+        use std::time::Duration;
         use windows::Win32::Foundation::CloseHandle;
         use windows::Win32::System::Memory::{
             CreateFileMappingW, MapViewOfFile, OpenFileMappingW, UnmapViewOfFile,
@@ -560,6 +575,7 @@ mod tests {
 
         #[test]
         fn test_write_index_wraps() {
+            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
             cleanup_test_mapping();
 
             let name_wide: Vec<u16> = TEST_JOURNAL_NAME
@@ -655,6 +671,7 @@ mod tests {
 
         #[test]
         fn test_seq_monotonic() {
+            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
             cleanup_test_mapping();
 
             let name_wide: Vec<u16> = TEST_JOURNAL_NAME
@@ -745,6 +762,7 @@ mod tests {
 
         #[test]
         fn test_path_hash_computed() {
+            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
             cleanup_test_mapping();
 
             let name_wide: Vec<u16> = TEST_JOURNAL_NAME
@@ -825,6 +843,7 @@ mod tests {
 
         #[test]
         fn test_op_byte_stored() {
+            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
             cleanup_test_mapping();
 
             let name_wide: Vec<u16> = TEST_JOURNAL_NAME
@@ -898,6 +917,7 @@ mod tests {
 
         #[test]
         fn test_ts_qpc_stored() {
+            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
             cleanup_test_mapping();
 
             let name_wide: Vec<u16> = TEST_JOURNAL_NAME
@@ -973,6 +993,7 @@ mod tests {
 
         #[test]
         fn test_etw_timestamp_stored() {
+            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
             cleanup_test_mapping();
 
             let name_wide: Vec<u16> = TEST_JOURNAL_NAME
@@ -1052,6 +1073,7 @@ mod tests {
 
         #[test]
         fn test_error_already_exists_opens_existing() {
+            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
             cleanup_test_mapping();
 
             let name_wide: Vec<u16> = TEST_JOURNAL_NAME
@@ -1133,6 +1155,7 @@ mod tests {
 
         #[test]
         fn test_release_fence_prevents_torn_reads() {
+            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
             cleanup_test_mapping();
 
             let name_wide: Vec<u16> = TEST_JOURNAL_NAME
@@ -1236,6 +1259,136 @@ mod tests {
 
                 let _ = UnmapViewOfFile(view);
                 let _ = CloseHandle(handle);
+            }
+        }
+
+        #[test]
+        fn test_unmap_journal_releases_handle_and_view() {
+            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
+            cleanup_test_mapping();
+
+            let name_wide: Vec<u16> = TEST_JOURNAL_NAME
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let name_pcwstr = windows::core::PCWSTR::from_raw(name_wide.as_ptr());
+
+            unsafe {
+                let handle = CreateFileMappingW(
+                    INVALID_HANDLE_VALUE,
+                    None,
+                    PAGE_READWRITE,
+                    0,
+                    JOURNAL_SIZE as u32,
+                    name_pcwstr,
+                )
+                .expect("CreateFileMappingW failed");
+
+                let view = MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, JOURNAL_SIZE);
+                let base_ptr = match view {
+                    MEMORY_MAPPED_VIEW_ADDRESS { Value: ptr } if !ptr.is_null() => ptr as *mut u8,
+                    _ => panic!("MapViewOfFile failed"),
+                };
+
+                let header_ptr = base_ptr as *mut JournalHeader;
+                let entries_ptr =
+                    base_ptr.add(std::mem::size_of::<JournalHeader>()) as *mut JournalEntry;
+
+                std::ptr::write_volatile(std::ptr::addr_of_mut!((*header_ptr).version), 1u32);
+                std::ptr::write_volatile(std::ptr::addr_of_mut!((*header_ptr).write_index), 0u32);
+
+                let journal = HookJournal {
+                    header: header_ptr,
+                    entries: entries_ptr,
+                    capacity: ENTRY_CAPACITY,
+                    next_seq: 1,
+                    mapping: JournalMapping {
+                        handle: windows::Win32::Foundation::HANDLE(handle.0),
+                        view: base_ptr as *mut std::ffi::c_void,
+                    },
+                };
+
+                set_journal_for_test(journal);
+                assert!(is_journal_mapped());
+
+                unmap_journal();
+                assert!(!is_journal_mapped());
+            }
+        }
+
+        #[test]
+        fn test_concurrent_read_and_unmap_no_deadlock() {
+            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
+            cleanup_test_mapping();
+
+            let name_wide: Vec<u16> = TEST_JOURNAL_NAME
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let name_pcwstr = windows::core::PCWSTR::from_raw(name_wide.as_ptr());
+
+            unsafe {
+                let handle = CreateFileMappingW(
+                    INVALID_HANDLE_VALUE,
+                    None,
+                    PAGE_READWRITE,
+                    0,
+                    JOURNAL_SIZE as u32,
+                    name_pcwstr,
+                )
+                .expect("CreateFileMappingW failed");
+
+                let view = MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, JOURNAL_SIZE);
+                let base_ptr = match view {
+                    MEMORY_MAPPED_VIEW_ADDRESS { Value: ptr } if !ptr.is_null() => ptr as *mut u8,
+                    _ => panic!("MapViewOfFile failed"),
+                };
+
+                let header_ptr = base_ptr as *mut JournalHeader;
+                let entries_ptr =
+                    base_ptr.add(std::mem::size_of::<JournalHeader>()) as *mut JournalEntry;
+
+                std::ptr::write_volatile(std::ptr::addr_of_mut!((*header_ptr).version), 1u32);
+                std::ptr::write_volatile(std::ptr::addr_of_mut!((*header_ptr).write_index), 0u32);
+
+                let journal = HookJournal {
+                    header: header_ptr,
+                    entries: entries_ptr,
+                    capacity: ENTRY_CAPACITY,
+                    next_seq: 1,
+                    mapping: JournalMapping {
+                        handle: windows::Win32::Foundation::HANDLE(handle.0),
+                        view: base_ptr as *mut std::ffi::c_void,
+                    },
+                };
+
+                set_journal_for_test(journal);
+
+                let view_for_thread = JournalView {
+                    header: header_ptr,
+                    entries: entries_ptr,
+                    capacity: ENTRY_CAPACITY,
+                    next_seq: 1,
+                };
+
+                let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let stop_clone = Arc::clone(&stop);
+
+                let reader = std::thread::spawn(move || {
+                    while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
+                        view_for_thread.write(0, 1, r"C:\test.txt", 0, 0);
+                    }
+                });
+
+                std::thread::sleep(Duration::from_millis(5));
+                // Signal the reader to stop before unmapping so it does not access freed memory.
+                stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                reader.join().unwrap();
+                unmap_journal();
+                // The important invariant is that unmap_journal completed without
+                // deadlocking while reads were in flight. Writes after unmap may
+                // silently no-op because the mapping was dropped.
+                assert!(!is_journal_mapped());
             }
         }
     }

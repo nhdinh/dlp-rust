@@ -17,8 +17,9 @@ use std::sync::Arc;
 use dlp_agent::hook_ipc::HookIpcServer;
 use dlp_common::{
     hook_ipc::{
-        HookRequest, HookResponse, IpcEnvelope, IpcMessageV1, IpcPayloadV1, OverrideRequest,
-        PullDiagnosticsRequest, PullHealthRequest,
+        ControlResponse, HookRequest, HookResponse, IpcEnvelope, IpcMessageV1, IpcPayloadV1,
+        OverrideRequest, PollControl, PullDiagnosticsRequest, PullHealthRequest, UnhookAck,
+        UnhookReason,
     },
     Decision, VolumeClass,
 };
@@ -994,4 +995,393 @@ fn test_blocked_write_audit_contains_hash() {
     assert!(!found.hash_skipped);
 
     shutdown_and_join(handle, pipe_name);
+}
+
+// ---------------------------------------------------------------------------
+// Phase 58.5: Unhook polling protocol integration tests
+// ---------------------------------------------------------------------------
+
+/// Seeds a registry with one Injected process and returns it.
+fn registry_with_injected(
+    pid: u32,
+    creation_time: u64,
+) -> Arc<dlp_agent::process_registry::ProcessRegistry> {
+    let registry = Arc::new(dlp_agent::process_registry::ProcessRegistry::new());
+    let key = dlp_agent::process_registry::ProcessKey { pid, creation_time };
+    registry.try_claim(key);
+    registry.record_injected(key, "x64".to_string());
+    registry
+}
+
+/// Sends a `PollControl` frame and returns the `ControlResponse`.
+fn send_poll_control(
+    pipe: windows::Win32::Foundation::HANDLE,
+    poll: &PollControl,
+) -> ControlResponse {
+    let envelope = IpcEnvelope::V1(IpcMessageV1 {
+        payload: IpcPayloadV1::PollControl(poll.clone()),
+    });
+    let response_envelope = send_envelope(pipe, &envelope);
+    match response_envelope {
+        IpcEnvelope::V1(IpcMessageV1 {
+            payload: IpcPayloadV1::ControlResponse(resp),
+        }) => resp,
+        other => panic!("Expected ControlResponse frame, got {:?}", other),
+    }
+}
+
+/// Sends an `UnhookAck` frame and returns the server's ACK response.
+fn send_unhook_ack(pipe: windows::Win32::Foundation::HANDLE, ack: UnhookAck) -> HookResponse {
+    let envelope = IpcEnvelope::V1(IpcMessageV1 {
+        payload: IpcPayloadV1::UnhookAck(ack),
+    });
+    let response_envelope = send_envelope(pipe, &envelope);
+    match response_envelope {
+        IpcEnvelope::V1(IpcMessageV1 {
+            payload: IpcPayloadV1::Response(resp),
+        }) => resp,
+        other => panic!("Expected Response ACK frame, got {:?}", other),
+    }
+}
+
+/// Integration test: full unhook polling protocol round-trip.
+///
+/// 1. Seed registry with one Injected entry.
+/// 2. Send `PollControl` while unhook is NOT requested -> `command: None`.
+/// 3. Set `UNHOOK_ALL_REQUESTED`.
+/// 4. Send `PollControl` for the known entry -> `UnhookCommand`.
+/// 5. Send `UnhookAck { success: true }` -> registry entry becomes `Exited`.
+#[test]
+#[serial_test::serial]
+fn unhook_polling_protocol_roundtrip() {
+    dlp_agent::service::reset_unhook_signal();
+    let pipe_name = r"\\.\pipe\DlpHookPipeTestUnhookRoundtrip";
+
+    let registry = registry_with_injected(1234, 1000);
+    let registry_for_server = Arc::clone(&registry);
+
+    let handler = Arc::new(move |_req: HookRequest| HookResponse {
+        decision: Decision::ALLOW,
+        reason: "ok".to_string(),
+        cache_hint: None,
+        cache_version: 0,
+        approval_override: None,
+    });
+
+    let server = HookIpcServer::new(pipe_name, handler).with_registry(registry_for_server);
+    let handle = std::thread::Builder::new()
+        .name("hook-ipc-server".to_string())
+        .spawn(move || {
+            if let Err(e) = server.run() {
+                eprintln!("Hook IPC server exited with error: {}", e);
+            }
+        })
+        .expect("server thread should spawn");
+
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+
+    // Step 1: no unhook requested -> no command.
+    let poll = PollControl {
+        pid: 1234,
+        creation_time: 1000,
+    };
+    let response = send_poll_control(client, &poll);
+    assert!(
+        response.command.is_none(),
+        "no command expected before unhook request"
+    );
+
+    // Step 2: request unhook -> UnhookCommand for known injected entry.
+    dlp_agent::service::UNHOOK_ALL_REQUESTED.store(true, Ordering::Release);
+    let response = send_poll_control(client, &poll);
+    let command = response
+        .command
+        .expect("UnhookCommand expected for known injected entry");
+    assert_eq!(command.reason, UnhookReason::AgentShutdown);
+    assert!(command.timestamp_secs > 0);
+
+    // Step 3: successful ack -> registry entry Exited.
+    let ack = UnhookAck {
+        pid: 1234,
+        creation_time: 1000,
+        success: true,
+        error: None,
+    };
+    let ack_response = send_unhook_ack(client, ack);
+    assert_eq!(ack_response.decision, Decision::ALLOW);
+
+    dlp_agent::hook_ipc::close_pipe(client);
+
+    let state = registry
+        .get(&dlp_agent::process_registry::ProcessKey {
+            pid: 1234,
+            creation_time: 1000,
+        })
+        .expect("key should exist");
+    assert_eq!(*state, dlp_agent::process_registry::ProcessState::Exited);
+
+    dlp_agent::service::reset_unhook_signal();
+    shutdown_and_join(handle, pipe_name);
+}
+
+/// Integration test: failed `UnhookAck` preserves Injected state and emits
+/// `UnhookFailure`.
+#[test]
+#[serial_test::serial]
+fn unhook_polling_protocol_failed_ack() {
+    dlp_agent::service::reset_unhook_signal();
+    let pipe_name = r"\\.\pipe\DlpHookPipeTestUnhookFailedAck";
+
+    let registry = registry_with_injected(1234, 1000);
+    let registry_for_server = Arc::clone(&registry);
+
+    let handler = Arc::new(move |_req: HookRequest| HookResponse {
+        decision: Decision::ALLOW,
+        reason: "ok".to_string(),
+        cache_hint: None,
+        cache_version: 0,
+        approval_override: None,
+    });
+
+    let server = HookIpcServer::new(pipe_name, handler).with_registry(registry_for_server);
+
+    let token = dlp_agent::audit_emitter::enable_test_capture();
+    let handle = std::thread::Builder::new()
+        .name("hook-ipc-server".to_string())
+        .spawn(move || {
+            dlp_agent::audit_emitter::set_current_capture_token(token);
+            if let Err(e) = server.run() {
+                eprintln!("Hook IPC server exited with error: {}", e);
+            }
+        })
+        .expect("server thread should spawn");
+
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+
+    dlp_agent::service::UNHOOK_ALL_REQUESTED.store(true, Ordering::Release);
+    let poll = PollControl {
+        pid: 1234,
+        creation_time: 1000,
+    };
+    let response = send_poll_control(client, &poll);
+    assert!(response.command.is_some(), "UnhookCommand expected");
+
+    let ack = UnhookAck {
+        pid: 1234,
+        creation_time: 1000,
+        success: false,
+        error: Some("unload failed".to_string()),
+    };
+    let ack_response = send_unhook_ack(client, ack);
+    assert_eq!(ack_response.decision, Decision::ALLOW);
+
+    dlp_agent::hook_ipc::close_pipe(client);
+
+    // Registry must remain Injected.
+    let state = registry
+        .get(&dlp_agent::process_registry::ProcessKey {
+            pid: 1234,
+            creation_time: 1000,
+        })
+        .expect("key should exist");
+    assert!(matches!(
+        *state,
+        dlp_agent::process_registry::ProcessState::Injected { .. }
+    ));
+
+    // UnhookFailure audit should be captured.
+    let events = dlp_agent::audit_emitter::drain_test_events();
+    let failure_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == dlp_common::EventType::UnhookFailure)
+        .collect();
+    assert_eq!(failure_events.len(), 1);
+    assert_eq!(failure_events[0].resource_path, "pid=1234");
+    assert!(
+        failure_events[0]
+            .justification
+            .as_deref()
+            .unwrap_or("")
+            .contains("unload failed"),
+        "error metadata should be in justification"
+    );
+
+    dlp_agent::service::reset_unhook_signal();
+    shutdown_and_join(handle, pipe_name);
+}
+
+/// Integration test: `PollControl` for an unknown/stale caller receives
+/// `command: None` even when `UNHOOK_ALL_REQUESTED` is true.
+#[test]
+#[serial_test::serial]
+fn unhook_polling_protocol_unknown_caller() {
+    dlp_agent::service::reset_unhook_signal();
+    let pipe_name = r"\\.\pipe\DlpHookPipeTestUnhookUnknownCaller";
+
+    let registry = registry_with_injected(1234, 1000);
+    let registry_for_server = Arc::clone(&registry);
+
+    let handler = Arc::new(move |_req: HookRequest| HookResponse {
+        decision: Decision::ALLOW,
+        reason: "ok".to_string(),
+        cache_hint: None,
+        cache_version: 0,
+        approval_override: None,
+    });
+
+    let server = HookIpcServer::new(pipe_name, handler).with_registry(registry_for_server);
+    let handle = std::thread::Builder::new()
+        .name("hook-ipc-server".to_string())
+        .spawn(move || {
+            if let Err(e) = server.run() {
+                eprintln!("Hook IPC server exited with error: {}", e);
+            }
+        })
+        .expect("server thread should spawn");
+
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+
+    dlp_agent::service::UNHOOK_ALL_REQUESTED.store(true, Ordering::Release);
+    // Same PID but different creation_time -> not in registry as Injected.
+    let poll = PollControl {
+        pid: 1234,
+        creation_time: 9999,
+    };
+    let response = send_poll_control(client, &poll);
+    assert!(
+        response.command.is_none(),
+        "no command expected for unknown/stale caller"
+    );
+
+    dlp_agent::hook_ipc::close_pipe(client);
+
+    dlp_agent::service::reset_unhook_signal();
+    shutdown_and_join(handle, pipe_name);
+}
+
+/// Integration test: watchdog evidence reconciliation round-trip.
+///
+/// Writes evidence files to a temporary directory, invokes the test-exposed
+/// `reconcile_watchdog_evidence_in_dir` helper, and verifies that matched
+/// entries transition to `Exited` and emit `WatchdogSelfUnload`, while
+/// unmatched entries are retained and emit an untracked event.
+#[test]
+#[serial_test::serial]
+fn watchdog_evidence_reconciliation_roundtrip() {
+    let _guard = dlp_agent::audit_emitter::audit_test_lock();
+    dlp_agent::audit_emitter::enable_test_capture();
+
+    let dir = tempfile::tempdir()
+        .unwrap()
+        .as_ref()
+        .join("WatchdogSelfUnload");
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // Matched evidence file.
+    let matched_path = dir.join("1234.evidence.json");
+    let matched_evidence = serde_json::json!({
+        "pid": 1234,
+        "creation_time": 1000,
+        "reason": "watchdog_timeout",
+        "timestamp_secs": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    });
+    std::fs::write(
+        &matched_path,
+        serde_json::to_string(&matched_evidence).unwrap(),
+    )
+    .unwrap();
+
+    // Unmatched evidence file.
+    let unmatched_path = dir.join("9999.evidence.json");
+    let unmatched_evidence = serde_json::json!({
+        "pid": 9999,
+        "creation_time": 1000,
+        "reason": "watchdog_timeout",
+        "timestamp_secs": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    });
+    std::fs::write(
+        &unmatched_path,
+        serde_json::to_string(&unmatched_evidence).unwrap(),
+    )
+    .unwrap();
+
+    // Seed registry with a matching Injected entry.
+    let registry = Arc::new(dlp_agent::process_registry::ProcessRegistry::new());
+    let matched_key = dlp_agent::process_registry::ProcessKey {
+        pid: 1234,
+        creation_time: 1000,
+    };
+    registry.try_claim(matched_key);
+    registry.record_injected(matched_key, "x64".to_string());
+
+    let audit_ctx = dlp_agent::audit_emitter::EmitContext {
+        agent_id: "AGENT-TEST".to_string(),
+        session_id: 1,
+        user_sid: "S-1-5-18".to_string(),
+        user_name: "SYSTEM".to_string(),
+        machine_name: None,
+    };
+
+    dlp_agent::service::reconcile_watchdog_evidence_in_dir(
+        &audit_ctx,
+        Some(Arc::clone(&registry)),
+        dir.clone(),
+    );
+
+    // Matched entry should be Exited and the file removed.
+    let state = registry.get(&matched_key).expect("key should exist");
+    assert_eq!(*state, dlp_agent::process_registry::ProcessState::Exited);
+    assert!(
+        !matched_path.exists(),
+        "matched evidence file should be removed"
+    );
+
+    // Unmatched file should be retained.
+    assert!(
+        unmatched_path.exists(),
+        "unmatched evidence file should be retained"
+    );
+
+    // Both events should be captured.
+    let events = dlp_agent::audit_emitter::drain_test_events();
+    let watchdog_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == dlp_common::EventType::WatchdogSelfUnload)
+        .collect();
+    assert_eq!(watchdog_events.len(), 2);
+
+    let matched_event = watchdog_events
+        .iter()
+        .find(|e| e.resource_path == "process://1234/watchdog_self_unload")
+        .expect("matched event should exist");
+    assert!(matched_event
+        .justification
+        .as_deref()
+        .unwrap_or("")
+        .contains("reason=watchdog_timeout"));
+
+    let unmatched_event = watchdog_events
+        .iter()
+        .find(|e| e.resource_path == "process://9999/watchdog_self_unload")
+        .expect("unmatched event should exist");
+    assert!(
+        unmatched_event
+            .justification
+            .as_deref()
+            .unwrap_or("")
+            .contains("untracked=true"),
+        "expected untracked flag in justification"
+    );
 }

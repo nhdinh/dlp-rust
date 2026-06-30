@@ -28,6 +28,50 @@ use windows::Win32::System::Threading::{CreateEventW, SetEvent, WaitForSingleObj
 
 use dlp_common::hook_ipc::{ControlResponse, PollControl, UnhookAck, UnhookCommand, UnhookReason};
 
+/// Set to true by tests to capture watchdog self-unload intent without actually
+/// unloading the DLL. Always false in release builds.
+#[cfg(test)]
+static WATCHDOG_TRIGGERED: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Watchdog timeout override for tests (milliseconds).
+#[cfg(test)]
+static WATCHDOG_TIMEOUT_MS_TEST: std::sync::Mutex<u64> = std::sync::Mutex::new(WATCHDOG_TIMEOUT_MS);
+
+/// Reset test-only watchdog state and timeout.
+#[cfg(test)]
+pub(crate) fn reset_watchdog_test_state() {
+    WATCHDOG_TRIGGERED.store(false, Ordering::SeqCst);
+    *WATCHDOG_TIMEOUT_MS_TEST.lock().unwrap() = WATCHDOG_TIMEOUT_MS;
+    CONTROL_THREAD_STOPPING.store(false, Ordering::SeqCst);
+}
+
+/// Set the watchdog timeout used by the control loop in test builds.
+#[cfg(test)]
+pub(crate) fn set_watchdog_timeout_for_test(ms: u64) {
+    *WATCHDOG_TIMEOUT_MS_TEST.lock().unwrap() = ms;
+}
+
+/// Returns true if the watchdog self-unload path was triggered in a test.
+#[cfg(test)]
+pub(crate) fn is_watchdog_triggered() -> bool {
+    WATCHDOG_TRIGGERED.load(Ordering::SeqCst)
+}
+
+/// Returns the current watchdog timeout in milliseconds.
+fn watchdog_timeout_ms() -> u64 {
+    #[cfg(test)]
+    {
+        *WATCHDOG_TIMEOUT_MS_TEST
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+    }
+    #[cfg(not(test))]
+    {
+        WATCHDOG_TIMEOUT_MS
+    }
+}
+
 /// Interval between control polls in milliseconds.
 const CONTROL_POLL_INTERVAL_MS: u32 = 1_000;
 
@@ -214,12 +258,18 @@ fn control_thread_loop(shutdown_event: HANDLE) {
             Err(_) => {
                 // No response from agent. If we have not heard from the agent
                 // for WATCHDOG_TIMEOUT_MS, self-unhook.
-                if last_agent_response.elapsed().as_millis() as u64 >= WATCHDOG_TIMEOUT_MS {
+                if last_agent_response.elapsed().as_millis() as u64 >= watchdog_timeout_ms() {
                     crate::debug_log(
                         "[dlp-hook] watchdog: agent unresponsive, initiating self-unhook\0",
                     );
                     persist_watchdog_evidence(pid, creation_time);
                     crate::UnhookAll();
+                    #[cfg(test)]
+                    {
+                        WATCHDOG_TRIGGERED.store(true, Ordering::SeqCst);
+                        break;
+                    }
+                    #[cfg(not(test))]
                     unsafe {
                         crate::self_unload();
                     }
@@ -230,7 +280,7 @@ fn control_thread_loop(shutdown_event: HANDLE) {
 }
 
 /// Process an `UnhookCommand` from the agent.
-fn handle_unhook_command(cmd: UnhookCommand, pid: u32, creation_time: u64) {
+pub(crate) fn handle_unhook_command(cmd: UnhookCommand, pid: u32, creation_time: u64) {
     let reason_str = match cmd.reason {
         UnhookReason::AgentShutdown => "agent_shutdown",
         UnhookReason::WatchdogTimeout => "watchdog_timeout",
@@ -241,16 +291,23 @@ fn handle_unhook_command(cmd: UnhookCommand, pid: u32, creation_time: u64) {
     );
     crate::debug_log(&msg);
 
-    crate::UnhookAll();
+    let unhook_ok = crate::unhook_all_internal();
 
     let ack = UnhookAck {
         pid,
         creation_time,
-        success: true,
-        error: None,
+        success: unhook_ok,
+        error: if unhook_ok {
+            None
+        } else {
+            Some("UnhookAll failed".to_string())
+        },
     };
     let _ = crate::pipe_client::send_unhook_ack(crate::DEFAULT_PIPE_NAME, &ack);
 
+    #[cfg(test)]
+    {}
+    #[cfg(not(test))]
     unsafe {
         crate::self_unload();
     }
@@ -339,12 +396,91 @@ fn process_creation_time() -> Option<u64> {
     }
 }
 
+/// Test-only helper that runs the control loop with a mocked poll queue until
+/// the queue is exhausted, an unhook command is handled, or the watchdog fires.
+///
+/// Returns the number of iterations executed and whether the watchdog path
+/// was triggered.
+#[cfg(test)]
+pub(crate) fn run_control_loop_for_test(
+    poll_results: Vec<Result<ControlResponse, crate::pipe_client::PipeError>>,
+    test_watchdog_timeout_ms: u64,
+    max_iterations: usize,
+) -> (usize, bool) {
+    use windows::Win32::System::Threading::CreateEventW;
+
+    reset_watchdog_test_state();
+    set_watchdog_timeout_for_test(test_watchdog_timeout_ms);
+
+    // Seed the mock poll queue.
+    {
+        let mut mock = crate::pipe_client::MOCK_POLL_CONTROL.lock().unwrap();
+        mock.clear();
+        mock.extend(poll_results);
+    }
+
+    let shutdown_event = unsafe {
+        match CreateEventW(None, false, false, None) {
+            Ok(h) => h,
+            Err(_) => return (0, false),
+        }
+    };
+
+    let mut last_agent_response = Instant::now();
+    let mut iterations = 0usize;
+
+    while iterations < max_iterations {
+        let wait_result = unsafe { WaitForSingleObject(shutdown_event, CONTROL_POLL_INTERVAL_MS) };
+        if wait_result == WAIT_OBJECT_0 {
+            break;
+        }
+
+        let pid = std::process::id();
+        let creation_time = match process_creation_time() {
+            Some(t) => t,
+            None => continue,
+        };
+        let poll = PollControl { pid, creation_time };
+
+        match crate::pipe_client::poll_control(crate::DEFAULT_PIPE_NAME, &poll, 1_000) {
+            Ok(ControlResponse { command: Some(cmd) }) => {
+                handle_unhook_command(cmd, pid, creation_time);
+                iterations += 1;
+                break;
+            }
+            Ok(ControlResponse { command: None }) => {
+                last_agent_response = Instant::now();
+            }
+            Err(_) => {
+                if last_agent_response.elapsed().as_millis() as u64 >= watchdog_timeout_ms() {
+                    crate::debug_log(
+                        "[dlp-hook] watchdog: agent unresponsive, initiating self-unhook\0",
+                    );
+                    persist_watchdog_evidence(pid, creation_time);
+                    crate::UnhookAll();
+                    WATCHDOG_TRIGGERED.store(true, Ordering::SeqCst);
+                    iterations += 1;
+                    break;
+                }
+            }
+        }
+        iterations += 1;
+    }
+
+    unsafe {
+        let _ = CloseHandle(shutdown_event);
+    }
+
+    (iterations, is_watchdog_triggered())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
     fn control_thread_start_is_idempotent() {
+        let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
         start_control_thread();
         start_control_thread();
         shutdown_control_thread();
@@ -352,6 +488,7 @@ mod tests {
 
     #[test]
     fn shutdown_control_thread_when_not_started() {
+        let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
         shutdown_control_thread();
     }
 

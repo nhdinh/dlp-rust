@@ -14,6 +14,17 @@ use windows::Win32::System::Pipes::{SetNamedPipeHandleState, PIPE_READMODE_MESSA
 
 use dlp_common::{HookRequest, HookResponse};
 
+#[cfg(test)]
+use dlp_common::hook_ipc::{ControlResponse, UnhookAck};
+
+#[cfg(test)]
+pub(crate) static MOCK_POLL_CONTROL: std::sync::Mutex<Vec<Result<ControlResponse, PipeError>>> =
+    std::sync::Mutex::new(Vec::new());
+
+#[cfg(test)]
+pub(crate) static MOCK_UNHOOK_ACK_SINK: std::sync::Mutex<Vec<UnhookAck>> =
+    std::sync::Mutex::new(Vec::new());
+
 thread_local! {
     /// Pre-allocated 4 KiB buffer reused per thread for pipe serialization.
     ///
@@ -188,6 +199,16 @@ pub fn send_unhook_ack(
     pipe_name: &str,
     ack: &dlp_common::hook_ipc::UnhookAck,
 ) -> Result<(), PipeError> {
+    #[cfg(test)]
+    {
+        if let Ok(mut sink) = MOCK_UNHOOK_ACK_SINK.lock() {
+            if !sink.is_empty() || std::env::var("DLP_HOOK_TEST_MOCK_ACK").is_ok() {
+                sink.push(ack.clone());
+                return Ok(());
+            }
+        }
+    }
+
     let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
         payload: dlp_common::hook_ipc::IpcPayloadV1::UnhookAck(ack.clone()),
     });
@@ -222,6 +243,18 @@ pub fn poll_control(
     poll: &dlp_common::hook_ipc::PollControl,
     timeout_ms: u32,
 ) -> Result<dlp_common::hook_ipc::ControlResponse, PipeError> {
+    #[cfg(test)]
+    {
+        if let Ok(mut mock) = MOCK_POLL_CONTROL.lock() {
+            if !mock.is_empty() {
+                return mock.remove(0);
+            }
+            // Empty mock queue means the test has exhausted its scripted
+            // responses; return a no-op so the loop does not hit the real pipe.
+            return Ok(ControlResponse { command: None });
+        }
+    }
+
     let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
         payload: dlp_common::hook_ipc::IpcPayloadV1::PollControl(poll.clone()),
     });
@@ -442,6 +475,38 @@ fn read_exact(pipe: HANDLE, buf: &mut [u8]) -> Result<(), PipeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_mock_poll_control_queue() {
+        let expected = ControlResponse {
+            command: Some(dlp_common::hook_ipc::UnhookCommand {
+                reason: dlp_common::hook_ipc::UnhookReason::AgentShutdown,
+                timestamp_secs: 1,
+            }),
+        };
+        MOCK_POLL_CONTROL.lock().unwrap().push(Ok(expected.clone()));
+        let poll = dlp_common::hook_ipc::PollControl {
+            pid: 1,
+            creation_time: 1,
+        };
+        let result = poll_control(r"\\.\pipe\MockPollPipe", &poll, 100).unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_mock_unhook_ack_sink() {
+        let ack = UnhookAck {
+            pid: 1234,
+            creation_time: 5678,
+            success: true,
+            error: None,
+        };
+        std::env::set_var("DLP_HOOK_TEST_MOCK_ACK", "1");
+        send_unhook_ack(r"\\.\pipe\MockAckPipe", &ack).unwrap();
+        std::env::remove_var("DLP_HOOK_TEST_MOCK_ACK");
+        let captured = MOCK_UNHOOK_ACK_SINK.lock().unwrap().pop().unwrap();
+        assert_eq!(captured, ack);
+    }
 
     #[test]
     fn pipe_error_display() {

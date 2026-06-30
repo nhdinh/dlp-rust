@@ -2280,12 +2280,28 @@ fn reconcile_watchdog_evidence(
     audit_ctx: &crate::audit_emitter::EmitContext,
     process_registry: Option<Arc<crate::process_registry::ProcessRegistry>>,
 ) {
+    reconcile_watchdog_evidence_in_dir(
+        audit_ctx,
+        process_registry,
+        std::path::PathBuf::from(r"C:\ProgramData\DLP\WatchdogSelfUnload"),
+    );
+}
+
+/// Reconcile watchdog self-unload evidence from a configurable directory.
+///
+/// This is the testable implementation of [`reconcile_watchdog_evidence`].
+/// Production callers pass the canonical `C:\ProgramData\DLP\WatchdogSelfUnload`
+/// path; tests pass a temporary directory so they do not touch production state.
+pub fn reconcile_watchdog_evidence_in_dir(
+    audit_ctx: &crate::audit_emitter::EmitContext,
+    process_registry: Option<Arc<crate::process_registry::ProcessRegistry>>,
+    dir: std::path::PathBuf,
+) {
     use dlp_common::{Action, AuditEvent, Classification, Decision, EventType};
 
     /// Retention window for unmatched watchdog evidence files.
     const EVIDENCE_RETENTION_DAYS: u64 = 7;
 
-    let dir = std::path::PathBuf::from(r"C:\ProgramData\DLP\WatchdogSelfUnload");
     if !dir.exists() {
         return;
     }
@@ -5978,27 +5994,7 @@ fn test_reconcile_watchdog_evidence_transitions_and_emits() {
 
     let audit_ctx = make_test_emit_context();
 
-    // Temporarily redirect the global evidence directory by calling the helper
-    // with a path argument is not supported; instead we test the helper's logic
-    // by exercising it through a test-exposed variant that accepts a directory.
-    // For this test we use the production path but clean it up afterward.
-    let production_dir = std::path::PathBuf::from(r"C:\ProgramData\DLP\WatchdogSelfUnload");
-    let had_production = production_dir.exists();
-    if had_production {
-        let backup = tempfile::tempdir().unwrap().path().join("backup");
-        std::fs::rename(&production_dir, &backup).unwrap();
-    }
-    std::fs::create_dir_all(&production_dir).unwrap();
-    std::fs::copy(&evidence_path, production_dir.join("1234.evidence.json")).unwrap();
-
-    reconcile_watchdog_evidence(&audit_ctx, Some(Arc::clone(&registry)));
-
-    // Restore the original directory.
-    std::fs::remove_dir_all(&production_dir).unwrap();
-    if had_production {
-        let backup = tempfile::tempdir().unwrap().path().join("backup");
-        std::fs::rename(&backup, &production_dir).unwrap();
-    }
+    reconcile_watchdog_evidence_in_dir(&audit_ctx, Some(Arc::clone(&registry)), dir.clone());
 
     // Registry entry should be Exited.
     let state = registry.get(&key).expect("key should exist");
@@ -6033,15 +6029,13 @@ fn test_reconcile_watchdog_evidence_untracked_emits_and_retains() {
     reset_shutdown_signal();
     crate::audit_emitter::enable_test_capture();
 
-    let production_dir = std::path::PathBuf::from(r"C:\ProgramData\DLP\WatchdogSelfUnload");
-    let had_production = production_dir.exists();
-    if had_production {
-        let backup = tempfile::tempdir().unwrap().path().join("backup");
-        std::fs::rename(&production_dir, &backup).unwrap();
-    }
-    std::fs::create_dir_all(&production_dir).unwrap();
+    let dir = tempfile::tempdir()
+        .unwrap()
+        .as_ref()
+        .join("WatchdogSelfUnload");
+    std::fs::create_dir_all(&dir).unwrap();
 
-    let evidence_path = production_dir.join("9999.evidence.json");
+    let evidence_path = dir.join("9999.evidence.json");
     let evidence = serde_json::json!({
         "pid": 9999,
         "creation_time": 1000,
@@ -6056,7 +6050,7 @@ fn test_reconcile_watchdog_evidence_untracked_emits_and_retains() {
     let registry = Arc::new(crate::process_registry::ProcessRegistry::new());
     let audit_ctx = make_test_emit_context();
 
-    reconcile_watchdog_evidence(&audit_ctx, Some(Arc::clone(&registry)));
+    reconcile_watchdog_evidence_in_dir(&audit_ctx, Some(Arc::clone(&registry)), dir.clone());
 
     // Evidence file should be retained.
     assert!(
@@ -6080,12 +6074,7 @@ fn test_reconcile_watchdog_evidence_untracked_emits_and_retains() {
         "expected untracked flag in justification"
     );
 
-    // Cleanup.
-    std::fs::remove_dir_all(&production_dir).unwrap();
-    if had_production {
-        let backup = tempfile::tempdir().unwrap().path().join("backup");
-        std::fs::rename(&backup, &production_dir).unwrap();
-    }
+    // Cleanup is handled by the tempfile directory automatically.
 }
 
 /// Test that `request_unhook_from_injected` sets `UNHOOK_ALL_REQUESTED` and emits

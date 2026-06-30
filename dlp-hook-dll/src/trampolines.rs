@@ -141,7 +141,7 @@ fn record_pipe_round_trip_and_maybe_emit() {
 /// `source_volume_class` and `destination_volume_class` are optionally
 /// pre-resolved volume classes (e.g., from copy/move trampolines that know
 /// both paths). When `None`, the function resolves from `path` automatically.
-fn classify_and_log_path(
+pub(crate) fn classify_and_log_path(
     path: &str,
     action: &str,
     fn_name: &str,
