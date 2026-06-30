@@ -85,6 +85,13 @@ pub const SERVICE_NAME: &str = "dlp-agent";
 const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
 /// Maximum time to wait for in-flight disk enumeration to cancel (OP-04).
 const DISK_ENUM_CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
+/// Phase 58.5: Budget for cooperative unhook wait during graceful shutdown.
+///
+/// This is intentionally less than [`SHUTDOWN_TIMEOUT`] so the remaining
+/// shutdown steps (WFP unregister, audit flush, etc.) still have time to run.
+const UNHOOK_WAIT_BUDGET: Duration = Duration::from_secs(5);
+/// Phase 58.5: Polling interval while waiting for injected processes to ack unhook.
+const UNHOOK_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
 /// Global SCM status handle — set once after `register()` returns.
 ///
@@ -130,6 +137,79 @@ pub fn reset_shutdown_signal() {
 /// immediately request unhook from newly injected processes.
 pub fn reset_unhook_signal() {
     UNHOOK_ALL_REQUESTED.store(false, Ordering::Release);
+}
+
+/// Phase 58.5: Wait (bounded) for injected processes to poll and ack unhook.
+///
+/// Records the initial injected count, then polls [`ProcessRegistry::iter_injected`]
+/// every [`UNHOOK_POLL_INTERVAL`] until the registry has no remaining `Injected`
+/// entries or `budget` expires. Returns the number of entries still `Injected`.
+///
+/// # Arguments
+///
+/// * `registry` — Process registry containing the lifecycle state of hooked PIDs.
+/// * `budget` — Maximum total time to wait before returning the remaining count.
+async fn wait_for_unhook_acks(
+    registry: &Arc<crate::process_registry::ProcessRegistry>,
+    budget: Duration,
+) -> usize {
+    let start = Instant::now();
+    loop {
+        let remaining = registry.iter_injected().len();
+        if remaining == 0 {
+            return 0;
+        }
+        let elapsed = start.elapsed();
+        if elapsed >= budget {
+            return remaining;
+        }
+        tokio::time::sleep(UNHOOK_POLL_INTERVAL.min(budget - elapsed)).await;
+    }
+}
+
+/// Phase 58.5: Request cooperative unhook from all injected processes.
+///
+/// Sets [`UNHOOK_ALL_REQUESTED`] so the hook IPC server replies to `PollControl`
+/// with `UnhookCommand` for known injected processes, waits a bounded time for
+/// acks, and emits `AgentShutdownUnhook` once plus `UnhookFailure` for any
+/// entries still injected after the wait.
+///
+/// # Arguments
+///
+/// * `registry` — Process registry containing the lifecycle state of hooked PIDs.
+/// * `audit_ctx` — Audit emit context for `AgentShutdownUnhook` / `UnhookFailure`.
+async fn request_unhook_from_injected(
+    registry: &Arc<crate::process_registry::ProcessRegistry>,
+    audit_ctx: &crate::audit_emitter::EmitContext,
+) {
+    let injected_before = registry.iter_injected().len();
+    if injected_before == 0 {
+        return;
+    }
+
+    crate::password_stop::debug_log("run_loop: requesting unhook from injected processes");
+    crate::audit_emitter::emit_unhook_audit(
+        audit_ctx,
+        dlp_common::EventType::AgentShutdownUnhook,
+        std::process::id(),
+        true,
+        Some(format!("injected_count={}", injected_before)),
+    );
+
+    UNHOOK_ALL_REQUESTED.store(true, Ordering::Release);
+    let remaining = wait_for_unhook_acks(registry, UNHOOK_WAIT_BUDGET).await;
+
+    for (key, _) in registry.iter_injected() {
+        crate::audit_emitter::emit_unhook_audit(
+            audit_ctx,
+            dlp_common::EventType::UnhookFailure,
+            key.pid,
+            false,
+            Some(format!("creation_time={}", key.creation_time)),
+        );
+    }
+
+    info!(remaining, "unhook wait complete");
 }
 
 /// Global SQLite connection for the agent's offline audit queue.
@@ -1116,6 +1196,8 @@ struct RunLoopContext {
     /// Phase 58-06: Handle for the override request processing task (DIFF-01).
     #[allow(dead_code)]
     override_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Phase 58.5: Audit emit context for unhook orchestration and watchdog evidence.
+    audit_ctx: crate::audit_emitter::EmitContext,
 }
 
 /// The main service run loop.
@@ -1241,6 +1323,8 @@ pub struct HookIpcServerConfig {
     pub approval_cache: Arc<crate::approval_cache::ApprovalCache>,
     /// Hash cache for content hash evidence from blocked writes (DIFF-03).
     pub hash_cache: crate::hash_cache::HashCache,
+    /// Phase 58.5: Process registry for PollControl validation and UnhookAck routing.
+    pub process_registry: Arc<crate::process_registry::ProcessRegistry>,
 }
 
 /// Maps a hook action string to the ABAC [`Action`] enum.
@@ -1462,7 +1546,8 @@ fn spawn_hook_ipc_server(config: HookIpcServerConfig) -> Option<std::thread::Joi
     .with_health_handler(health_handler)
     .with_override_handler(override_handler)
     .with_hash_cache(hash_cache)
-    .with_health_aggregator(health);
+    .with_health_aggregator(health)
+    .with_registry(config.process_registry);
 
     match std::thread::Builder::new()
         .name("hook-ipc-server".to_string())
@@ -1708,10 +1793,54 @@ async fn run_loop_init(
     // SIEM.
     let (bypass_tx, bypass_rx) = crossbeam_channel::bounded::<BypassAlert>(1000);
 
+    // ── HookInjector (M017/S01) ───────────────────────────────────────────
+    let hook_injector_opt: Option<crate::hook_injector::HookInjector> =
+        if agent_config.cloud_hook_enabled.unwrap_or(false) {
+            let dll_path = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("dlp_hook_dll.dll")))
+                .unwrap_or_else(|| std::path::PathBuf::from("dlp_hook_dll.dll"));
+            let dll_path_x86 = std::env::current_exe()
+                .ok()
+                .and_then(|p| p.parent().map(|d| d.join("dlp_hook_dll_x86.dll")))
+                .unwrap_or_else(|| std::path::PathBuf::from("dlp_hook_dll_x86.dll"));
+            let injector =
+                crate::hook_injector::HookInjector::new(&dll_path, Some(dll_path_x86.clone()));
+            info!(
+                dll_path = %dll_path.display(),
+                dll_path_x86 = %dll_path_x86.display(),
+                "hook injector constructed"
+            );
+            Some(injector)
+        } else {
+            info!("cloud hook disabled — skipping HookInjector");
+            None
+        };
+
+    // Assemble the consolidated server configuration (D-01..D-05).
+    // Phase 58.5: the process registry is created by init_universal_injection
+    // below, so we build the config after that call and pass it directly to
+    // spawn_hook_ipc_server.
     let classification_cache_dyn: Arc<dyn crate::hook_ipc::CacheAccessor> =
         classification_cache.clone();
 
-    // Assemble the consolidated server configuration (D-01..D-05).
+    // ── Phase 49: Universal Injection (ETW Process Watcher + Universal Injector) ──
+    #[allow(unused_variables)]
+    let (
+        process_watcher_opt,
+        universal_injector_opt,
+        process_registry,
+        allowlist_matcher,
+        backstop_shutdown_tx,
+        backstop_handle,
+        retry_shutdown_tx,
+        retry_handle,
+    ) = init_universal_injection(
+        hook_injector_opt.as_ref(),
+        agent_config.universal_injection_enabled.unwrap_or(false),
+    )
+    .await;
+
     let hook_ipc_config = HookIpcServerConfig {
         pipe_name: crate::hook_ipc::DEFAULT_PIPE_NAME.to_string(),
         cache: classification_cache_dyn,
@@ -1722,7 +1851,9 @@ async fn run_loop_init(
         override_tx: override_tx.clone(),
         approval_cache: Arc::clone(&approval_cache),
         hash_cache: crate::hash_cache::create_hash_cache(),
+        process_registry: Arc::clone(&process_registry),
     };
+
     let hook_ipc_handle = spawn_hook_ipc_server(hook_ipc_config);
     if let Some(ref h) = hook_ipc_handle {
         info!(thread_id = ?h.thread().id(), "Hook IPC server started");
@@ -1786,30 +1917,6 @@ async fn run_loop_init(
     let cloud_enforcer_opt: Option<Arc<crate::cloud_enforcer::CloudEnforcer>> =
         Some(Arc::new(crate::cloud_enforcer::CloudEnforcer::new()));
     info!("cloud enforcer constructed");
-
-    // ── HookInjector (M017/S01) ───────────────────────────────────────────
-    let hook_injector_opt: Option<crate::hook_injector::HookInjector> =
-        if agent_config.cloud_hook_enabled.unwrap_or(false) {
-            let dll_path = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|d| d.join("dlp_hook_dll.dll")))
-                .unwrap_or_else(|| std::path::PathBuf::from("dlp_hook_dll.dll"));
-            let dll_path_x86 = std::env::current_exe()
-                .ok()
-                .and_then(|p| p.parent().map(|d| d.join("dlp_hook_dll_x86.dll")))
-                .unwrap_or_else(|| std::path::PathBuf::from("dlp_hook_dll_x86.dll"));
-            let injector =
-                crate::hook_injector::HookInjector::new(&dll_path, Some(dll_path_x86.clone()));
-            info!(
-                dll_path = %dll_path.display(),
-                dll_path_x86 = %dll_path_x86.display(),
-                "hook injector constructed"
-            );
-            Some(injector)
-        } else {
-            info!("cloud hook disabled — skipping HookInjector");
-            None
-        };
 
     // ── Phase 51: ntdll patching config ───────────────────────────────────
     let enable_ntdll_patching = agent_config.enable_ntdll_patching.unwrap_or(false);
@@ -2151,6 +2258,8 @@ async fn run_loop_init(
         health_push_handle: None,
         // Phase 58-06: Override request processing task (DIFF-01).
         override_handle: Some(override_handle),
+        // Phase 58.5: Audit emit context for unhook orchestration and watchdog evidence.
+        audit_ctx,
     }
 }
 
@@ -2159,7 +2268,9 @@ async fn run_loop_init(
 /// When the hook DLL's watchdog detects that the agent is unreachable, it
 /// persists a small JSON file to `C:\ProgramData\DLP\WatchdogSelfUnload` and
 /// self-unloads. On agent restart, this function reads those files, emits audit
-/// events, and removes them.
+/// events, and removes matched files. Unmatched evidence is retained for a
+/// bounded retry period (7 days) and emits an `untracked` audit event so
+/// operators can detect stale/orphaned evidence.
 ///
 /// # Arguments
 ///
@@ -2170,6 +2281,9 @@ fn reconcile_watchdog_evidence(
     process_registry: Option<Arc<crate::process_registry::ProcessRegistry>>,
 ) {
     use dlp_common::{Action, AuditEvent, Classification, Decision, EventType};
+
+    /// Retention window for unmatched watchdog evidence files.
+    const EVIDENCE_RETENTION_DAYS: u64 = 7;
 
     let dir = std::path::PathBuf::from(r"C:\ProgramData\DLP\WatchdogSelfUnload");
     if !dir.exists() {
@@ -2183,6 +2297,12 @@ fn reconcile_watchdog_evidence(
             return;
         }
     };
+
+    let retention_cutoff = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs()
+        .saturating_sub(EVIDENCE_RETENTION_DAYS * 24 * 60 * 60);
 
     for entry in entries.flatten() {
         let path = entry.path();
@@ -2218,6 +2338,16 @@ fn reconcile_watchdog_evidence(
             .get("reason")
             .and_then(|v| v.as_str())
             .unwrap_or("watchdog_timeout");
+        let timestamp_secs = evidence.get("timestamp_secs").and_then(|v| v.as_u64());
+
+        // Stale evidence cleanup: remove files older than the retention window
+        // regardless of match status so the directory does not grow unbounded.
+        if timestamp_secs.is_some_and(|ts| ts < retention_cutoff) {
+            if let Err(e) = std::fs::remove_file(&path) {
+                warn!(path = %path.display(), error = %e, "cannot remove stale watchdog evidence file");
+            }
+            continue;
+        }
 
         let resource_path = pid.map_or_else(
             || "unknown".to_string(),
@@ -2236,23 +2366,49 @@ fn reconcile_watchdog_evidence(
             audit_ctx.session_id,
         );
 
-        // Stash the raw evidence JSON and reason in fields that are serialized
-        // to the audit log for forensics. `justification` carries the reason;
-        // `correlation_id` is overwritten by `AuditEvent::new`, so we preserve
-        // the evidence content via `policy_name` (diagnostic only).
-        event.justification = Some(format!("reason={}; evidence={}", reason, content));
-
-        crate::audit_emitter::emit_audit(audit_ctx, &mut event);
-
-        // Mark the process as exited in the registry, if available.
-        if let (Some(pid), Some(creation_time), Some(ref registry)) =
+        // Determine whether this evidence matches a known injected process.
+        let matched = if let (Some(pid), Some(creation_time), Some(ref registry)) =
             (pid, creation_time, &process_registry)
         {
-            registry.record_exited(crate::process_registry::ProcessKey { pid, creation_time });
-        }
+            let key = crate::process_registry::ProcessKey { pid, creation_time };
+            registry.get(&key).is_some_and(|state| {
+                matches!(
+                    *state,
+                    crate::process_registry::ProcessState::Injected { .. }
+                )
+            })
+        } else {
+            false
+        };
 
-        if let Err(e) = std::fs::remove_file(&path) {
-            warn!(path = %path.display(), error = %e, "cannot remove watchdog evidence file");
+        if matched {
+            // Stash the raw evidence JSON and reason in fields that are serialized
+            // to the audit log for forensics. `justification` carries the reason;
+            // `correlation_id` is overwritten by `AuditEvent::new`, so we preserve
+            // the evidence content via `policy_name` (diagnostic only).
+            event.justification = Some(format!("reason={}; evidence={}", reason, content));
+
+            crate::audit_emitter::emit_audit(audit_ctx, &mut event);
+
+            // Mark the process as exited in the registry.
+            if let (Some(pid), Some(creation_time), Some(ref registry)) =
+                (pid, creation_time, &process_registry)
+            {
+                registry.record_exited(crate::process_registry::ProcessKey { pid, creation_time });
+            }
+
+            if let Err(e) = std::fs::remove_file(&path) {
+                warn!(path = %path.display(), error = %e, "cannot remove watchdog evidence file");
+            }
+        } else {
+            // Unmatched evidence: emit an untracked event and retain the file for
+            // bounded retry. This covers PID reuse, stale evidence from a prior
+            // agent crash, or a process that exited before reconciliation.
+            event.justification = Some(format!(
+                "reason={}; untracked=true; evidence={}",
+                reason, content
+            ));
+            crate::audit_emitter::emit_audit(audit_ctx, &mut event);
         }
     }
 }
@@ -3858,6 +4014,11 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
     }
     crate::password_stop::debug_log("run_loop: audit buffer stopped");
 
+    // Phase 58.5: Request cooperative unhook from all injected processes.
+    // This must happen while the hook IPC server is still running so that
+    // PollControl frames receive UnhookCommand replies.
+    request_unhook_from_injected(&ctx.process_registry, &ctx.audit_ctx).await;
+
     // Phase 53: Stop bypass correlator.
     if let Some(shutdown_tx) = ctx.correlator_shutdown {
         crate::password_stop::debug_log("run_loop: signalling bypass correlator shutdown");
@@ -5285,6 +5446,7 @@ fn test_spawn_hook_ipc_server_starts_named_thread() {
         override_tx,
         approval_cache: approval,
         hash_cache: crate::hash_cache::create_hash_cache(),
+        process_registry: Arc::new(crate::process_registry::ProcessRegistry::new()),
     };
 
     let handle = spawn_hook_ipc_server(config).expect("hook IPC server thread should spawn");
@@ -5300,11 +5462,14 @@ fn test_spawn_hook_ipc_server_starts_named_thread() {
 
 /// Test that `emit_ntdll_patching_enabled_event` emits a `NtdllPatchingEnabled`
 /// audit event with the correct fields and SIEM routing.
+#[cfg(test)]
 #[test]
+#[serial_test::serial]
 fn test_emit_ntdll_patching_enabled_event() {
     use dlp_common::audit::EventType;
 
     // Enable the in-process capture sink so we can assert on emitted events.
+    let _guard = crate::audit_emitter::audit_test_lock();
     crate::audit_emitter::enable_test_capture();
 
     // Call the emission function.
@@ -5565,6 +5730,7 @@ fn get_test_log_buffer() -> std::sync::Arc<std::sync::Mutex<Vec<u8>>> {
 ///
 /// On non-Windows, `get_caller_sid` returns a test stub for any PID, so
 /// this test is Windows-only.
+#[cfg(test)]
 #[cfg(windows)]
 #[test]
 #[serial_test::serial]
@@ -5591,6 +5757,7 @@ fn test_invalid_pid_returns_deny_identity_resolution_failed() {
         override_tx,
         approval_cache: approval,
         hash_cache: crate::hash_cache::create_hash_cache(),
+        process_registry: Arc::new(crate::process_registry::ProcessRegistry::new()),
     };
 
     let handle = spawn_hook_ipc_server(config).expect("hook IPC server thread should spawn");
@@ -5656,6 +5823,7 @@ fn test_invalid_pid_returns_deny_identity_resolution_failed() {
 
 /// Test that COPY/MOVE requests with None source or destination volume class
 /// emit a tracing::warn! warning through the actual handler closure.
+#[cfg(test)]
 #[test]
 #[serial_test::serial]
 fn test_copy_move_none_volume_class_logs_warning() {
@@ -5688,6 +5856,7 @@ fn test_copy_move_none_volume_class_logs_warning() {
         override_tx,
         approval_cache: approval,
         hash_cache: crate::hash_cache::create_hash_cache(),
+        process_registry: Arc::new(crate::process_registry::ProcessRegistry::new()),
     };
 
     let handle = spawn_hook_ipc_server(config).expect("hook IPC server thread should spawn");
@@ -5750,4 +5919,240 @@ fn test_copy_move_none_volume_class_logs_warning() {
         "Expected warning about missing destination_volume_class. Log buffer: {}",
         log_text
     );
+}
+
+// ---------------------------------------------------------------------------
+// Phase 58.5: Unhook orchestration tests
+// ---------------------------------------------------------------------------
+
+/// Builds a minimal `EmitContext` for Phase 58.5 tests.
+#[cfg(test)]
+fn make_test_emit_context() -> crate::audit_emitter::EmitContext {
+    crate::audit_emitter::EmitContext {
+        agent_id: "AGENT-TEST".to_string(),
+        session_id: 1,
+        user_sid: "S-1-5-18".to_string(),
+        user_name: "SYSTEM".to_string(),
+        machine_name: None,
+    }
+}
+
+/// Test that `reconcile_watchdog_evidence` transitions a matching Injected
+/// entry to Exited, emits `WatchdogSelfUnload`, and removes the evidence file.
+#[cfg(test)]
+#[test]
+#[serial_test::serial]
+fn test_reconcile_watchdog_evidence_transitions_and_emits() {
+    let _guard = crate::audit_emitter::audit_test_lock();
+    let _shutdown_guard = SHUTDOWN_TEST_MUTEX.lock().unwrap();
+    reset_shutdown_signal();
+    crate::audit_emitter::enable_test_capture();
+
+    let dir = tempfile::tempdir()
+        .unwrap()
+        .as_ref()
+        .join("WatchdogSelfUnload");
+    std::fs::create_dir_all(&dir).unwrap();
+
+    // Write a test evidence file.
+    let evidence_path = dir.join("1234.evidence.json");
+    let evidence = serde_json::json!({
+        "pid": 1234,
+        "creation_time": 1000,
+        "reason": "watchdog_timeout",
+        "timestamp_secs": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    });
+    std::fs::write(&evidence_path, serde_json::to_string(&evidence).unwrap()).unwrap();
+
+    // Seed the registry with a matching Injected entry.
+    let registry = Arc::new(crate::process_registry::ProcessRegistry::new());
+    let key = crate::process_registry::ProcessKey {
+        pid: 1234,
+        creation_time: 1000,
+    };
+    registry.try_claim(key);
+    registry.record_injected(key, "x64".to_string());
+
+    let audit_ctx = make_test_emit_context();
+
+    // Temporarily redirect the global evidence directory by calling the helper
+    // with a path argument is not supported; instead we test the helper's logic
+    // by exercising it through a test-exposed variant that accepts a directory.
+    // For this test we use the production path but clean it up afterward.
+    let production_dir = std::path::PathBuf::from(r"C:\ProgramData\DLP\WatchdogSelfUnload");
+    let had_production = production_dir.exists();
+    if had_production {
+        let backup = tempfile::tempdir().unwrap().path().join("backup");
+        std::fs::rename(&production_dir, &backup).unwrap();
+    }
+    std::fs::create_dir_all(&production_dir).unwrap();
+    std::fs::copy(&evidence_path, production_dir.join("1234.evidence.json")).unwrap();
+
+    reconcile_watchdog_evidence(&audit_ctx, Some(Arc::clone(&registry)));
+
+    // Restore the original directory.
+    std::fs::remove_dir_all(&production_dir).unwrap();
+    if had_production {
+        let backup = tempfile::tempdir().unwrap().path().join("backup");
+        std::fs::rename(&backup, &production_dir).unwrap();
+    }
+
+    // Registry entry should be Exited.
+    let state = registry.get(&key).expect("key should exist");
+    assert_eq!(*state, crate::process_registry::ProcessState::Exited);
+
+    // WatchdogSelfUnload event should be captured.
+    let events = crate::audit_emitter::drain_test_events();
+    let watchdog_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == dlp_common::EventType::WatchdogSelfUnload)
+        .collect();
+    assert_eq!(watchdog_events.len(), 1);
+    assert_eq!(
+        watchdog_events[0].resource_path,
+        "process://1234/watchdog_self_unload"
+    );
+    assert!(watchdog_events[0]
+        .justification
+        .as_deref()
+        .unwrap_or("")
+        .contains("reason=watchdog_timeout"));
+}
+
+/// Test that `reconcile_watchdog_evidence` emits an untracked `WatchdogSelfUnload`
+/// event and retains the evidence file when no matching registry entry exists.
+#[cfg(test)]
+#[test]
+#[serial_test::serial]
+fn test_reconcile_watchdog_evidence_untracked_emits_and_retains() {
+    let _guard = crate::audit_emitter::audit_test_lock();
+    let _shutdown_guard = SHUTDOWN_TEST_MUTEX.lock().unwrap();
+    reset_shutdown_signal();
+    crate::audit_emitter::enable_test_capture();
+
+    let production_dir = std::path::PathBuf::from(r"C:\ProgramData\DLP\WatchdogSelfUnload");
+    let had_production = production_dir.exists();
+    if had_production {
+        let backup = tempfile::tempdir().unwrap().path().join("backup");
+        std::fs::rename(&production_dir, &backup).unwrap();
+    }
+    std::fs::create_dir_all(&production_dir).unwrap();
+
+    let evidence_path = production_dir.join("9999.evidence.json");
+    let evidence = serde_json::json!({
+        "pid": 9999,
+        "creation_time": 1000,
+        "reason": "watchdog_timeout",
+        "timestamp_secs": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    });
+    std::fs::write(&evidence_path, serde_json::to_string(&evidence).unwrap()).unwrap();
+
+    let registry = Arc::new(crate::process_registry::ProcessRegistry::new());
+    let audit_ctx = make_test_emit_context();
+
+    reconcile_watchdog_evidence(&audit_ctx, Some(Arc::clone(&registry)));
+
+    // Evidence file should be retained.
+    assert!(
+        evidence_path.exists(),
+        "unmatched evidence file should be retained"
+    );
+
+    // Untracked WatchdogSelfUnload event should be captured.
+    let events = crate::audit_emitter::drain_test_events();
+    let watchdog_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == dlp_common::EventType::WatchdogSelfUnload)
+        .collect();
+    assert_eq!(watchdog_events.len(), 1);
+    assert!(
+        watchdog_events[0]
+            .justification
+            .as_deref()
+            .unwrap_or("")
+            .contains("untracked=true"),
+        "expected untracked flag in justification"
+    );
+
+    // Cleanup.
+    std::fs::remove_dir_all(&production_dir).unwrap();
+    if had_production {
+        let backup = tempfile::tempdir().unwrap().path().join("backup");
+        std::fs::rename(&backup, &production_dir).unwrap();
+    }
+}
+
+/// Test that `request_unhook_from_injected` sets `UNHOOK_ALL_REQUESTED` and emits
+/// `AgentShutdownUnhook` when the registry contains injected processes.
+#[cfg(test)]
+#[test]
+#[serial_test::serial]
+fn test_request_unhook_from_injected_sets_flag_and_emits() {
+    let _guard = crate::audit_emitter::audit_test_lock();
+    reset_shutdown_signal();
+    reset_unhook_signal();
+    crate::audit_emitter::enable_test_capture();
+
+    let registry = Arc::new(crate::process_registry::ProcessRegistry::new());
+    let key = crate::process_registry::ProcessKey {
+        pid: 1234,
+        creation_time: 1000,
+    };
+    registry.try_claim(key);
+    registry.record_injected(key, "x64".to_string());
+
+    let audit_ctx = make_test_emit_context();
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(request_unhook_from_injected(&registry, &audit_ctx));
+
+    assert!(
+        UNHOOK_ALL_REQUESTED.load(Ordering::Acquire),
+        "UNHOOK_ALL_REQUESTED should be set"
+    );
+
+    let events = crate::audit_emitter::drain_test_events();
+    let shutdown_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == dlp_common::EventType::AgentShutdownUnhook)
+        .collect();
+    assert_eq!(shutdown_events.len(), 1);
+    assert_eq!(shutdown_events[0].decision, dlp_common::Decision::ALLOW);
+    assert_eq!(
+        shutdown_events[0].resource_path,
+        format!("pid={}", std::process::id())
+    );
+    assert!(shutdown_events[0]
+        .justification
+        .as_deref()
+        .unwrap_or("")
+        .contains("injected_count=1"));
+
+    // The entry never acked, so it should still be Injected and an UnhookFailure
+    // event should have been emitted.
+    let failure_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == dlp_common::EventType::UnhookFailure)
+        .collect();
+    assert_eq!(failure_events.len(), 1);
+    assert_eq!(failure_events[0].resource_path, "pid=1234");
+
+    reset_unhook_signal();
+}
+
+/// Test that `wait_for_unhook_acks` returns immediately when the registry has
+/// no injected processes.
+#[cfg(test)]
+#[tokio::test]
+#[serial_test::serial]
+async fn test_wait_for_unhook_acks_empty_registry_returns_zero() {
+    let registry = Arc::new(crate::process_registry::ProcessRegistry::new());
+    let remaining = wait_for_unhook_acks(&registry, Duration::from_millis(50)).await;
+    assert_eq!(remaining, 0);
 }

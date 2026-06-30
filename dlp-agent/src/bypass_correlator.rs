@@ -1929,35 +1929,39 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_audit_mode_suppresses_emit_alert() {
+    #[test]
+    #[serial_test::serial]
+    fn test_audit_mode_suppresses_emit_alert() {
+        let _guard = crate::audit_emitter::audit_test_lock();
         crate::audit_emitter::enable_test_capture();
 
-        let config = CorrelatorConfig {
-            enforcement_mode: EnforcementMode::Audit,
-            ..Default::default()
-        };
-        let correlator = BypassCorrelator::new(config);
+        tokio::runtime::Runtime::new().unwrap().block_on(async {
+            let config = CorrelatorConfig {
+                enforcement_mode: EnforcementMode::Audit,
+                ..Default::default()
+            };
+            let correlator = BypassCorrelator::new(config);
 
-        let event = EtwFileEvent {
-            pid: 1234,
-            file_name: r"C:\Data\secret.docx".to_string(),
-            file_object: 0,
-            timestamp: 0,
-            op: FileOp::Create,
-            nt_path_converted: true,
-        };
+            let event = EtwFileEvent {
+                pid: 1234,
+                file_name: r"C:\Data\secret.docx".to_string(),
+                file_object: 0,
+                timestamp: 0,
+                op: FileOp::Create,
+                nt_path_converted: true,
+            };
 
-        correlator
-            .emit_alert(event, BypassReason::NoHookJournal)
-            .await;
+            correlator
+                .emit_alert(event, BypassReason::NoHookJournal)
+                .await;
 
-        // Batch should be empty and no audit event emitted — safety net works.
-        let batch = correlator.alert_batch.lock().await;
-        assert!(
-            batch.is_empty(),
-            "emit_alert safety net must suppress in Audit mode"
-        );
+            // Batch should be empty and no audit event emitted — safety net works.
+            let batch = correlator.alert_batch.lock().await;
+            assert!(
+                batch.is_empty(),
+                "emit_alert safety net must suppress in Audit mode"
+            );
+        });
 
         let audit_events = crate::audit_emitter::drain_test_events();
         assert!(

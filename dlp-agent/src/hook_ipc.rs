@@ -1846,8 +1846,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn unhook_ack_failure_routing_test() {
-        crate::audit_emitter::enable_test_capture();
+        let _guard = crate::audit_emitter::audit_test_lock();
         let pipe_name = r"\\.\pipe\DlpHookPipeTestUnhookAckFailure";
         let registry = registry_with_injected(1234, 1000);
         let registry_for_server = Arc::clone(&registry);
@@ -1861,8 +1862,10 @@ mod tests {
         });
 
         let server = HookIpcServer::new(pipe_name, handler).with_registry(registry_for_server);
+        let token = crate::audit_emitter::enable_test_capture();
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let _server_handle = std::thread::spawn(move || {
+            crate::audit_emitter::set_current_capture_token(token);
             server.run_with_ready(|| {
                 let _ = tx.send(());
             })
@@ -1967,6 +1970,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn poll_control_no_op_when_not_requested() {
         // Ensure the flag is false for this test.
         crate::service::reset_unhook_signal();
@@ -2018,7 +2022,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn poll_control_returns_unhook_command_for_known_injected() {
+        let _guard = crate::audit_emitter::audit_test_lock();
         crate::service::reset_unhook_signal();
         crate::service::UNHOOK_ALL_REQUESTED.store(true, std::sync::atomic::Ordering::Release);
 
@@ -2076,7 +2082,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn poll_control_no_op_for_unknown_or_stale_caller() {
+        let _guard = crate::audit_emitter::audit_test_lock();
         crate::service::reset_unhook_signal();
         crate::service::UNHOOK_ALL_REQUESTED.store(true, std::sync::atomic::Ordering::Release);
 

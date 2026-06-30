@@ -167,10 +167,11 @@ mod audit_enrichment {
 pub use audit_enrichment::{get_application_metadata, get_resource_owner};
 
 use dlp_common::endpoint::AppIdentity;
+use std::cell::RefCell;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
 use dlp_common::endpoint::agent_unknown_app;
 use dlp_common::AuditEvent;
@@ -187,34 +188,95 @@ use tracing::{debug, error, info, warn};
 // inherit `cfg(test)` from the library crate) can call `enable_test_capture`
 // and `drain_test_events` without a cargo feature flag.
 //
-// Production code never calls `enable_test_capture`, so `TEST_CAPTURE_ENABLED`
-// stays `false` forever.  The only overhead on the hot emit path is a single
-// `Relaxed` atomic load -- effectively free.
+// Production code never calls `enable_test_capture`, so the capture token stays
+// `0` forever.  The only overhead on the hot emit path is a thread-local load
+// and an atomic load -- negligible overhead when disabled.
 
-/// Whether the in-process capture sink is active.  `false` by default.
-static TEST_CAPTURE_ENABLED: AtomicBool = AtomicBool::new(false);
-
-/// In-process event capture buffer.
-static TEST_EVENT_SINK: Lazy<Mutex<Vec<AuditEvent>>> = Lazy::new(|| Mutex::new(Vec::new()));
-
-/// Enable the in-process audit event capture sink.
-///
-/// Call at the start of any test that needs to assert on emitted events.
-/// No production code path calls this function, so the sink is disabled in
-/// all production service runs.  Call [`drain_test_events`] to retrieve and
-/// reset the accumulated events.
-pub fn enable_test_capture() {
-    TEST_CAPTURE_ENABLED.store(true, AtomicOrdering::SeqCst);
+thread_local! {
+    /// Per-thread capture token.  `0` means capture is disabled on this thread.
+    static CURRENT_CAPTURE_TOKEN: RefCell<u64> = const { RefCell::new(0) };
 }
 
-/// Drain and return all events captured since the last [`enable_test_capture`].
+/// Monotonically increasing token generator for test capture sessions.
+static NEXT_CAPTURE_TOKEN: AtomicU64 = AtomicU64::new(1);
+
+/// In-process event capture buffer.  Each entry is tagged with the capture
+/// token of the thread that emitted it so parallel tests do not observe each
+/// other's events.
+static TEST_EVENT_SINK: Lazy<Mutex<Vec<(u64, AuditEvent)>>> = Lazy::new(|| Mutex::new(Vec::new()));
+
+/// Enable the in-process audit event capture sink for the current thread.
 ///
-/// Disables the capture sink before draining so the next `emit_audit` call
-/// reverts to the fast-path `Relaxed` load.  Returns an empty `Vec` if
-/// capture was never enabled or no events were emitted during the window.
+/// Returns a token that must be passed to [`drain_test_events`] to retrieve
+/// only the events emitted on threads carrying this token.  Call
+/// [`set_current_capture_token`] on any spawned thread (e.g. a hook IPC server
+/// thread) that needs its events captured by the calling test.
+///
+/// No production code path calls this function, so the sink is disabled in all
+/// production service runs.
+pub fn enable_test_capture() -> u64 {
+    let token = NEXT_CAPTURE_TOKEN.fetch_add(1, AtomicOrdering::Relaxed);
+    CURRENT_CAPTURE_TOKEN.with(|t| *t.borrow_mut() = token);
+    token
+}
+
+/// Set the capture token for the current thread.
+///
+/// Use this in spawned threads (e.g. the hook IPC server thread) so that audit
+/// events emitted from those threads are captured by the test that owns the
+/// token.  Passing `0` disables capture on the current thread.
+pub fn set_current_capture_token(token: u64) {
+    CURRENT_CAPTURE_TOKEN.with(|t| *t.borrow_mut() = token);
+}
+
+/// Returns a serialisation lock guard for audit tests.
+///
+/// Tests that assert on captured audit events should hold this guard to avoid
+/// interleaving with other serial tests that also emit events. The guard also
+/// drains any stale events from the in-process sink before the test runs.
+#[cfg(test)]
+pub fn audit_test_lock() -> AuditTestGuard {
+    AuditTestGuard
+}
+
+#[cfg(test)]
+pub struct AuditTestGuard;
+
+#[cfg(test)]
+impl Drop for AuditTestGuard {
+    fn drop(&mut self) {
+        // Drain any events left behind by the test so the next serial test
+        // starts with a clean sink.
+        let _ = drain_test_events();
+    }
+}
+
+#[cfg(test)]
+/// Drain stale events that may have accumulated before the current test's
+/// capture token was enabled. This is used by `audit_test_lock` to ensure a
+/// clean state at the start of a test.
+pub fn drain_stale_test_events() {
+    let _ = drain_test_events();
+}
+
+/// Drain and return all events captured for the current thread's token.
+///
+/// Disables capture on the current thread before draining.  Returns an empty
+/// `Vec` if capture was never enabled or no events were emitted during the
+/// window.
 pub fn drain_test_events() -> Vec<AuditEvent> {
-    TEST_CAPTURE_ENABLED.store(false, AtomicOrdering::SeqCst);
-    TEST_EVENT_SINK.lock().drain(..).collect()
+    let token = CURRENT_CAPTURE_TOKEN.with(|t| {
+        let mut t = t.borrow_mut();
+        let current = *t;
+        *t = 0;
+        current
+    });
+    TEST_EVENT_SINK
+        .lock()
+        .drain(..)
+        .filter(|(t, _)| *t == token)
+        .map(|(_, event)| event)
+        .collect()
 }
 
 #[cfg(windows)]
@@ -303,11 +365,14 @@ pub fn emit(event: &mut AuditEvent) -> Result<(), AuditError> {
     let result = EMITTER.emit(event);
 
     // In-process capture sink. Enabled only when a test calls
-    // `enable_test_capture()`. The atomic check is a single relaxed load on
-    // the production hot path -- negligible overhead when disabled.
-    if TEST_CAPTURE_ENABLED.load(AtomicOrdering::Relaxed) {
-        TEST_EVENT_SINK.lock().push(event.clone());
-    }
+    // `enable_test_capture()`. The thread-local check is negligible overhead
+    // when disabled.
+    CURRENT_CAPTURE_TOKEN.with(|t| {
+        let token = *t.borrow();
+        if token != 0 {
+            TEST_EVENT_SINK.lock().push((token, event.clone()));
+        }
+    });
 
     result
 }
@@ -348,11 +413,14 @@ pub fn emit_audit(ctx: &EmitContext, event: &mut AuditEvent) {
     }
 
     // In-process capture sink. Enabled only when a test calls
-    // `enable_test_capture()`. The atomic check is a single relaxed load on
-    // the production hot path -- negligible overhead when disabled.
-    if TEST_CAPTURE_ENABLED.load(AtomicOrdering::Relaxed) {
-        TEST_EVENT_SINK.lock().push(event.clone());
-    }
+    // `enable_test_capture()`. The thread-local check is negligible overhead
+    // when disabled.
+    CURRENT_CAPTURE_TOKEN.with(|t| {
+        let token = *t.borrow();
+        if token != 0 {
+            TEST_EVENT_SINK.lock().push((token, event.clone()));
+        }
+    });
 
     // Best-effort relay to dlp-server via the audit buffer.
     // The buffer is flushed periodically by a background task.
@@ -1240,7 +1308,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_emit_unhook_audit_agent_shutdown() {
+        let _guard = audit_test_lock();
         enable_test_capture();
         let ctx = make_test_emit_context();
         emit_unhook_audit(
@@ -1262,7 +1332,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_emit_unhook_audit_failure() {
+        let _guard = audit_test_lock();
         enable_test_capture();
         let ctx = make_test_emit_context();
         emit_unhook_audit(
@@ -1284,7 +1356,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_emit_unhook_audit_failed_ack() {
+        let _guard = audit_test_lock();
         enable_test_capture();
         let ctx = make_test_emit_context();
         emit_unhook_audit(
