@@ -6,14 +6,14 @@ current_phase: 59
 current_phase_name: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 status: completed
 stopped_at: Phase 58.3 context gathered
-last_updated: "2026-06-30T02:10:16.109Z"
+last_updated: "2026-06-30T04:32:48.080Z"
 last_activity: 2026-06-29
 last_activity_desc: Phase 58.4 complete, transitioned to Phase 59
 progress:
   total_phases: 47
   completed_phases: 37
   total_plans: 197
-  completed_plans: 172
+  completed_plans: 173
   percent: 79
 ---
 
@@ -179,7 +179,7 @@ Phase 59 and later are complete and shipped as part of v0.11.0.
 
 ## Session Continuity
 
-Last session: 2026-06-30T02:07:48.802Z
+Last session: 2026-06-30T04:32:48.068Z
 Stopped at: Phase 58.3 context gathered
 Resume file: .planning/phases/58.3-close-gap-ops-04-execute-physical-windows-11-uat/58.3-CONTEXT.md
 
@@ -222,6 +222,7 @@ Resume file: .planning/phases/58.3-close-gap-ops-04-execute-physical-windows-11-
 | Phase 58.4 P03 | 25min | 4 tasks | 7 files | DIFF-04 health snapshot emission + ingestion |
 | Phase 58.4 P04 | 25min | 3 tasks | 5 files |
 | Phase 58.5 P01 | 18 min | 2 tasks | 2 files |
+| Phase 58.5 P02 | 47min | 3 tasks | 11 files |
 
 ## Quick Tasks Completed
 
@@ -248,3 +249,7 @@ Resume file: .planning/phases/58.3-close-gap-ops-04-execute-physical-windows-11-
 - [Phase ?]: Placed new IpcPayloadV1 variants after HashEvidence to preserve existing bincode discriminant indexes
 - [Phase ?]: Included creation_time in PollControl and UnhookAck to support PID-reuse-safe ProcessKey correlation in later waves
 - [Phase ?]: UnhookFailure triggers_alert=true; AgentShutdownUnhook and WatchdogSelfUnload trigger no real-time alert
+- [Phase ?]: Stored DLL HINSTANCE as raw isize in Mutex because HINSTANCE lacks Send/Sync.
+- [Phase ?]: Started control-poll/watchdog thread from enter_hook_call as safest post-attach path.
+- [Phase ?]: Used Mutex<Option<Mapping>> instead of OnceLock reset for safe shared-memory unmapping.
+- [Phase ?]: Returned None from classify_and_log_path/handle during shutdown for original-API pass-through.
