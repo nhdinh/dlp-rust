@@ -39,6 +39,11 @@ use dlp_common::hook_ipc::{
 };
 use dlp_common::{Classification, HookRequest, HookResponse};
 
+/// Maximum length of the free-form `UnhookAck.error` string that is forwarded
+/// to the audit log. Longer values are truncated to limit log injection and
+/// SIEM noise.
+const MAX_UNHOOK_ERROR_LEN: usize = 256;
+
 use crate::ipc::frame::{read_frame, write_frame};
 use crate::ipc::pipe_security::PipeSecurity;
 
@@ -338,6 +343,23 @@ fn named_pipe_client_pid(pipe: HANDLE) -> Option<u32> {
     }
 }
 
+/// Sanitizes the free-form `UnhookAck.error` string before it is forwarded to
+/// the audit log. Empty strings are discarded and over-length strings are
+/// truncated to [`MAX_UNHOOK_ERROR_LEN`] to prevent log injection and SIEM
+/// noise from a compromised hook DLL.
+fn sanitize_unhook_error(error: Option<String>) -> Option<String> {
+    error.and_then(|e| {
+        let trimmed = e.trim().to_string();
+        if trimmed.is_empty() {
+            None
+        } else if trimmed.chars().count() > MAX_UNHOOK_ERROR_LEN {
+            Some(trimmed.chars().take(MAX_UNHOOK_ERROR_LEN).collect())
+        } else {
+            Some(trimmed)
+        }
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn accept_loop(
     first_pipe: HANDLE,
@@ -635,8 +657,7 @@ fn handle_connection(
                                 dlp_common::EventType::UnhookFailure,
                                 ack.pid,
                                 false,
-                                ack.error
-                                    .clone()
+                                sanitize_unhook_error(ack.error.clone())
                                     .or_else(|| Some("unhook failed".to_string())),
                             );
                         }
