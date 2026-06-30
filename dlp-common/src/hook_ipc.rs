@@ -129,6 +129,28 @@ pub enum IpcPayloadV1 {
     /// The agent stores this in a short-lived HashCache and attaches it
     /// to the AuditEvent. Fire-and-forget; no response expected.
     HashEvidence(HashEvidenceFrame),
+    /// An unhook command from the agent to the hook DLL.
+    ///
+    /// Sent as part of the control response when the DLL polls the agent
+    /// and the agent has decided this process should self-unhook.
+    UnhookCommand(UnhookCommand),
+    /// An unhook acknowledgement from the hook DLL to the agent.
+    ///
+    /// Sent after the hook DLL processes an [`UnhookCommand`] to report
+    /// success or failure. Carries `pid` and `creation_time` so the agent
+    /// can correlate the ack with its registry [`ProcessKey`].
+    UnhookAck(UnhookAck),
+    /// A control poll from the hook DLL to the agent.
+    ///
+    /// Sent periodically by the hook DLL to ask the agent whether there
+    /// is a pending control command for this process. The agent replies
+    /// with [`IpcPayloadV1::ControlResponse`].
+    PollControl(PollControl),
+    /// A control response from the agent to the hook DLL.
+    ///
+    /// Carries an optional [`UnhookCommand`]. When `command` is `None`,
+    /// the DLL continues normal operation.
+    ControlResponse(ControlResponse),
 }
 
 /// Request sent by the hook DLL to the agent for classification.
@@ -490,6 +512,63 @@ pub struct HashEvidenceFrame {
     pub hash_skipped: bool,
     /// Unix timestamp when the hash was computed.
     pub timestamp_secs: u64,
+}
+
+/// Reason the agent is asking the hook DLL to unhook.
+///
+/// This is a bounded enum so that invalid bytes fail deserialization
+/// and the DLL ignores the message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum UnhookReason {
+    /// The agent is shutting down gracefully and is unhooking all processes.
+    AgentShutdown,
+    /// The hook DLL's watchdog detected agent absence and is self-unhooking.
+    WatchdogTimeout,
+}
+
+/// Agent-to-DLL command requesting that the hook DLL remove itself from a process.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UnhookCommand {
+    /// Why the unhook is being requested.
+    pub reason: UnhookReason,
+    /// Unix timestamp (seconds) when the command was issued.
+    pub timestamp_secs: u64,
+}
+
+/// Hook-DLL-to-agent acknowledgement that an unhook command was processed.
+///
+/// Carries `pid` and `creation_time` so the agent can correlate the ack with
+/// its registry [`ProcessKey`] and avoid misattributing the ack after PID reuse.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UnhookAck {
+    /// Process ID that was unhooked.
+    pub pid: u32,
+    /// Process creation time (FILETIME low + high parts) for PID-reuse-safe correlation.
+    pub creation_time: u64,
+    /// Whether the unhook succeeded.
+    pub success: bool,
+    /// Optional human-readable error message when `success` is false.
+    ///
+    /// Contains only generic messages; no PII or file paths.
+    pub error: Option<String>,
+}
+
+/// Hook-DLL-to-agent control poll asking whether a command is pending.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PollControl {
+    /// Process ID of the polling hooked process.
+    pub pid: u32,
+    /// Process creation time (FILETIME low + high parts) for PID-reuse-safe correlation.
+    pub creation_time: u64,
+}
+
+/// Agent-to-DLL reply to a [`PollControl`] request.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ControlResponse {
+    /// The pending unhook command, if any.
+    ///
+    /// `None` means the DLL should continue normal operation.
+    pub command: Option<UnhookCommand>,
 }
 
 /// Current protocol version.
@@ -1221,5 +1300,137 @@ mod tests {
         let bytes = bincode::serialize(&envelope).unwrap();
         let rt: IpcEnvelope = bincode::deserialize(&bytes).unwrap();
         assert_eq!(envelope, rt);
+    }
+
+    // --- Phase 58.5: Unhook protocol IPC types ---
+
+    #[test]
+    fn unhook_command_roundtrip() {
+        let cmd = UnhookCommand {
+            reason: UnhookReason::AgentShutdown,
+            timestamp_secs: 1_700_000_000,
+        };
+        let envelope = IpcEnvelope::V1(IpcMessageV1 {
+            payload: IpcPayloadV1::UnhookCommand(cmd.clone()),
+        });
+        let bytes = bincode::serialize(&envelope).unwrap();
+        let rt: IpcEnvelope = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(envelope, rt);
+    }
+
+    #[test]
+    fn unhook_ack_roundtrip_includes_creation_time() {
+        let ack = UnhookAck {
+            pid: 1234,
+            creation_time: 0x0000_0001_2345_6789,
+            success: true,
+            error: None,
+        };
+        let envelope = IpcEnvelope::V1(IpcMessageV1 {
+            payload: IpcPayloadV1::UnhookAck(ack.clone()),
+        });
+        let bytes = bincode::serialize(&envelope).unwrap();
+        let rt: IpcEnvelope = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(envelope, rt);
+        match rt {
+            IpcEnvelope::V1(msg) => match msg.payload {
+                IpcPayloadV1::UnhookAck(ref deserialized) => {
+                    assert_eq!(deserialized.pid, 1234);
+                    assert_eq!(deserialized.creation_time, 0x0000_0001_2345_6789);
+                    assert!(deserialized.success);
+                    assert!(deserialized.error.is_none());
+                }
+                _ => panic!("expected UnhookAck payload"),
+            },
+        }
+    }
+
+    #[test]
+    fn poll_control_roundtrip() {
+        let poll = PollControl {
+            pid: 5678,
+            creation_time: 0x0000_000A_BCDE_F012,
+        };
+        let envelope = IpcEnvelope::V1(IpcMessageV1 {
+            payload: IpcPayloadV1::PollControl(poll.clone()),
+        });
+        let bytes = bincode::serialize(&envelope).unwrap();
+        let rt: IpcEnvelope = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(envelope, rt);
+    }
+
+    #[test]
+    fn control_response_with_command_roundtrip() {
+        let resp = ControlResponse {
+            command: Some(UnhookCommand {
+                reason: UnhookReason::WatchdogTimeout,
+                timestamp_secs: 1_700_000_001,
+            }),
+        };
+        let envelope = IpcEnvelope::V1(IpcMessageV1 {
+            payload: IpcPayloadV1::ControlResponse(resp.clone()),
+        });
+        let bytes = bincode::serialize(&envelope).unwrap();
+        let rt: IpcEnvelope = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(envelope, rt);
+    }
+
+    #[test]
+    fn control_response_no_op_roundtrip() {
+        let resp = ControlResponse { command: None };
+        let envelope = IpcEnvelope::V1(IpcMessageV1 {
+            payload: IpcPayloadV1::ControlResponse(resp.clone()),
+        });
+        let bytes = bincode::serialize(&envelope).unwrap();
+        let rt: IpcEnvelope = bincode::deserialize(&bytes).unwrap();
+        assert_eq!(envelope, rt);
+    }
+
+    #[test]
+    fn existing_variant_indexes_unchanged() {
+        // Pre-change discriminant bytes for Request and Response, captured before
+        // adding the new unhook variants. Bincode serializes the outer
+        // `IpcEnvelope::V1` discriminant first (u32 = 0), then the
+        // `IpcPayloadV1` discriminant (also u32). These constants anchor the
+        // existing payload layout after the envelope discriminant.
+        const EXPECTED_REQUEST_DISCRIMINANT: [u8; 4] = [0x00, 0x00, 0x00, 0x00];
+        const EXPECTED_RESPONSE_DISCRIMINANT: [u8; 4] = [0x01, 0x00, 0x00, 0x00];
+
+        let req = HookRequest {
+            path: r"C:\test.txt".to_string(),
+            action: "WRITE".to_string(),
+            cache_version: 0,
+            protocol_version: 1,
+            op: HookOp::Write,
+            source_volume_class: None,
+            destination_volume_class: None,
+            pid: 0,
+        };
+        let req_envelope = IpcEnvelope::V1(IpcMessageV1 {
+            payload: IpcPayloadV1::Request(req),
+        });
+        let req_bytes = bincode::serialize(&req_envelope).unwrap();
+        assert_eq!(
+            &req_bytes[4..8],
+            &EXPECTED_REQUEST_DISCRIMINANT,
+            "Request payload discriminant must remain 0"
+        );
+
+        let resp = HookResponse {
+            decision: Decision::ALLOW,
+            reason: "ok".to_string(),
+            cache_hint: None,
+            cache_version: 0,
+            approval_override: None,
+        };
+        let resp_envelope = IpcEnvelope::V1(IpcMessageV1 {
+            payload: IpcPayloadV1::Response(resp),
+        });
+        let resp_bytes = bincode::serialize(&resp_envelope).unwrap();
+        assert_eq!(
+            &resp_bytes[4..8],
+            &EXPECTED_RESPONSE_DISCRIMINANT,
+            "Response payload discriminant must remain 1"
+        );
     }
 }
