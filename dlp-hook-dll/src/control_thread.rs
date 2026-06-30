@@ -216,10 +216,6 @@ pub fn shutdown_control_thread() {
             let _ = handle.join();
         }
     }
-
-    unsafe {
-        let _ = CloseHandle(event);
-    }
 }
 
 /// Main loop for the control/watchdog thread.
