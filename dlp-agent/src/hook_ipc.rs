@@ -100,6 +100,8 @@ pub struct HookIpcServer {
     hash_cache: Option<crate::hash_cache::HashCache>,
     /// Phase 58: Health snapshot aggregator for ingesting one-way HealthResponse frames.
     health_aggregator: Option<Arc<crate::health_aggregator::HealthAggregator>>,
+    /// Phase 58.5: Process registry for unhook ack routing and PollControl validation.
+    registry: Option<Arc<crate::process_registry::ProcessRegistry>>,
 }
 
 impl HookIpcServer {
@@ -117,6 +119,7 @@ impl HookIpcServer {
             bypass_tx: None,
             hash_cache: None,
             health_aggregator: None,
+            registry: None,
         }
     }
 
@@ -149,6 +152,7 @@ impl HookIpcServer {
             bypass_tx: None,
             hash_cache: None,
             health_aggregator: None,
+            registry: None,
         }
     }
 
@@ -172,6 +176,7 @@ impl HookIpcServer {
             bypass_tx: Some(bypass_tx),
             hash_cache: None,
             health_aggregator: None,
+            registry: None,
         }
     }
 
@@ -196,6 +201,7 @@ impl HookIpcServer {
             bypass_tx: Some(bypass_tx),
             hash_cache: None,
             health_aggregator: None,
+            registry: None,
         }
     }
 
@@ -232,6 +238,16 @@ impl HookIpcServer {
         self
     }
 
+    /// Phase 58.5: Sets the process registry used for PollControl validation
+    /// and UnhookAck routing.
+    pub fn with_registry(
+        mut self,
+        registry: Arc<crate::process_registry::ProcessRegistry>,
+    ) -> Self {
+        self.registry = Some(registry);
+        self
+    }
+
     /// Runs the blocking accept loop on the current thread.
     ///
     /// Callers should spawn this in a dedicated `std::thread`.  Connections
@@ -257,6 +273,7 @@ impl HookIpcServer {
             self.bypass_tx,
             self.hash_cache,
             self.health_aggregator,
+            self.registry,
         )
     }
 }
@@ -301,6 +318,7 @@ fn accept_loop(
     bypass_tx: Option<crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>>,
     hash_cache: Option<crate::hash_cache::HashCache>,
     health_aggregator: Option<Arc<crate::health_aggregator::HealthAggregator>>,
+    registry: Option<Arc<crate::process_registry::ProcessRegistry>>,
 ) -> Result<()> {
     let mut pipe = first_pipe;
     loop {
@@ -337,6 +355,7 @@ fn accept_loop(
             bypass_tx.as_ref(),
             hash_cache.as_ref(),
             health_aggregator.as_ref(),
+            registry.as_ref(),
         ) {
             warn!(error = %e, "Hook IPC: connection handler error");
         }
@@ -357,6 +376,7 @@ fn handle_connection(
     bypass_tx: Option<&crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>>,
     hash_cache: Option<&crate::hash_cache::HashCache>,
     health_aggregator: Option<&Arc<crate::health_aggregator::HealthAggregator>>,
+    registry: Option<&Arc<crate::process_registry::ProcessRegistry>>,
 ) -> Result<()> {
     loop {
         let frame = match read_frame(pipe) {
@@ -505,13 +525,41 @@ fn handle_connection(
                     })
                 }
                 IpcPayloadV1::PollControl(ref poll) => {
-                    debug!(pid = poll.pid, creation_time = poll.creation_time, "Hook IPC: poll control received");
-                    // Default response is no pending command. Plan 58.5-03 will
-                    // wire the agent's shutdown orchestration to reply with
-                    // ControlResponse { command: Some(UnhookCommand) }.
-                    IpcPayloadV1::ControlResponse(dlp_common::hook_ipc::ControlResponse {
-                        command: None,
-                    })
+                    debug!(
+                        pid = poll.pid,
+                        creation_time = poll.creation_time,
+                        "Hook IPC: poll control received"
+                    );
+                    let command = if crate::service::UNHOOK_ALL_REQUESTED
+                        .load(std::sync::atomic::Ordering::Acquire)
+                    {
+                        registry
+                            .and_then(|r| {
+                                r.get(&crate::process_registry::ProcessKey {
+                                    pid: poll.pid,
+                                    creation_time: poll.creation_time,
+                                })
+                            })
+                            .and_then(|state| {
+                                if matches!(
+                                    *state,
+                                    crate::process_registry::ProcessState::Injected { .. }
+                                ) {
+                                    Some(dlp_common::hook_ipc::UnhookCommand {
+                                        reason: dlp_common::hook_ipc::UnhookReason::AgentShutdown,
+                                        timestamp_secs: std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default()
+                                            .as_secs(),
+                                    })
+                                } else {
+                                    None
+                                }
+                            })
+                    } else {
+                        None
+                    };
+                    IpcPayloadV1::ControlResponse(dlp_common::hook_ipc::ControlResponse { command })
                 }
                 IpcPayloadV1::UnhookAck(ref ack) => {
                     debug!(
@@ -520,32 +568,28 @@ fn handle_connection(
                         success = ack.success,
                         "Hook IPC: unhook ack received"
                     );
-                    // Forward to bypass correlator for now; Plan 58.5-03 will
-                    // route this to the process registry and audit emitter.
-                    if let Some(tx) = bypass_tx {
-                        let bypass_alert = dlp_common::hook_ipc::BypassAlert {
-                            reason: dlp_common::hook_ipc::BypassReason::HookOverwritten,
-                            stub_name: "unhook_ack".to_string(),
-                            pid: ack.pid,
-                            timestamp_secs: std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH)
-                                .unwrap_or_default()
-                                .as_secs(),
-                            version: 2,
-                            agent_id: String::new(),
-                            image_path: String::new(),
-                            image_sha256: None,
-                            file_path: String::new(),
-                            operation: "unhook".to_string(),
-                            file_object: 0,
-                            qpc_timestamp: 0,
-                            severity: if ack.success { "info".to_string() } else { "warn".to_string() },
-                            correlation_reason: ack
-                                .error
-                                .clone()
-                                .unwrap_or_else(|| "UnhookAck received".to_string()),
-                        };
-                        let _ = tx.send(bypass_alert);
+                    let key = crate::process_registry::ProcessKey {
+                        pid: ack.pid,
+                        creation_time: ack.creation_time,
+                    };
+                    if ack.success {
+                        if let Some(r) = registry {
+                            r.record_unhooked(&key);
+                        }
+                    } else if let Some(ref err) = ack.error {
+                        crate::audit_emitter::emit_unhook_audit(
+                            &crate::audit_emitter::EmitContext {
+                                agent_id: "AGENT-01".to_string(),
+                                session_id: 0,
+                                user_sid: "S-1-5-18".to_string(),
+                                user_name: "SYSTEM".to_string(),
+                                machine_name: None,
+                            },
+                            dlp_common::EventType::UnhookFailure,
+                            ack.pid,
+                            false,
+                            Some(err.clone()),
+                        );
                     }
                     IpcPayloadV1::Response(HookResponse {
                         decision: dlp_common::Decision::ALLOW,
@@ -1727,5 +1771,361 @@ mod tests {
         let resp = handle_hook_request(req, &inner, &cache, None);
         assert_eq!(resp.decision, Decision::DENY);
         assert_eq!(resp.cache_version, 1);
+    }
+
+    // ── Plan 58.5-03: PollControl / UnhookAck routing tests ────────────────
+
+    /// Builds a minimal registry with one Injected entry and returns it.
+    fn registry_with_injected(
+        pid: u32,
+        creation_time: u64,
+    ) -> Arc<crate::process_registry::ProcessRegistry> {
+        let registry = Arc::new(crate::process_registry::ProcessRegistry::new());
+        let key = crate::process_registry::ProcessKey { pid, creation_time };
+        registry.try_claim(key);
+        registry.record_injected(key, "x64".to_string());
+        registry
+    }
+
+    #[test]
+    fn unhook_ack_success_routing_test() {
+        let pipe_name = r"\\.\pipe\DlpHookPipeTestUnhookAckSuccess";
+        let registry = registry_with_injected(1234, 1000);
+        let registry_for_server = Arc::clone(&registry);
+
+        let handler: HookHandler = Arc::new(|_req: HookRequest| HookResponse {
+            decision: Decision::ALLOW,
+            reason: "ok".to_string(),
+            cache_hint: None,
+            cache_version: 0,
+            approval_override: None,
+        });
+
+        let server = HookIpcServer::new(pipe_name, handler).with_registry(registry_for_server);
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let _server_handle = std::thread::spawn(move || {
+            server.run_with_ready(|| {
+                let _ = tx.send(());
+            })
+        });
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("server ready");
+        std::thread::sleep(Duration::from_millis(50));
+
+        let client = connect_client(pipe_name).expect("client connect");
+        let ack = dlp_common::hook_ipc::UnhookAck {
+            pid: 1234,
+            creation_time: 1000,
+            success: true,
+            error: None,
+        };
+        let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+            payload: dlp_common::hook_ipc::IpcPayloadV1::UnhookAck(ack),
+        });
+        let ack_bytes = bincode::serialize(&envelope).unwrap();
+        let response_bytes = send_raw(client, &ack_bytes).expect("send unhook ack");
+        let response_envelope: dlp_common::hook_ipc::IpcEnvelope =
+            bincode::deserialize(&response_bytes).expect("deserialize response");
+        match response_envelope {
+            dlp_common::hook_ipc::IpcEnvelope::V1(msg) => match msg.payload {
+                dlp_common::hook_ipc::IpcPayloadV1::Response(resp) => {
+                    assert_eq!(resp.decision, Decision::ALLOW);
+                }
+                _ => panic!("expected Response payload"),
+            },
+        }
+        close_pipe(client);
+
+        let state = registry
+            .get(&crate::process_registry::ProcessKey {
+                pid: 1234,
+                creation_time: 1000,
+            })
+            .expect("key should exist");
+        assert_eq!(*state, crate::process_registry::ProcessState::Exited);
+    }
+
+    #[test]
+    fn unhook_ack_failure_routing_test() {
+        crate::audit_emitter::enable_test_capture();
+        let pipe_name = r"\\.\pipe\DlpHookPipeTestUnhookAckFailure";
+        let registry = registry_with_injected(1234, 1000);
+        let registry_for_server = Arc::clone(&registry);
+
+        let handler: HookHandler = Arc::new(|_req: HookRequest| HookResponse {
+            decision: Decision::ALLOW,
+            reason: "ok".to_string(),
+            cache_hint: None,
+            cache_version: 0,
+            approval_override: None,
+        });
+
+        let server = HookIpcServer::new(pipe_name, handler).with_registry(registry_for_server);
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let _server_handle = std::thread::spawn(move || {
+            server.run_with_ready(|| {
+                let _ = tx.send(());
+            })
+        });
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("server ready");
+        std::thread::sleep(Duration::from_millis(50));
+
+        let client = connect_client(pipe_name).expect("client connect");
+        let ack = dlp_common::hook_ipc::UnhookAck {
+            pid: 1234,
+            creation_time: 1000,
+            success: false,
+            error: Some("unload failed".to_string()),
+        };
+        let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+            payload: dlp_common::hook_ipc::IpcPayloadV1::UnhookAck(ack),
+        });
+        let ack_bytes = bincode::serialize(&envelope).unwrap();
+        let _response_bytes = send_raw(client, &ack_bytes).expect("send unhook ack");
+        close_pipe(client);
+
+        // Registry must remain Injected because ack.success was false.
+        let state = registry
+            .get(&crate::process_registry::ProcessKey {
+                pid: 1234,
+                creation_time: 1000,
+            })
+            .expect("key should exist");
+        assert!(matches!(
+            *state,
+            crate::process_registry::ProcessState::Injected { .. }
+        ));
+
+        let events = crate::audit_emitter::drain_test_events();
+        let failure_events: Vec<_> = events
+            .iter()
+            .filter(|e| e.event_type == dlp_common::EventType::UnhookFailure)
+            .collect();
+        assert_eq!(failure_events.len(), 1);
+        assert_eq!(failure_events[0].resource_path, "pid=1234");
+        assert!(
+            failure_events[0]
+                .justification
+                .as_deref()
+                .unwrap_or("")
+                .contains("unload failed"),
+            "error metadata should be in justification"
+        );
+    }
+
+    #[test]
+    fn unhook_ack_no_match_test() {
+        let pipe_name = r"\\.\pipe\DlpHookPipeTestUnhookAckNoMatch";
+        let registry = registry_with_injected(1234, 1000);
+        let registry_for_server = Arc::clone(&registry);
+
+        let handler: HookHandler = Arc::new(|_req: HookRequest| HookResponse {
+            decision: Decision::ALLOW,
+            reason: "ok".to_string(),
+            cache_hint: None,
+            cache_version: 0,
+            approval_override: None,
+        });
+
+        let server = HookIpcServer::new(pipe_name, handler).with_registry(registry_for_server);
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let _server_handle = std::thread::spawn(move || {
+            server.run_with_ready(|| {
+                let _ = tx.send(());
+            })
+        });
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("server ready");
+        std::thread::sleep(Duration::from_millis(50));
+
+        let client = connect_client(pipe_name).expect("client connect");
+        let ack = dlp_common::hook_ipc::UnhookAck {
+            pid: 9999,
+            creation_time: 1000,
+            success: true,
+            error: None,
+        };
+        let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+            payload: dlp_common::hook_ipc::IpcPayloadV1::UnhookAck(ack),
+        });
+        let ack_bytes = bincode::serialize(&envelope).unwrap();
+        let _response_bytes = send_raw(client, &ack_bytes).expect("send unhook ack");
+        close_pipe(client);
+
+        // The real entry should still be Injected because the ack did not match.
+        let state = registry
+            .get(&crate::process_registry::ProcessKey {
+                pid: 1234,
+                creation_time: 1000,
+            })
+            .expect("key should exist");
+        assert!(matches!(
+            *state,
+            crate::process_registry::ProcessState::Injected { .. }
+        ));
+    }
+
+    #[test]
+    fn poll_control_no_op_when_not_requested() {
+        // Ensure the flag is false for this test.
+        crate::service::reset_unhook_signal();
+
+        let pipe_name = r"\\.\pipe\DlpHookPipeTestPollControlNoOp";
+        let registry = registry_with_injected(1234, 1000);
+        let registry_for_server = Arc::clone(&registry);
+
+        let handler: HookHandler = Arc::new(|_req: HookRequest| HookResponse {
+            decision: Decision::ALLOW,
+            reason: "ok".to_string(),
+            cache_hint: None,
+            cache_version: 0,
+            approval_override: None,
+        });
+
+        let server = HookIpcServer::new(pipe_name, handler).with_registry(registry_for_server);
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let _server_handle = std::thread::spawn(move || {
+            server.run_with_ready(|| {
+                let _ = tx.send(());
+            })
+        });
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("server ready");
+        std::thread::sleep(Duration::from_millis(50));
+
+        let client = connect_client(pipe_name).expect("client connect");
+        let poll = dlp_common::hook_ipc::PollControl {
+            pid: 1234,
+            creation_time: 1000,
+        };
+        let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+            payload: dlp_common::hook_ipc::IpcPayloadV1::PollControl(poll),
+        });
+        let poll_bytes = bincode::serialize(&envelope).unwrap();
+        let response_bytes = send_raw(client, &poll_bytes).expect("send poll control");
+        let response_envelope: dlp_common::hook_ipc::IpcEnvelope =
+            bincode::deserialize(&response_bytes).expect("deserialize response");
+        match response_envelope {
+            dlp_common::hook_ipc::IpcEnvelope::V1(msg) => match msg.payload {
+                dlp_common::hook_ipc::IpcPayloadV1::ControlResponse(resp) => {
+                    assert!(resp.command.is_none());
+                }
+                _ => panic!("expected ControlResponse payload"),
+            },
+        }
+        close_pipe(client);
+    }
+
+    #[test]
+    fn poll_control_returns_unhook_command_for_known_injected() {
+        crate::service::reset_unhook_signal();
+        crate::service::UNHOOK_ALL_REQUESTED.store(true, std::sync::atomic::Ordering::Release);
+
+        let pipe_name = r"\\.\pipe\DlpHookPipeTestPollControlUnhook";
+        let registry = registry_with_injected(1234, 1000);
+        let registry_for_server = Arc::clone(&registry);
+
+        let handler: HookHandler = Arc::new(|_req: HookRequest| HookResponse {
+            decision: Decision::ALLOW,
+            reason: "ok".to_string(),
+            cache_hint: None,
+            cache_version: 0,
+            approval_override: None,
+        });
+
+        let server = HookIpcServer::new(pipe_name, handler).with_registry(registry_for_server);
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let _server_handle = std::thread::spawn(move || {
+            server.run_with_ready(|| {
+                let _ = tx.send(());
+            })
+        });
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("server ready");
+        std::thread::sleep(Duration::from_millis(50));
+
+        let client = connect_client(pipe_name).expect("client connect");
+        let poll = dlp_common::hook_ipc::PollControl {
+            pid: 1234,
+            creation_time: 1000,
+        };
+        let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+            payload: dlp_common::hook_ipc::IpcPayloadV1::PollControl(poll),
+        });
+        let poll_bytes = bincode::serialize(&envelope).unwrap();
+        let response_bytes = send_raw(client, &poll_bytes).expect("send poll control");
+        let response_envelope: dlp_common::hook_ipc::IpcEnvelope =
+            bincode::deserialize(&response_bytes).expect("deserialize response");
+        match response_envelope {
+            dlp_common::hook_ipc::IpcEnvelope::V1(msg) => match msg.payload {
+                dlp_common::hook_ipc::IpcPayloadV1::ControlResponse(resp) => {
+                    let command = resp.command.expect("expected UnhookCommand");
+                    assert_eq!(
+                        command.reason,
+                        dlp_common::hook_ipc::UnhookReason::AgentShutdown
+                    );
+                    assert!(command.timestamp_secs > 0);
+                }
+                _ => panic!("expected ControlResponse payload"),
+            },
+        }
+        close_pipe(client);
+
+        crate::service::reset_unhook_signal();
+    }
+
+    #[test]
+    fn poll_control_no_op_for_unknown_or_stale_caller() {
+        crate::service::reset_unhook_signal();
+        crate::service::UNHOOK_ALL_REQUESTED.store(true, std::sync::atomic::Ordering::Release);
+
+        let pipe_name = r"\\.\pipe\DlpHookPipeTestPollControlUnknown";
+        let registry = registry_with_injected(1234, 1000);
+        let registry_for_server = Arc::clone(&registry);
+
+        let handler: HookHandler = Arc::new(|_req: HookRequest| HookResponse {
+            decision: Decision::ALLOW,
+            reason: "ok".to_string(),
+            cache_hint: None,
+            cache_version: 0,
+            approval_override: None,
+        });
+
+        let server = HookIpcServer::new(pipe_name, handler).with_registry(registry_for_server);
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let _server_handle = std::thread::spawn(move || {
+            server.run_with_ready(|| {
+                let _ = tx.send(());
+            })
+        });
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("server ready");
+        std::thread::sleep(Duration::from_millis(50));
+
+        let client = connect_client(pipe_name).expect("client connect");
+        // Same PID but different creation_time -> not in registry as Injected.
+        let poll = dlp_common::hook_ipc::PollControl {
+            pid: 1234,
+            creation_time: 9999,
+        };
+        let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+            payload: dlp_common::hook_ipc::IpcPayloadV1::PollControl(poll),
+        });
+        let poll_bytes = bincode::serialize(&envelope).unwrap();
+        let response_bytes = send_raw(client, &poll_bytes).expect("send poll control");
+        let response_envelope: dlp_common::hook_ipc::IpcEnvelope =
+            bincode::deserialize(&response_bytes).expect("deserialize response");
+        match response_envelope {
+            dlp_common::hook_ipc::IpcEnvelope::V1(msg) => match msg.payload {
+                dlp_common::hook_ipc::IpcPayloadV1::ControlResponse(resp) => {
+                    assert!(resp.command.is_none());
+                }
+                _ => panic!("expected ControlResponse payload"),
+            },
+        }
+        close_pipe(client);
+
+        crate::service::reset_unhook_signal();
     }
 }

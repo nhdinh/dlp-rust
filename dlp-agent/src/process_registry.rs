@@ -266,6 +266,37 @@ impl ProcessRegistry {
         self.insert_with_eviction(key, ProcessState::Exited);
     }
 
+    /// Record that a hooked process successfully unhooked itself.
+    ///
+    /// Atomically transitions `Injected { .. }` to `Exited`. This is a no-op
+    /// for other states (e.g., a process that was never injected or already
+    /// exited).
+    ///
+    /// # Arguments
+    ///
+    /// * `key` — The process key.
+    pub fn record_unhooked(&self, key: &ProcessKey) {
+        if let Some(mut entry) = self.states.get_mut(key) {
+            let ProcessEntry { ref mut state, .. } = *entry.value_mut();
+            if matches!(*state, ProcessState::Injected { .. }) {
+                *state = ProcessState::Exited;
+            }
+        }
+    }
+
+    /// Returns a snapshot of all registry entries whose state is `Injected`.
+    ///
+    /// A `Vec` is returned instead of an iterator so callers do not hold the
+    /// internal `DashMap` lock across `.await` points.
+    #[must_use]
+    pub fn iter_injected(&self) -> Vec<(ProcessKey, ProcessState)> {
+        self.states
+            .iter()
+            .filter(|entry| matches!(entry.value().state, ProcessState::Injected { .. }))
+            .map(|entry| (*entry.key(), entry.value().state.clone()))
+            .collect()
+    }
+
     /// Get a clone of the state for a key.
     ///
     /// # Arguments
@@ -827,5 +858,117 @@ mod tests {
             registry.get(&new_key).is_some(),
             "newly inserted exited entry should be present"
         );
+    }
+
+    #[test]
+    fn test_record_unhooked_transitions_injected_to_exited() {
+        let registry = ProcessRegistry::new();
+        let key = ProcessKey {
+            pid: 1234,
+            creation_time: 1,
+        };
+        registry.try_claim(key);
+        registry.record_injected(key, "x64".to_string());
+
+        registry.record_unhooked(&key);
+
+        let state = registry.get(&key).expect("key should exist");
+        assert_eq!(*state, ProcessState::Exited);
+    }
+
+    #[test]
+    fn test_record_unhooked_no_op_for_non_injected() {
+        let registry = ProcessRegistry::new();
+
+        // Discovered entry should remain Discovered.
+        let discovered_key = ProcessKey {
+            pid: 1000,
+            creation_time: 1,
+        };
+        registry.try_claim(discovered_key);
+        registry.record_unhooked(&discovered_key);
+        assert_eq!(
+            *registry.get(&discovered_key).unwrap(),
+            ProcessState::Discovered
+        );
+
+        // Skipped entry should remain Skipped.
+        let skipped_key = ProcessKey {
+            pid: 1001,
+            creation_time: 2,
+        };
+        registry.try_claim(skipped_key);
+        registry.record_skipped(skipped_key, SkipReason::Avedr);
+        registry.record_unhooked(&skipped_key);
+        assert!(matches!(
+            *registry.get(&skipped_key).unwrap(),
+            ProcessState::Skipped(SkipReason::Avedr)
+        ));
+
+        // Exited entry should remain Exited.
+        let exited_key = ProcessKey {
+            pid: 1002,
+            creation_time: 3,
+        };
+        registry.try_claim(exited_key);
+        registry.record_exited(exited_key);
+        registry.record_unhooked(&exited_key);
+        assert_eq!(*registry.get(&exited_key).unwrap(), ProcessState::Exited);
+    }
+
+    #[test]
+    fn test_iter_injected_returns_only_injected() {
+        let registry = ProcessRegistry::new();
+
+        let injected_key = ProcessKey {
+            pid: 1000,
+            creation_time: 1,
+        };
+        registry.try_claim(injected_key);
+        registry.record_injected(injected_key, "x64".to_string());
+
+        let skipped_key = ProcessKey {
+            pid: 1001,
+            creation_time: 2,
+        };
+        registry.try_claim(skipped_key);
+        registry.record_skipped(skipped_key, SkipReason::OperatorDefined);
+
+        let exited_key = ProcessKey {
+            pid: 1002,
+            creation_time: 3,
+        };
+        registry.try_claim(exited_key);
+        registry.record_exited(exited_key);
+
+        let injected = registry.iter_injected();
+        assert_eq!(injected.len(), 1);
+        assert_eq!(injected[0].0, injected_key);
+        assert!(matches!(injected[0].1, ProcessState::Injected { .. }));
+    }
+
+    #[test]
+    fn test_iter_injected_pid_reuse() {
+        // Same PID but different creation_time — only the Injected instance
+        // should appear in the snapshot.
+        let registry = ProcessRegistry::new();
+        let stale_key = ProcessKey {
+            pid: 1234,
+            creation_time: 1000,
+        };
+        let live_key = ProcessKey {
+            pid: 1234,
+            creation_time: 2000,
+        };
+
+        registry.try_claim(stale_key);
+        registry.record_exited(stale_key);
+
+        registry.try_claim(live_key);
+        registry.record_injected(live_key, "x64".to_string());
+
+        let injected = registry.iter_injected();
+        assert_eq!(injected.len(), 1);
+        assert_eq!(injected[0].0, live_key);
     }
 }

@@ -98,6 +98,14 @@ static SCM_HANDLE: std::sync::OnceLock<ServiceStatusHandle> = std::sync::OnceLoc
 /// All blocking threads must poll this flag and break their loops.
 static SHUTDOWN_REQUESTED: AtomicBool = AtomicBool::new(false);
 
+/// Phase 58.5: Global unhook signal — set to true during graceful shutdown.
+///
+/// When true, the hook IPC server replies to `PollControl` frames from known
+/// injected processes with `UnhookCommand { reason: AgentShutdown }`. The flag
+/// is cleared after the hook IPC server stops so a future service restart
+/// begins with a clean state.
+pub static UNHOOK_ALL_REQUESTED: AtomicBool = AtomicBool::new(false);
+
 /// Returns true if service shutdown has been requested.
 pub fn shutdown_requested() -> bool {
     SHUTDOWN_REQUESTED.load(Ordering::Acquire)
@@ -114,6 +122,14 @@ pub fn request_shutdown() {
 /// and in tests to ensure a clean state between test cases.
 pub fn reset_shutdown_signal() {
     SHUTDOWN_REQUESTED.store(false, Ordering::Release);
+}
+
+/// Phase 58.5: Reset the unhook signal to false.
+///
+/// Called after the hook IPC server stops so a future service restart does not
+/// immediately request unhook from newly injected processes.
+pub fn reset_unhook_signal() {
+    UNHOOK_ALL_REQUESTED.store(false, Ordering::Release);
 }
 
 /// Global SQLite connection for the agent's offline audit queue.
@@ -2061,10 +2077,7 @@ async fn run_loop_init(
     );
 
     // ── Phase 58.5: Reconcile watchdog self-unload evidence ─────────────────
-    reconcile_watchdog_evidence(
-        &audit_ctx,
-        Some(Arc::clone(&process_registry)),
-    );
+    reconcile_watchdog_evidence(&audit_ctx, Some(Arc::clone(&process_registry)));
 
     RunLoopContext {
         file_handle,
@@ -2200,9 +2213,7 @@ fn reconcile_watchdog_evidence(
             .get("pid")
             .and_then(|v| v.as_u64())
             .map(|v| v as u32);
-        let creation_time = evidence
-            .get("creation_time")
-            .and_then(|v| v.as_u64());
+        let creation_time = evidence.get("creation_time").and_then(|v| v.as_u64());
         let reason = evidence
             .get("reason")
             .and_then(|v| v.as_str())
@@ -2237,10 +2248,7 @@ fn reconcile_watchdog_evidence(
         if let (Some(pid), Some(creation_time), Some(ref registry)) =
             (pid, creation_time, &process_registry)
         {
-            registry.record_exited(crate::process_registry::ProcessKey {
-                pid,
-                creation_time,
-            });
+            registry.record_exited(crate::process_registry::ProcessKey { pid, creation_time });
         }
 
         if let Err(e) = std::fs::remove_file(&path) {

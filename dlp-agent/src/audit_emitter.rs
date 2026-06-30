@@ -460,6 +460,52 @@ pub fn ensure_app_identity_fields(event: &mut AuditEvent) {
     }
 }
 
+/// Emit an unhook-related audit event.
+///
+/// Constructs an `AuditEvent` with `resource_path` formatted as `pid={pid}`,
+/// sets the decision based on `success`, and copies `error` into `reason` when
+/// present. The event is then enriched with the shared fields in `ctx` and
+/// written to the audit log.
+///
+/// # Arguments
+///
+/// * `ctx` — Shared emit context (agent_id, session_id, user identity).
+/// * `event_type` — Must be one of `AgentShutdownUnhook`, `UnhookFailure`, or
+///   `WatchdogSelfUnload`.
+/// * `pid` — Process ID to record in `resource_path`.
+/// * `success` — Whether the unhook operation succeeded; drives `decision`.
+/// * `error` — Optional human-readable error metadata (no PII or paths).
+pub fn emit_unhook_audit(
+    ctx: &EmitContext,
+    event_type: dlp_common::EventType,
+    pid: u32,
+    success: bool,
+    error: Option<String>,
+) {
+    use dlp_common::{Action, AuditEvent, Classification, Decision};
+
+    let decision = if success {
+        Decision::ALLOW
+    } else {
+        Decision::DENY
+    };
+    let mut event = AuditEvent::new(
+        event_type,
+        ctx.user_sid.clone(),
+        ctx.user_name.clone(),
+        format!("pid={pid}"),
+        Classification::T1,
+        Action::READ,
+        decision,
+        ctx.agent_id.clone(),
+        ctx.session_id,
+    );
+    if let Some(err) = error {
+        event.justification = Some(err);
+    }
+    emit_audit(ctx, &mut event);
+}
+
 /// Returns the path of the active audit log file.
 #[must_use]
 pub fn log_path() -> std::path::PathBuf {
@@ -1179,5 +1225,84 @@ mod tests {
             );
             prev_chain_hash = event.chain_hash.unwrap();
         }
+    }
+
+    // -- Phase 58.5 unhook audit tests ---------------------------------------
+
+    fn make_test_emit_context() -> EmitContext {
+        EmitContext {
+            agent_id: "AGENT-TEST".to_string(),
+            session_id: 1,
+            user_sid: "S-1-5-18".to_string(),
+            user_name: "SYSTEM".to_string(),
+            machine_name: None,
+        }
+    }
+
+    #[test]
+    fn test_emit_unhook_audit_agent_shutdown() {
+        enable_test_capture();
+        let ctx = make_test_emit_context();
+        emit_unhook_audit(
+            &ctx,
+            dlp_common::EventType::AgentShutdownUnhook,
+            std::process::id(),
+            true,
+            Some("injected_count=5".to_string()),
+        );
+
+        let events = drain_test_events();
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.event_type, dlp_common::EventType::AgentShutdownUnhook);
+        assert_eq!(event.decision, dlp_common::Decision::ALLOW);
+        assert_eq!(event.resource_path, format!("pid={}", std::process::id()));
+        assert_eq!(event.justification.as_deref(), Some("injected_count=5"));
+        assert_eq!(event.agent_id, "AGENT-TEST");
+    }
+
+    #[test]
+    fn test_emit_unhook_audit_failure() {
+        enable_test_capture();
+        let ctx = make_test_emit_context();
+        emit_unhook_audit(
+            &ctx,
+            dlp_common::EventType::UnhookFailure,
+            1234,
+            false,
+            Some("creation_time=9876".to_string()),
+        );
+
+        let events = drain_test_events();
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.event_type, dlp_common::EventType::UnhookFailure);
+        assert_eq!(event.decision, dlp_common::Decision::DENY);
+        assert_eq!(event.resource_path, "pid=1234");
+        assert_eq!(event.justification.as_deref(), Some("creation_time=9876"));
+        assert!(event.event_type.triggers_alert());
+    }
+
+    #[test]
+    fn test_emit_unhook_audit_failed_ack() {
+        enable_test_capture();
+        let ctx = make_test_emit_context();
+        emit_unhook_audit(
+            &ctx,
+            dlp_common::EventType::UnhookFailure,
+            5678,
+            false,
+            Some("unload failed".to_string()),
+        );
+
+        let events = drain_test_events();
+        assert_eq!(events.len(), 1);
+        let event = &events[0];
+        assert_eq!(event.event_type, dlp_common::EventType::UnhookFailure);
+        assert!(event
+            .justification
+            .as_deref()
+            .unwrap_or("")
+            .contains("unload failed"));
     }
 }
