@@ -592,13 +592,15 @@ fn handle_connection(
                         if let Some(r) = registry {
                             r.record_unhooked(&key);
                         }
-                    } else if let (Some(ctx), Some(ref err)) = (audit_ctx, &ack.error) {
+                    } else if let Some(ctx) = audit_ctx {
                         crate::audit_emitter::emit_unhook_audit(
                             ctx,
                             dlp_common::EventType::UnhookFailure,
                             ack.pid,
                             false,
-                            Some(err.clone()),
+                            ack.error
+                                .clone()
+                                .or_else(|| Some("unhook failed".to_string())),
                         );
                     }
                     IpcPayloadV1::Response(HookResponse {
