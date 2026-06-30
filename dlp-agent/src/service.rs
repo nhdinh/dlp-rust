@@ -2298,6 +2298,22 @@ pub fn reconcile_watchdog_evidence_in_dir(
     /// Retention window for unmatched watchdog evidence files.
     const EVIDENCE_RETENTION_DAYS: u64 = 7;
 
+    /// Maximum size for an individual watchdog evidence file (64 KiB).
+    const MAX_EVIDENCE_SIZE: u64 = 64 * 1024;
+
+    /// Schema for watchdog evidence persisted by the hook DLL.
+    ///
+    /// Rejecting unknown fields prevents crafted files from smuggling extra data
+    /// into the audit log.
+    #[derive(Debug, serde::Deserialize)]
+    #[serde(deny_unknown_fields)]
+    struct WatchdogEvidence {
+        pid: u32,
+        creation_time: u64,
+        timestamp_secs: u64,
+        reason: String,
+    }
+
     if !dir.exists() {
         return;
     }
@@ -2325,15 +2341,31 @@ pub fn reconcile_watchdog_evidence_in_dir(
             continue;
         }
 
-        let content = match std::fs::read_to_string(&path) {
-            Ok(c) => c,
+        let metadata = match std::fs::metadata(&path) {
+            Ok(m) => m,
             Err(e) => {
-                warn!(path = %path.display(), error = %e, "cannot read watchdog evidence file");
+                warn!(path = %path.display(), error = %e, "cannot stat watchdog evidence file");
+                continue;
+            }
+        };
+        if metadata.len() > MAX_EVIDENCE_SIZE {
+            warn!(
+                path = %path.display(),
+                size = metadata.len(),
+                "watchdog evidence file exceeds size limit — skipping"
+            );
+            continue;
+        }
+
+        let file = match std::fs::File::open(&path) {
+            Ok(f) => f,
+            Err(e) => {
+                warn!(path = %path.display(), error = %e, "cannot open watchdog evidence file");
                 continue;
             }
         };
 
-        let evidence: serde_json::Value = match serde_json::from_str(&content) {
+        let evidence: WatchdogEvidence = match serde_json::from_reader(file) {
             Ok(v) => v,
             Err(e) => {
                 warn!(path = %path.display(), error = %e, "cannot parse watchdog evidence file");
@@ -2341,16 +2373,10 @@ pub fn reconcile_watchdog_evidence_in_dir(
             }
         };
 
-        let pid = evidence
-            .get("pid")
-            .and_then(|v| v.as_u64())
-            .map(|v| v as u32);
-        let creation_time = evidence.get("creation_time").and_then(|v| v.as_u64());
-        let reason = evidence
-            .get("reason")
-            .and_then(|v| v.as_str())
-            .unwrap_or("watchdog_timeout");
-        let timestamp_secs = evidence.get("timestamp_secs").and_then(|v| v.as_u64());
+        let pid = Some(evidence.pid);
+        let creation_time = Some(evidence.creation_time);
+        let reason = evidence.reason.as_str();
+        let timestamp_secs = Some(evidence.timestamp_secs);
 
         // Stale evidence cleanup: remove files older than the retention window
         // regardless of match status so the directory does not grow unbounded.
@@ -2394,11 +2420,12 @@ pub fn reconcile_watchdog_evidence_in_dir(
         };
 
         if matched {
-            // Stash the raw evidence JSON and reason in fields that are serialized
-            // to the audit log for forensics. `justification` carries the reason;
-            // `correlation_id` is overwritten by `AuditEvent::new`, so we preserve
-            // the evidence content via `policy_name` (diagnostic only).
-            event.justification = Some(format!("reason={}; evidence={}", reason, content));
+            // Record the reason and identifying fields in the audit log for
+            // forensics, but do NOT embed the raw file content.
+            event.justification = Some(format!(
+                "reason={}; pid={}; creation_time={}",
+                reason, evidence.pid, evidence.creation_time
+            ));
 
             crate::audit_emitter::emit_audit(audit_ctx, &mut event);
 
@@ -2417,8 +2444,8 @@ pub fn reconcile_watchdog_evidence_in_dir(
             // bounded retry. This covers PID reuse, stale evidence from a prior
             // agent crash, or a process that exited before reconciliation.
             event.justification = Some(format!(
-                "reason={}; untracked=true; evidence={}",
-                reason, content
+                "reason={}; untracked=true; pid={}; creation_time={}",
+                reason, evidence.pid, evidence.creation_time
             ));
             crate::audit_emitter::emit_audit(audit_ctx, &mut event);
         }
