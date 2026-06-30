@@ -81,15 +81,17 @@ use windows_service::service_control_handler::{
 /// The Windows Service name registered with the SCM.
 pub const SERVICE_NAME: &str = "dlp-agent";
 
-/// Maximum time allowed for graceful shutdown (OP-04).
-const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(10);
+/// Maximum time allowed for the graceful shutdown sequence. This must be at
+/// least [`UNHOOK_WAIT_BUDGET`] plus a buffer for the remaining cleanup steps.
+const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(35);
 /// Maximum time to wait for in-flight disk enumeration to cancel (OP-04).
 const DISK_ENUM_CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
 /// Phase 58.5: Budget for cooperative unhook wait during graceful shutdown.
 ///
-/// This is intentionally less than [`SHUTDOWN_TIMEOUT`] so the remaining
-/// shutdown steps (WFP unregister, audit flush, etc.) still have time to run.
-const UNHOOK_WAIT_BUDGET: Duration = Duration::from_secs(5);
+/// This is the fallback default used when the agent config does not specify
+/// `unhook_wait_budget_ms`. It matches the hook DLL watchdog timeout so slow
+/// processes have time to drain active calls and ack.
+const UNHOOK_WAIT_BUDGET: Duration = Duration::from_secs(30);
 /// Phase 58.5: Polling interval while waiting for injected processes to ack unhook.
 const UNHOOK_POLL_INTERVAL: Duration = Duration::from_millis(100);
 
@@ -197,7 +199,14 @@ async fn request_unhook_from_injected(
     );
 
     UNHOOK_ALL_REQUESTED.store(true, Ordering::Release);
-    let remaining = wait_for_unhook_acks(registry, UNHOOK_WAIT_BUDGET).await;
+
+    // Use the configured unhook wait budget, clamped to a sensible minimum.
+    let budget = with_config(|cfg| {
+        Duration::from_millis(cfg.unhook_wait_budget_ms.unwrap_or(30_000).max(1_000))
+    })
+    .unwrap_or(UNHOOK_WAIT_BUDGET);
+
+    let remaining = wait_for_unhook_acks(registry, budget).await;
 
     for (key, _) in registry.iter_injected() {
         crate::audit_emitter::emit_unhook_audit(
