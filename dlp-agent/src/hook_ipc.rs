@@ -29,8 +29,8 @@ use windows::Win32::Storage::FileSystem::{
     PIPE_ACCESS_DUPLEX,
 };
 use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, NAMED_PIPE_MODE,
-    PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
+    NAMED_PIPE_MODE, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_WAIT,
 };
 
 use dlp_common::hook_ipc::{
@@ -320,6 +320,24 @@ fn create_pipe(pipe_name: &str) -> Result<HANDLE> {
     Ok(pipe)
 }
 
+/// Returns the process ID of the client connected to this named-pipe instance.
+///
+/// The server uses this to verify that `UnhookAck` messages originate from the
+/// process they claim to represent. The hook pipe must remain accessible to
+/// any authenticated user process (the injected DLLs run as the interactive
+/// user), so caller-PID validation is the defense against cross-process ack
+/// spoofing.
+fn named_pipe_client_pid(pipe: HANDLE) -> Option<u32> {
+    let mut pid: u32 = 0;
+    // SAFETY: `pipe` is a valid named-pipe server handle and `pid` is a valid
+    // stack-allocated `u32`. The API writes exactly one `DWORD` on success.
+    unsafe {
+        GetNamedPipeClientProcessId(pipe, &mut pid)
+            .ok()
+            .map(|_| pid)
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn accept_loop(
     first_pipe: HANDLE,
@@ -578,38 +596,58 @@ fn handle_connection(
                     IpcPayloadV1::ControlResponse(dlp_common::hook_ipc::ControlResponse { command })
                 }
                 IpcPayloadV1::UnhookAck(ref ack) => {
-                    debug!(
-                        pid = ack.pid,
-                        creation_time = ack.creation_time,
-                        success = ack.success,
-                        "Hook IPC: unhook ack received"
-                    );
-                    let key = crate::process_registry::ProcessKey {
-                        pid: ack.pid,
-                        creation_time: ack.creation_time,
-                    };
-                    if ack.success {
-                        if let Some(r) = registry {
-                            r.record_unhooked(&key);
-                        }
-                    } else if let Some(ctx) = audit_ctx {
-                        crate::audit_emitter::emit_unhook_audit(
-                            ctx,
-                            dlp_common::EventType::UnhookFailure,
-                            ack.pid,
-                            false,
-                            ack.error
-                                .clone()
-                                .or_else(|| Some("unhook failed".to_string())),
+                    // Verify the ack originated from the process it claims to
+                    // represent. The pipe DACL must allow any authenticated
+                    // user process (injected DLLs run as the interactive user),
+                    // so this check is the anti-spoofing control.
+                    let client_pid = named_pipe_client_pid(pipe);
+                    if client_pid.map_or(true, |cpid| cpid != ack.pid) {
+                        warn!(
+                            ack_pid = ack.pid,
+                            client_pid = client_pid.unwrap_or(0),
+                            "Hook IPC: UnhookAck sender PID does not match claimed PID — ignoring"
                         );
+                        IpcPayloadV1::Response(HookResponse {
+                            decision: dlp_common::Decision::ALLOW,
+                            reason: "unhook ack rejected: sender mismatch".to_string(),
+                            cache_hint: None,
+                            cache_version: 0,
+                            approval_override: None,
+                        })
+                    } else {
+                        debug!(
+                            pid = ack.pid,
+                            creation_time = ack.creation_time,
+                            success = ack.success,
+                            "Hook IPC: unhook ack received"
+                        );
+                        let key = crate::process_registry::ProcessKey {
+                            pid: ack.pid,
+                            creation_time: ack.creation_time,
+                        };
+                        if ack.success {
+                            if let Some(r) = registry {
+                                r.record_unhooked(&key);
+                            }
+                        } else if let Some(ctx) = audit_ctx {
+                            crate::audit_emitter::emit_unhook_audit(
+                                ctx,
+                                dlp_common::EventType::UnhookFailure,
+                                ack.pid,
+                                false,
+                                ack.error
+                                    .clone()
+                                    .or_else(|| Some("unhook failed".to_string())),
+                            );
+                        }
+                        IpcPayloadV1::Response(HookResponse {
+                            decision: dlp_common::Decision::ALLOW,
+                            reason: "unhook ack received".to_string(),
+                            cache_hint: None,
+                            cache_version: 0,
+                            approval_override: None,
+                        })
                     }
-                    IpcPayloadV1::Response(HookResponse {
-                        decision: dlp_common::Decision::ALLOW,
-                        reason: "unhook ack received".to_string(),
-                        cache_hint: None,
-                        cache_version: 0,
-                        approval_override: None,
-                    })
                 }
                 // Agent-to-DLL responses should not arrive on the server.
                 other => {
