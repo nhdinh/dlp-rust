@@ -27,12 +27,14 @@
 //! - Reparse points, symlinks, junctions, volume GUIDs, ADS force pipe fallback.
 
 use std::cell::RefCell;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::OnceLock;
+use std::sync::atomic::Ordering;
+use std::sync::Mutex;
 
 use dlp_common::hook_ipc::HookOp;
 use dlp_common::path_hash::normalize_path;
 use dlp_common::Classification;
+use windows::Win32::Foundation::{CloseHandle, HANDLE};
+use windows::Win32::System::Memory::{UnmapViewOfFile, MEMORY_MAPPED_VIEW_ADDRESS};
 
 // Re-export the shared ABI types so that other modules in this crate and
 // lib.rs can use them without importing from dlp_common directly.
@@ -66,22 +68,52 @@ const CACHE_NAME: &str = "Global\\DlpClassificationCache";
 const CACHE_NAME: &str = "Local\\DlpClassificationCache_TestPhase50_1";
 
 // ---------------------------------------------------------------------------
+// CacheMapping — owns the shared-memory mapping handle and view
+// ---------------------------------------------------------------------------
+
+/// Owned wrapper around a classification cache file mapping.
+///
+/// On drop, unmaps the view and closes the handle so the OS resources are
+/// released deterministically during self-unhook.
+struct CacheMapping {
+    handle: HANDLE,
+    view: *mut std::ffi::c_void,
+}
+
+impl CacheMapping {
+    /// Returns true if the mapping handle is valid.
+    #[allow(dead_code)]
+    fn is_valid(&self) -> bool {
+        !self.handle.is_invalid() && !self.view.is_null()
+    }
+}
+
+impl Drop for CacheMapping {
+    fn drop(&mut self) {
+        if !self.view.is_null() {
+            let _ = unsafe { UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS { Value: self.view }) };
+        }
+        if !self.handle.is_invalid() {
+            let _ = unsafe { CloseHandle(self.handle) };
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // CacheLookup — lazy-init shared-memory reader
 // ---------------------------------------------------------------------------
 
 /// Read-only shared-memory cache reader.
 ///
 /// `CacheLookup` is initialized lazily on the first hook call (NOT from
-/// `DllMain`) to avoid loader-lock deadlock. Once initialized, the mapping
-/// pointer is stable for the process lifetime.
+/// `DllMain`) to avoid loader-lock deadlock. The mapping handle is owned by
+/// [`CacheMapping`] and released by [`unmap_cache`].
 pub struct CacheLookup {
     /// Pointer to the mapped cache header (read-only).
     header: *const CacheHeader,
-    /// Handle to the file mapping object (kept alive).
+    /// Owned mapping handle and view.
     #[allow(dead_code)]
-    mapping_handle: windows::Win32::Foundation::HANDLE,
-    /// Last version that passed full validation.
-    last_validated_version: AtomicU64,
+    mapping: CacheMapping,
 }
 
 // SAFETY: CacheLookup is Send + Sync because the header pointer is read-only
@@ -89,126 +121,37 @@ pub struct CacheLookup {
 unsafe impl Send for CacheLookup {}
 unsafe impl Sync for CacheLookup {}
 
-/// Global lazy-initialized cache lookup instance.
+/// Global lock-protected cache lookup instance.
 ///
-/// Uses `std::sync::OnceLock` to defer initialization to the first hook call.
-static CACHE_LOOKUP: OnceLock<Option<CacheLookup>> = OnceLock::new();
+/// Uses `std::sync::Mutex<Option<CacheLookup>>` so the mapping can be taken
+/// and dropped safely during self-unhook. OnceLock reset via pointer cast is
+/// unsound and is no longer used.
+static CACHE_LOOKUP: Mutex<Option<CacheLookup>> = Mutex::new(None);
 
-impl CacheLookup {
-    /// Returns the global `CacheLookup` instance, initializing it on first call.
+thread_local! {
+    static LAST_VALIDATED_VERSION: RefCell<u64> = const { RefCell::new(0) };
+}
+
+/// Lightweight read-only view into the shared-memory cache.
+///
+/// Returned by [`CacheLookup::get`]. The view copies the header pointer and
+/// borrows no lock, so it is safe to use after the global `CACHE_LOOKUP` lock
+/// is released. The mapping remains valid until [`unmap_cache`] is called.
+#[derive(Clone, Copy)]
+pub struct CacheView {
+    /// Pointer to the mapped cache header.
     ///
-    /// Returns `None` if the shared-memory mapping cannot be opened or fails
-    /// validation. In that case, the cache is unavailable for this process
-    /// lifetime and all lookups fall through to the pipe.
-    pub fn get() -> Option<&'static CacheLookup> {
-        let opt = CACHE_LOOKUP.get_or_init(|| {
-            // SAFETY: Windows API calls to open shared memory.
-            unsafe { Self::try_init() }
-        });
-        opt.as_ref()
-    }
+    /// Exposed crate-wide so trampoline helpers can read header fields without
+    /// an extra indirection. The pointer is read-only and the mapping lifetime
+    /// is governed by `CACHE_LOOKUP`.
+    pub(crate) header: *const CacheHeader,
+}
 
-    /// Attempt to open and validate the shared-memory mapping.
-    ///
-    /// # Safety
-    ///
-    /// Must be called from a context where Windows loader lock is NOT held
-    /// (i.e., NOT from `DllMain`).
-    unsafe fn try_init() -> Option<CacheLookup> {
-        use windows::Win32::System::Memory::{MapViewOfFile, OpenFileMappingW, FILE_MAP_READ};
+// SAFETY: CacheView contains only a read-only pointer to mapped memory.
+unsafe impl Send for CacheView {}
+unsafe impl Sync for CacheView {}
 
-        let name_wide: Vec<u16> = CACHE_NAME
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
-
-        let handle = OpenFileMappingW(
-            FILE_MAP_READ.0,
-            false,
-            windows::core::PCWSTR::from_raw(name_wide.as_ptr()),
-        );
-
-        let handle = match handle {
-            Ok(h) => h,
-            Err(_) => {
-                crate::debug_log("[dlp-hook] cache: OpenFileMappingW failed\0");
-                return None;
-            }
-        };
-
-        let view = MapViewOfFile(handle, FILE_MAP_READ, 0, 0, 0);
-        let mapping = match view {
-            windows::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS { Value: ptr }
-                if !ptr.is_null() =>
-            {
-                ptr as *const u8
-            }
-            _ => {
-                crate::debug_log("[dlp-hook] cache: MapViewOfFile failed\0");
-                return None;
-            }
-        };
-
-        let lookup = CacheLookup {
-            header: mapping as *const CacheHeader,
-            mapping_handle: windows::Win32::Foundation::HANDLE(handle.0),
-            last_validated_version: AtomicU64::new(0),
-        };
-
-        // Perform full validation on first open.
-        if lookup.full_validation().is_err() {
-            crate::debug_log("[dlp-hook] cache: full validation failed on init\0");
-            return None;
-        }
-
-        // Record the validated version.
-        let version_word = unsafe { (*lookup.header).version_word.load(Ordering::Acquire) };
-        let version = version_word >> 1;
-        lookup
-            .last_validated_version
-            .store(version, Ordering::Relaxed);
-
-        Some(lookup)
-    }
-
-    /// Create a `CacheLookup` from a raw pointer and handle (test-only).
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure:
-    /// - `header` is a valid, aligned pointer to a `CacheHeader` in mapped memory.
-    /// - `mapping_handle` is a valid Windows file mapping handle.
-    /// - The mapping outlives the returned `CacheLookup`.
-    /// - If `validate` is true, the header must have a valid checksum and magic.
-    pub unsafe fn from_raw_pointer(
-        header: *const CacheHeader,
-        mapping_handle: windows::Win32::Foundation::HANDLE,
-        validate: bool,
-    ) -> Option<CacheLookup> {
-        if header.is_null() {
-            return None;
-        }
-
-        let lookup = CacheLookup {
-            header,
-            mapping_handle,
-            last_validated_version: AtomicU64::new(0),
-        };
-
-        if validate {
-            if lookup.full_validation().is_err() {
-                return None;
-            }
-            let version_word = (*header).version_word.load(Ordering::Acquire);
-            let version = version_word >> 1;
-            lookup
-                .last_validated_version
-                .store(version, Ordering::Relaxed);
-        }
-
-        Some(lookup)
-    }
-
+impl CacheView {
     /// Read the current cache version from the header.
     ///
     /// Returns the version word (high 63 bits = version, low bit = buffer).
@@ -221,19 +164,12 @@ impl CacheLookup {
     /// Returns `Some(Classification)` if the path is found and not expired.
     /// Returns `None` on cache miss, expired entry, validation failure, or
     /// if the path requires pipe fallback (reparse points, symlinks, etc.).
-    ///
-    /// # Arguments
-    ///
-    /// * `path` — The file path to look up.
-    /// * `op` — The operation type (read vs write) for tier-gated decisions.
-    /// * `now_secs` — Current wall-clock seconds (Unix epoch) for TTL check.
     pub fn lookup(&self, path: &str, _op: HookOp, now_secs: u64) -> Option<Classification> {
         // Step 1: Read version_word with Acquire ordering.
         let version_word = unsafe { (*self.header).version_word.load(Ordering::Acquire) };
 
         // Odd version means writer is building the inactive buffer — retry once.
         if version_word & 1 != 0 {
-            // Writer in progress; retry once with a brief yield.
             std::thread::yield_now();
             let retry_word = unsafe { (*self.header).version_word.load(Ordering::Acquire) };
             if retry_word & 1 != 0 {
@@ -244,14 +180,13 @@ impl CacheLookup {
         let version = version_word >> 1;
         let buffer = (version_word & 1) as u8;
 
-        // Step 2: Split validation.
-        let last_validated = self.last_validated_version.load(Ordering::Relaxed);
+        // Step 2: Split validation using thread-local last validated version.
+        let last_validated = LAST_VALIDATED_VERSION.with(|v| *v.borrow());
         if version != last_validated {
             if self.full_validation().is_err() {
                 return None;
             }
-            self.last_validated_version
-                .store(version, Ordering::Relaxed);
+            LAST_VALIDATED_VERSION.with(|v| *v.borrow_mut() = version);
         } else {
             // Cheap check: just verify magic is still valid.
             let magic = unsafe { (*self.header).magic };
@@ -273,32 +208,16 @@ impl CacheLookup {
     }
 
     /// Make a fast-path decision based on classification and operation.
-    ///
-    /// Returns `Some(DenyReturn)` if the operation should be denied.
-    /// Returns `None` if the operation should proceed (allow).
-    ///
-    /// # Decision Matrix
-    ///
-    /// | Classification | Read | Write |
-    /// |----------------|------|-------|
-    /// | T1 / T2        | Allow | Allow |
-    /// | T3 / T4        | Allow | Deny  |
-    ///
-    /// Read operations on any tier are always allowed at the cache level;
-    /// ABAC evaluation occurs on the pipe round-trip.
     pub fn decide(
         &self,
         classification: Classification,
         op: HookOp,
     ) -> Option<crate::fail_closed::DenyReturn> {
         match (classification, op) {
-            // T3/T4 + Write -> fast-path deny (skip pipe).
             (Classification::T3 | Classification::T4, HookOp::Write) => {
                 Some(crate::fail_closed::DenyReturn::BoolFalse)
             }
-            // T1/T2 -> fast-path allow (skip pipe).
             (Classification::T1 | Classification::T2, _) => None,
-            // Read on any tier -> allow (ABAC decides on pipe).
             (_, HookOp::Read) => None,
         }
     }
@@ -307,12 +226,7 @@ impl CacheLookup {
     // Full validation
     // -----------------------------------------------------------------------
 
-    /// Perform full validation of the cache header.
-    ///
-    /// Checks: magic, layout_version, header_size, total_size, checksum,
-    /// and bounds on all offsets.
     fn full_validation(&self) -> Result<(), ()> {
-        // SAFETY: header is a valid read-only mapping.
         let header = unsafe { &*self.header };
 
         if header.magic != CACHE_MAGIC {
@@ -328,7 +242,6 @@ impl CacheLookup {
             return Err(());
         }
 
-        // Bounds-check all offsets.
         if header.prefix_table_offset >= CACHE_TOTAL_SIZE {
             return Err(());
         }
@@ -339,7 +252,6 @@ impl CacheLookup {
             return Err(());
         }
 
-        // Checksum validation.
         let computed = self.compute_checksum();
         if header.checksum != computed {
             return Err(());
@@ -348,10 +260,7 @@ impl CacheLookup {
         Ok(())
     }
 
-    /// Compute a simple XOR checksum of all header fields except `version_word`
-    /// and `checksum` itself.
     fn compute_checksum(&self) -> u64 {
-        // SAFETY: header is a valid read-only mapping.
         let header = unsafe { &*self.header };
         let mut checksum = 0u64;
         checksum ^= header.magic;
@@ -366,7 +275,6 @@ impl CacheLookup {
         checksum ^= header.created_at_epoch_secs;
         checksum ^= header.allowlist_offset;
         checksum ^= header.allowlist_count;
-        // XOR reserved bytes in 8-byte chunks.
         for chunk in header._reserved.chunks_exact(8) {
             let val = u64::from_le_bytes([
                 chunk[0], chunk[1], chunk[2], chunk[3], chunk[4], chunk[5], chunk[6], chunk[7],
@@ -380,12 +288,7 @@ impl CacheLookup {
     // Prefix lookup
     // -----------------------------------------------------------------------
 
-    /// Longest-prefix match against the root-prefix table.
-    ///
-    /// Prefixes are sorted by `prefix_len` descending (longest first) by the
-    /// agent build. First match wins.
     fn prefix_lookup(&self, _buffer: u8, path: &str, now_secs: u64) -> Option<Classification> {
-        // SAFETY: header validated; pointer arithmetic is bounds-checked.
         let header = unsafe { &*self.header };
         let prefix_count = header.prefix_count as usize;
         if prefix_count == 0 {
@@ -415,18 +318,15 @@ impl CacheLookup {
                 continue;
             }
             if len > 260 {
-                return None; // Corrupt entry.
+                return None;
             }
 
-            // Case-insensitive prefix comparison.
             if path_bytes.len() >= len
                 && path_bytes[..len].eq_ignore_ascii_case(&entry.prefix[..len])
             {
-                // TTL check.
                 let ttl = u32::from(entry.ttl_secs);
                 let age = now_secs.saturating_sub(created_at);
                 if age >= u64::from(ttl) {
-                    // Expired — continue to shorter prefixes.
                     continue;
                 }
                 return u8_to_classification(entry.tier);
@@ -440,11 +340,7 @@ impl CacheLookup {
     // Hash lookup
     // -----------------------------------------------------------------------
 
-    /// FNV-1a hash table lookup with open addressing.
-    ///
-    /// Uses linear probing with empty-slot (hash == 0) termination.
     fn hash_lookup(&self, buffer: u8, path: &str, now_secs: u64) -> Option<Classification> {
-        // SAFETY: header validated; pointer arithmetic is bounds-checked.
         let header = unsafe { &*self.header };
         let hash_slots = header.hash_slots as usize;
         if hash_slots == 0 {
@@ -476,16 +372,14 @@ impl CacheLookup {
             let entry = unsafe { &*entry_ptr };
 
             if entry.hash == 0 {
-                // Empty slot — not found.
                 return None;
             }
 
             if entry.hash == hash {
-                // TTL check.
                 let ttl = u32::from(entry.ttl_secs);
                 let age = now_secs.saturating_sub(created_at);
                 if age >= u64::from(ttl) {
-                    return None; // Expired.
+                    return None;
                 }
                 return u8_to_classification(entry.tier);
             }
@@ -493,8 +387,148 @@ impl CacheLookup {
             idx = (idx + 1) % hash_slots;
         }
 
-        None // Table full, not found.
+        None
     }
+}
+
+impl CacheLookup {
+    /// Returns a lightweight view into the global cache, initializing it on first call.
+    ///
+    /// Returns `None` if the shared-memory mapping cannot be opened or fails
+    /// validation. In that case, the cache is unavailable for this process
+    /// lifetime and all lookups fall through to the pipe.
+    pub fn get() -> Option<CacheView> {
+        {
+            let guard = CACHE_LOOKUP.lock().ok()?;
+            if let Some(ref lookup) = *guard {
+                return Some(CacheView {
+                    header: lookup.header,
+                });
+            }
+        }
+        // SAFETY: Windows API calls to open shared memory. Must NOT be called
+        // from DllMain (loader lock).
+        let new_lookup = unsafe { Self::try_init()? };
+        let header = new_lookup.header;
+        let mut guard = CACHE_LOOKUP.lock().ok()?;
+        if guard.is_none() {
+            *guard = Some(new_lookup);
+        }
+        Some(CacheView { header })
+    }
+
+    /// Attempt to open and validate the shared-memory mapping.
+    ///
+    /// # Safety
+    ///
+    /// Must be called from a context where Windows loader lock is NOT held
+    /// (i.e., NOT from `DllMain`).
+    unsafe fn try_init() -> Option<CacheLookup> {
+        use windows::Win32::System::Memory::{MapViewOfFile, OpenFileMappingW, FILE_MAP_READ};
+
+        let name_wide: Vec<u16> = CACHE_NAME
+            .encode_utf16()
+            .chain(std::iter::once(0))
+            .collect();
+
+        let handle = OpenFileMappingW(
+            FILE_MAP_READ.0,
+            false,
+            windows::core::PCWSTR::from_raw(name_wide.as_ptr()),
+        );
+
+        let handle = match handle {
+            Ok(h) => h,
+            Err(_) => {
+                crate::debug_log("[dlp-hook] cache: OpenFileMappingW failed\0");
+                return None;
+            }
+        };
+
+        let view = MapViewOfFile(handle, FILE_MAP_READ, 0, 0, 0);
+        let ptr = match view {
+            windows::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS { Value: ptr }
+                if !ptr.is_null() =>
+            {
+                ptr
+            }
+            _ => {
+                crate::debug_log("[dlp-hook] cache: MapViewOfFile failed\0");
+                return None;
+            }
+        };
+
+        let mapping = CacheMapping {
+            handle: windows::Win32::Foundation::HANDLE(handle.0),
+            view: ptr,
+        };
+
+        let lookup = CacheLookup {
+            header: ptr as *const CacheHeader,
+            mapping,
+        };
+
+        // Perform full validation on first open.
+        let view = CacheView {
+            header: lookup.header,
+        };
+        if view.full_validation().is_err() {
+            crate::debug_log("[dlp-hook] cache: full validation failed on init\0");
+            return None;
+        }
+
+        Some(lookup)
+    }
+
+    /// Create a `CacheLookup` from a raw pointer and handle (test-only).
+    ///
+    /// # Safety
+    ///
+    /// The caller must ensure:
+    /// - `header` is a valid, aligned pointer to a `CacheHeader` in mapped memory.
+    /// - `mapping_handle` is a valid Windows file mapping handle.
+    /// - The mapping outlives the returned `CacheLookup`.
+    /// - If `validate` is true, the header must have a valid checksum and magic.
+    pub unsafe fn from_raw_pointer(
+        header: *const CacheHeader,
+        mapping_handle: windows::Win32::Foundation::HANDLE,
+        validate: bool,
+    ) -> Option<CacheLookup> {
+        if header.is_null() {
+            return None;
+        }
+
+        let mapping = CacheMapping {
+            handle: mapping_handle,
+            view: header.cast_mut().cast(),
+        };
+        let lookup = CacheLookup { header, mapping };
+
+        if validate {
+            let view = CacheView { header };
+            if view.full_validation().is_err() {
+                return None;
+            }
+        }
+
+        Some(lookup)
+    }
+}
+
+/// Unmap the classification cache and release the mapping handle.
+///
+/// Called during self-unhook. After this point all cache lookups will miss
+/// and fall through to the pipe.
+pub fn unmap_cache() {
+    let mut guard = match CACHE_LOOKUP.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            crate::debug_log("[dlp-hook] cache: CACHE_LOOKUP poisoned, forcing unmap\0");
+            e.into_inner()
+        }
+    };
+    *guard = None;
+    LAST_VALIDATED_VERSION.with(|v| *v.borrow_mut() = 0);
 }
 
 // Path normalization is now provided by dlp-common::path_hash::normalize_path.
@@ -993,5 +1027,14 @@ mod tests {
         // C:\file.txt:secret is an ADS — reject.
         assert!(normalize_path(r"C:\file.txt:secret").is_none());
         assert!(normalize_path(r"C:\file.txt:$DATA").is_none());
+    }
+
+    #[test]
+    fn unmap_cache_clears_global_state() {
+        // Without a real mapping, get() returns None and unmap_cache should be
+        // idempotent and reset thread-local validation state.
+        assert!(CacheLookup::get().is_none());
+        unmap_cache();
+        assert!(CacheLookup::get().is_none());
     }
 }

@@ -21,11 +21,11 @@
 //! detection is preferable to crashing the host process.
 
 use std::sync::atomic::{fence, Ordering};
-use std::sync::OnceLock;
+use std::sync::Mutex;
 
-use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, INVALID_HANDLE_VALUE};
+use windows::Win32::Foundation::{CloseHandle, ERROR_ALREADY_EXISTS, HANDLE, INVALID_HANDLE_VALUE};
 use windows::Win32::System::Memory::{
-    CreateFileMappingW, MapViewOfFile, OpenFileMappingW, FILE_MAP_ALL_ACCESS,
+    CreateFileMappingW, MapViewOfFile, OpenFileMappingW, UnmapViewOfFile, FILE_MAP_ALL_ACCESS,
     MEMORY_MAPPED_VIEW_ADDRESS, PAGE_READWRITE,
 };
 
@@ -82,6 +82,34 @@ pub struct JournalEntry {
     pub etw_timestamp: u64,
 }
 
+/// Owned wrapper around a hook journal file mapping.
+///
+/// On drop, unmaps the view and closes the handle so the OS resources are
+/// released deterministically during self-unhook.
+struct JournalMapping {
+    handle: HANDLE,
+    view: *mut std::ffi::c_void,
+}
+
+impl JournalMapping {
+    /// Returns true if the mapping handle is valid.
+    #[allow(dead_code)]
+    fn is_valid(&self) -> bool {
+        !self.handle.is_invalid() && !self.view.is_null()
+    }
+}
+
+impl Drop for JournalMapping {
+    fn drop(&mut self) {
+        if !self.view.is_null() {
+            let _ = unsafe { UnmapViewOfFile(MEMORY_MAPPED_VIEW_ADDRESS { Value: self.view }) };
+        }
+        if !self.handle.is_invalid() {
+            let _ = unsafe { CloseHandle(self.handle) };
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // HookJournal — shared-memory producer
 // ---------------------------------------------------------------------------
@@ -100,6 +128,9 @@ pub struct HookJournal {
     capacity: usize,
     /// Next sequence number to assign (1-based).
     next_seq: u64,
+    /// Owned mapping handle and view.
+    #[allow(dead_code)]
+    mapping: JournalMapping,
 }
 
 // SAFETY: HookJournal is Send + Sync because the shared memory is
@@ -107,10 +138,12 @@ pub struct HookJournal {
 unsafe impl Send for HookJournal {}
 unsafe impl Sync for HookJournal {}
 
-/// Global lazy-initialized journal instance.
+/// Global lock-protected journal instance.
 ///
-/// Uses `std::sync::OnceLock` to defer initialization to the first hook call.
-static JOURNAL: OnceLock<Option<HookJournal>> = OnceLock::new();
+/// Uses `std::sync::Mutex<Option<HookJournal>>` so the mapping can be taken
+/// and dropped safely during self-unhook. OnceLock reset via pointer cast is
+/// unsound and is no longer used.
+static JOURNAL: Mutex<Option<HookJournal>> = Mutex::new(None);
 
 impl HookJournal {
     /// Returns the global `HookJournal` instance, initializing it on first call.
@@ -118,13 +151,32 @@ impl HookJournal {
     /// Returns `None` if the shared-memory mapping cannot be created or opened.
     /// In that case, journaling is unavailable for this process lifetime and
     /// all hook calls proceed without journaling.
-    pub fn get() -> Option<&'static HookJournal> {
-        let opt = JOURNAL.get_or_init(|| {
-            // SAFETY: Windows API calls to create shared memory.
-            // Must be called outside DllMain (loader-lock safety).
-            unsafe { Self::try_init() }
-        });
-        opt.as_ref()
+    pub fn get() -> Option<JournalView> {
+        {
+            let guard = JOURNAL.lock().ok()?;
+            if let Some(ref journal) = *guard {
+                return Some(JournalView {
+                    header: journal.header,
+                    entries: journal.entries,
+                    capacity: journal.capacity,
+                    next_seq: journal.next_seq,
+                });
+            }
+        }
+        // SAFETY: Windows API calls to create shared memory. Must NOT be called
+        // from DllMain (loader lock).
+        let new_journal = unsafe { Self::try_init()? };
+        let view = JournalView {
+            header: new_journal.header,
+            entries: new_journal.entries,
+            capacity: new_journal.capacity,
+            next_seq: new_journal.next_seq,
+        };
+        let mut guard = JOURNAL.lock().ok()?;
+        if guard.is_none() {
+            *guard = Some(new_journal);
+        }
+        Some(view)
     }
 
     /// Attempt to create or open the shared-memory journal mapping.
@@ -190,15 +242,17 @@ impl HookJournal {
             }
         }
 
-        // Intentionally do NOT close the mapping handle so the section object
-        // stays alive for the lifetime of the process. The view is unmapped
-        // automatically when the process exits.
+        let mapping = JournalMapping {
+            handle: windows::Win32::Foundation::HANDLE(handle.0),
+            view: base_ptr as *mut std::ffi::c_void,
+        };
 
         let journal = HookJournal {
             header: header_ptr,
             entries: entries_ptr,
             capacity: ENTRY_CAPACITY,
             next_seq: 1,
+            mapping,
         };
 
         let msg = format!("[dlp-hook] journal initialized: {}\0", name);
@@ -208,9 +262,97 @@ impl HookJournal {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Public write API
-// ---------------------------------------------------------------------------
+/// Lightweight view into the hook journal.
+///
+/// Returned by [`HookJournal::get`]. The view copies the header/entries pointers
+/// and borrows no lock, so it is safe to use after the global `JOURNAL` lock is
+/// released. The mapping remains valid until [`unmap_journal`] is called.
+#[derive(Clone, Copy)]
+pub struct JournalView {
+    header: *mut JournalHeader,
+    entries: *mut JournalEntry,
+    capacity: usize,
+    next_seq: u64,
+}
+
+// SAFETY: JournalView contains only pointers to mapped memory that is valid
+// until unmap_journal is called.
+unsafe impl Send for JournalView {}
+unsafe impl Sync for JournalView {}
+
+impl JournalView {
+    /// Write a journal entry for a file-I/O operation.
+    ///
+    /// This function is called from every trampoline BEFORE returning the
+    /// classification decision. If the journal is not available (creation failed),
+    /// the call returns silently without panicking (per D-25).
+    ///
+    /// # Synchronization
+    ///
+    /// The write uses `write_volatile` for each field, followed by a `Release`
+    /// fence, then a `Release` store of `write_index`. The consumer reads
+    /// `write_index` with `Acquire`, then reads the entry. This ensures the
+    /// consumer never sees a new `write_index` with stale entry data (CR-03 fix).
+    ///
+    /// # Arguments
+    ///
+    /// * `handle_value` — HANDLE value from the API call (0 for path-based ops).
+    /// * `op` — Operation type: 1=Create, 2=Write, 3=Delete, 4=SetInfo.
+    /// * `path` — Normalized file path.
+    /// * `ts_qpc` — QueryPerformanceCounter timestamp.
+    /// * `etw_timestamp` — ETW timestamp in 100ns units (0 if unknown).
+    pub fn write(&self, handle_value: u64, op: u8, path: &str, ts_qpc: u64, etw_timestamp: u64) {
+        let path_hash = dlp_common::fnv1a_64(path.as_bytes());
+
+        // SAFETY: SPSC ring buffer. The header and entries pointers are valid
+        // for the lifetime of the process (shared memory mapping).
+        unsafe {
+            let write_index =
+                std::ptr::read_volatile(std::ptr::addr_of!((*self.header).write_index));
+            let slot = write_index as usize % self.capacity;
+            let entry_ptr = self.entries.add(slot);
+
+            let seq = self.next_seq;
+
+            std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).seq), seq);
+            std::ptr::write_volatile(
+                std::ptr::addr_of_mut!((*entry_ptr).handle_value),
+                handle_value,
+            );
+            std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).op), op);
+            std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).path_hash), path_hash);
+            std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).ts_qpc), ts_qpc);
+            std::ptr::write_volatile(
+                std::ptr::addr_of_mut!((*entry_ptr).etw_timestamp),
+                etw_timestamp,
+            );
+
+            // CR-03 fix: Release fence prevents CPU-level reordering on ARM64.
+            // All entry fields are published before the write_index bump.
+            fence(Ordering::Release);
+
+            let new_write_index = write_index.wrapping_add(1);
+            std::ptr::write_volatile(
+                std::ptr::addr_of_mut!((*self.header).write_index),
+                new_write_index,
+            );
+        }
+    }
+}
+
+/// Unmap the hook journal and release the mapping handle.
+///
+/// Called during self-unhook. After this point all journal writes become no-ops.
+pub fn unmap_journal() {
+    let mut guard = match JOURNAL.lock() {
+        Ok(g) => g,
+        Err(e) => {
+            crate::debug_log("[dlp-hook] journal: JOURNAL poisoned, forcing unmap\0");
+            e.into_inner()
+        }
+    };
+    *guard = None;
+}
 
 /// Write a journal entry for a file-I/O operation.
 ///
@@ -239,47 +381,13 @@ pub fn journal_write(handle_value: u64, op: u8, path: &str, ts_qpc: u64, etw_tim
         return;
     };
 
-    let path_hash = dlp_common::fnv1a_64(path.as_bytes());
-
-    // SAFETY: SPSC ring buffer. The header and entries pointers are valid
-    // for the lifetime of the process (shared memory mapping).
-    unsafe {
-        let write_index =
-            std::ptr::read_volatile(std::ptr::addr_of!((*journal.header).write_index));
-        let slot = write_index as usize % journal.capacity;
-        let entry_ptr = journal.entries.add(slot);
-
-        let seq = journal.next_seq;
-
-        std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).seq), seq);
-        std::ptr::write_volatile(
-            std::ptr::addr_of_mut!((*entry_ptr).handle_value),
-            handle_value,
-        );
-        std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).op), op);
-        std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).path_hash), path_hash);
-        std::ptr::write_volatile(std::ptr::addr_of_mut!((*entry_ptr).ts_qpc), ts_qpc);
-        std::ptr::write_volatile(
-            std::ptr::addr_of_mut!((*entry_ptr).etw_timestamp),
-            etw_timestamp,
-        );
-
-        // CR-03 fix: Release fence prevents CPU-level reordering on ARM64.
-        // All entry fields are published before the write_index bump.
-        fence(Ordering::Release);
-
-        let new_write_index = write_index.wrapping_add(1);
-        std::ptr::write_volatile(
-            std::ptr::addr_of_mut!((*journal.header).write_index),
-            new_write_index,
-        );
-    }
+    journal.write(handle_value, op, path, ts_qpc, etw_timestamp);
 
     // Increment next_seq for the next write. Use Relaxed because the
     // sequence number is only meaningful within this process.
     // SAFETY: next_seq is only mutated by the single producer (this function).
     // We use a raw pointer write to avoid &mut self.
-    let journal_ptr = journal as *const HookJournal as *mut HookJournal;
+    let journal_ptr = &journal as *const JournalView as *mut JournalView;
     unsafe {
         std::ptr::write_volatile(
             std::ptr::addr_of_mut!((*journal_ptr).next_seq),
@@ -491,6 +599,10 @@ mod tests {
                     entries: entries_ptr,
                     capacity,
                     next_seq: 1,
+                    mapping: JournalMapping {
+                        handle: windows::Win32::Foundation::HANDLE(handle.0),
+                        view: base_ptr as *mut std::ffi::c_void,
+                    },
                 };
 
                 // Write capacity + 1 entries to force a wrap.
@@ -581,6 +693,10 @@ mod tests {
                     entries: entries_ptr,
                     capacity,
                     next_seq: 1,
+                    mapping: JournalMapping {
+                        handle: windows::Win32::Foundation::HANDLE(handle.0),
+                        view: base_ptr as *mut std::ffi::c_void,
+                    },
                 };
 
                 // Write 3 entries.
@@ -667,6 +783,10 @@ mod tests {
                     entries: entries_ptr,
                     capacity,
                     next_seq: 1,
+                    mapping: JournalMapping {
+                        handle: windows::Win32::Foundation::HANDLE(handle.0),
+                        view: base_ptr as *mut std::ffi::c_void,
+                    },
                 };
 
                 let path = r"C:\test\file.txt";
@@ -743,6 +863,10 @@ mod tests {
                     entries: entries_ptr,
                     capacity,
                     next_seq: 1,
+                    mapping: JournalMapping {
+                        handle: windows::Win32::Foundation::HANDLE(handle.0),
+                        view: base_ptr as *mut std::ffi::c_void,
+                    },
                 };
 
                 let write_index =
@@ -812,6 +936,10 @@ mod tests {
                     entries: entries_ptr,
                     capacity,
                     next_seq: 1,
+                    mapping: JournalMapping {
+                        handle: windows::Win32::Foundation::HANDLE(handle.0),
+                        view: base_ptr as *mut std::ffi::c_void,
+                    },
                 };
 
                 let expected_ts = 0x1234_5678_9ABC_DEF0u64;
@@ -883,6 +1011,10 @@ mod tests {
                     entries: entries_ptr,
                     capacity,
                     next_seq: 1,
+                    mapping: JournalMapping {
+                        handle: windows::Win32::Foundation::HANDLE(handle.0),
+                        view: base_ptr as *mut std::ffi::c_void,
+                    },
                 };
 
                 let expected_etw = 0xFEDC_BA98_7654_3210u64;
@@ -1039,6 +1171,10 @@ mod tests {
                     entries: entries_ptr,
                     capacity,
                     next_seq: 1,
+                    mapping: JournalMapping {
+                        handle: windows::Win32::Foundation::HANDLE(handle.0),
+                        view: base_ptr as *mut std::ffi::c_void,
+                    },
                 };
 
                 // Write a fully-populated entry.

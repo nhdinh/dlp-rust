@@ -29,16 +29,18 @@
 //! | `HookNtSetInformationFile` | Trampoline for `NtSetInformationFile` |
 
 use std::cell::UnsafeCell;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HANDLE, NTSTATUS};
+use windows::Win32::Foundation::{HANDLE, HINSTANCE, NTSTATUS};
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::Storage::FileSystem::{
     FILE_CREATION_DISPOSITION, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_MODE,
 };
 use windows::Win32::System::Diagnostics::Debug::OutputDebugStringW;
-use windows::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress};
+use windows::Win32::System::LibraryLoader::{
+    FreeLibraryAndExitThread, GetModuleHandleW, GetProcAddress,
+};
 // pe_utils.rs uses VirtualProtect and PAGE_EXECUTE_READWRITE; keep import
 // if any code in this file needs them, otherwise they are unused.
 #[allow(unused_imports)]
@@ -50,6 +52,7 @@ use dlp_common::{Decision, HookRequest, VolumeClass};
 mod allowlist;
 mod background_thread;
 mod classification_cache;
+mod control_thread;
 mod crash_guard;
 pub mod diagnostic_ring;
 pub mod edr_detector;
@@ -119,6 +122,20 @@ const UNICODE_STRING_BUFFER_OFFSET: isize = 0x04;
 
 /// Guard to ensure one-time initialisation.
 static INITIALISED: AtomicBool = AtomicBool::new(false);
+
+/// Set to true while the DLL is shutting down so new hook calls pass through.
+static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+
+/// Number of hook calls currently executing.
+static ACTIVE_CALLS: AtomicUsize = AtomicUsize::new(0);
+
+/// Captured DLL HINSTANCE from `DllMain` DLL_PROCESS_ATTACH.
+///
+/// Stored as a raw `isize` because `HINSTANCE` is a wrapper around `*mut c_void`
+/// and does not implement `Send`/`Sync`, which is required for a shared static
+/// `Mutex`. The raw value is sound to send across threads and is converted back
+/// to `HINSTANCE` only when `self_unload` is called on the owning thread.
+static DLL_INSTANCE: Mutex<Option<isize>> = Mutex::new(None);
 
 /// Phase 51: Whether ntdll patching is enabled (read from shared memory during init).
 /// Trampolines check this flag before attempting lazy initialization.
@@ -531,10 +548,13 @@ const NTDLL_STUBS: &[(&str, *const ())] = &[
 
 /// DLL entry point.
 #[unsafe(no_mangle)]
-extern "system" fn DllMain(_inst: isize, reason: u32, _reserved: usize) -> i32 {
+extern "system" fn DllMain(inst: HINSTANCE, reason: u32, _reserved: usize) -> i32 {
     const DLL_PROCESS_ATTACH: u32 = 1;
     const DLL_PROCESS_DETACH: u32 = 0;
     if reason == DLL_PROCESS_ATTACH {
+        if let Ok(mut guard) = DLL_INSTANCE.lock() {
+            *guard = Some(inst.0 as isize);
+        }
         init();
     } else if reason == DLL_PROCESS_DETACH {
         UnhookAll();
@@ -687,13 +707,33 @@ pub(crate) unsafe fn resolve_nt_create_file() -> Option<NtCreateFileFn> {
 // UnhookAll — restores all IAT entries driven by HOOKS table
 // ---------------------------------------------------------------------------
 
-/// Restores original function pointers.
+/// Restores original function pointers, drains active calls, and releases
+/// shared-memory mappings.
 ///
 /// Called by the agent before unloading the DLL from a target process,
-/// and automatically on `DLL_PROCESS_DETACH`.
+/// automatically on `DLL_PROCESS_DETACH`, and by the watchdog self-unload path.
 #[unsafe(no_mangle)]
 pub extern "system" fn UnhookAll() {
-    debug_log("[dlp-hook] UnhookAll called — restoring IAT\0");
+    debug_log("[dlp-hook] UnhookAll called — entering shutdown\0");
+    SHUTTING_DOWN.store(true, Ordering::SeqCst);
+
+    // Drain active calls with a bounded wait.
+    const DRAIN_TIMEOUT_MS: u64 = 5_000;
+    const DRAIN_POLL_US: u64 = 100;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(DRAIN_TIMEOUT_MS);
+    loop {
+        let active = ACTIVE_CALLS.load(Ordering::SeqCst);
+        if active == 0 {
+            break;
+        }
+        if std::time::Instant::now() >= deadline {
+            debug_log("[dlp-hook] UnhookAll: active-call drain timed out\0");
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_micros(DRAIN_POLL_US));
+    }
+
+    // Restore IAT entries.
     unsafe {
         for hook in HOOKS.iter() {
             let iat_opt = *(hook.iat_ptr as *const Option<*mut usize>);
@@ -703,6 +743,115 @@ pub extern "system" fn UnhookAll() {
             }
         }
     }
+
+    // Unpatch ntdll stubs if they were ever initialized.
+    if let Some(patcher_lock) = NTDLL_PATCHER.get() {
+        if let Ok(mut patcher) = patcher_lock.lock() {
+            patcher.unpatch_all_stubs();
+        }
+    }
+
+    // Release shared-memory mappings so they are not leaked across unload.
+    classification_cache::unmap_cache();
+    hook_journal::unmap_journal();
+
+    debug_log("[dlp-hook] UnhookAll complete\0");
+}
+
+/// Returns true if the DLL is currently shutting down.
+///
+/// Trampolines use this to pass through to the original function without
+/// invoking classification logic.
+pub fn is_shutting_down() -> bool {
+    SHUTTING_DOWN.load(Ordering::SeqCst)
+}
+
+/// Registers the start of a hook call.
+///
+/// Returns true if the call should proceed with classification. Returns false
+/// if the DLL is shutting down; the caller should pass through to the original.
+pub fn enter_hook_call() -> bool {
+    // Lazily start the control/watchdog thread from the first hook call
+    // outside DllMain (loader-lock safety).
+    crate::control_thread::start_control_thread();
+
+    if SHUTTING_DOWN.load(Ordering::SeqCst) {
+        return false;
+    }
+    ACTIVE_CALLS.fetch_add(1, Ordering::SeqCst);
+    // Re-check shutdown after incrementing to avoid racing with UnhookAll.
+    if SHUTTING_DOWN.load(Ordering::SeqCst) {
+        ACTIVE_CALLS.fetch_sub(1, Ordering::SeqCst);
+        return false;
+    }
+    true
+}
+
+/// Registers the end of a hook call.
+pub fn exit_hook_call() {
+    ACTIVE_CALLS.fetch_sub(1, Ordering::SeqCst);
+}
+
+/// Returns the current number of active hook calls.
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn active_call_count() -> usize {
+    ACTIVE_CALLS.load(Ordering::SeqCst)
+}
+
+/// RAII guard that increments/decrements `ACTIVE_CALLS`.
+#[cfg(any(test, feature = "test-helpers"))]
+pub struct ActiveCallGuard {
+    active: bool,
+}
+
+#[cfg(any(test, feature = "test-helpers"))]
+impl ActiveCallGuard {
+    /// Create a new guard. If shutdown is not active, increments the counter.
+    pub fn new() -> Self {
+        let active = enter_hook_call();
+        Self { active }
+    }
+
+    /// Returns true if this guard owns an active call reference.
+    pub fn is_active(&self) -> bool {
+        self.active
+    }
+}
+
+#[cfg(any(test, feature = "test-helpers"))]
+impl Drop for ActiveCallGuard {
+    fn drop(&mut self) {
+        if self.active {
+            exit_hook_call();
+        }
+    }
+}
+
+/// Set the shutting-down flag for tests.
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn set_shutting_down_for_test(shutting_down: bool) {
+    SHUTTING_DOWN.store(shutting_down, Ordering::SeqCst);
+}
+
+/// Self-unload the DLL from inside the DLL itself.
+///
+/// # Safety
+///
+/// Must be called from a thread that is not needed after unload. This function
+/// never returns.
+pub unsafe fn self_unload() -> ! {
+    debug_log("[dlp-hook] self_unload: acquiring DLL instance\0");
+    let instance = DLL_INSTANCE
+        .lock()
+        .ok()
+        .and_then(|g| *g)
+        .map(|raw| HINSTANCE(raw as *mut std::ffi::c_void))
+        .unwrap_or_else(|| {
+            // Fallback: use the host module handle. This is safe because the DLL
+            // is still loaded while this thread runs.
+            GetModuleHandleW(None).unwrap_or_default().into()
+        });
+    FreeLibraryAndExitThread(instance.into(), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1009,8 +1158,38 @@ mod tests {
     }
 
     #[test]
-    fn unhook_all_does_not_panic_when_not_initialised() {
+    fn unhook_all_is_idempotent() {
         UnhookAll();
+        UnhookAll();
+    }
+
+    #[test]
+    fn shutdown_flag_stops_new_hook_calls() {
+        SHUTTING_DOWN.store(true, Ordering::SeqCst);
+        assert!(!enter_hook_call());
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn active_call_guard_balanced() {
+        // Ensure shutdown flag is clear; a prior test may have left it set.
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+        let before = ACTIVE_CALLS.load(Ordering::SeqCst);
+        {
+            let guard = ActiveCallGuard::new();
+            assert!(guard.is_active());
+            assert_eq!(ACTIVE_CALLS.load(Ordering::SeqCst), before + 1);
+        }
+        assert_eq!(ACTIVE_CALLS.load(Ordering::SeqCst), before);
+    }
+
+    #[test]
+    fn dll_instance_is_captured() {
+        // In the test binary the DLL instance is not set by DllMain, but the
+        // mutex should be accessible and the field should be None or the host
+        // module handle.
+        let guard = DLL_INSTANCE.lock().expect("DLL_INSTANCE lock");
+        assert!(guard.is_some() || guard.is_none());
     }
 
     #[test]

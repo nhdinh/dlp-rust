@@ -86,7 +86,7 @@ fn get_fail_state() -> &'static Arc<FailModeState> {
         // Start background thread for RESYNC detection.
         let state = Arc::new(FailModeState::new());
         if let Some(cache) = crate::classification_cache::CacheLookup::get() {
-            let header = cache as *const _ as *const crate::classification_cache::CacheHeader;
+            let header = &cache as *const _ as *const crate::classification_cache::CacheHeader;
             // Pass None for verify_fn — ntdll trampoline verification callback
             // will be wired in Plan 06 when NtdllPatcher is initialized.
             crate::background_thread::start_background_thread(
@@ -150,6 +150,13 @@ fn classify_and_log_path(
     source_volume_class: Option<dlp_common::VolumeClass>,
     destination_volume_class: Option<dlp_common::VolumeClass>,
 ) -> Option<crate::fail_closed::DenyReturn> {
+    // Shutdown pass-through: do not classify, do not touch shared mappings,
+    // do not increment active-call counters. Returning None tells the trampoline
+    // to call the original API.
+    if crate::is_shutting_down() {
+        return None;
+    }
+
     let path_hash = crate::hash_path(path);
 
     // Resolve volume class from path if not pre-resolved (e.g., from copy/move).
@@ -174,7 +181,9 @@ fn classify_and_log_path(
         let cache_lookup = crate::classification_cache::CacheLookup::get();
         let header_ref = cache_lookup.map(|c| {
             // SAFETY: CacheLookup header pointer is valid read-only mapping.
-            unsafe { &*(c as *const _ as *const crate::classification_cache::CacheHeader) }
+            // `CacheView` is a lightweight copy of that pointer, so we dereference
+            // the pointer it wraps rather than casting the view itself.
+            unsafe { &*c.header }
         });
 
         let (allowlisted, category) = crate::allowlist::is_allowlisted(path, header_ref);
@@ -579,6 +588,13 @@ fn classify_and_log_handle(
     journal_op: u8,
     path: &str,
 ) -> Option<crate::fail_closed::DenyReturn> {
+    // Shutdown pass-through: do not classify, do not touch shared mappings,
+    // do not increment active-call counters. Returning None tells the trampoline
+    // to call the original API.
+    if crate::is_shutting_down() {
+        return None;
+    }
+
     let start = std::time::Instant::now();
 
     let response = crate::classify_handle(handle_value, action, crate::DEFAULT_PIPE_NAME);
@@ -2807,9 +2823,37 @@ mod tests {
     }
 
     #[test]
-    fn test_classify_and_log_path_fails_closed_on_unknown_path() {
-        // A path with no drive letter and not UNC should resolve to None.
-        let _result = classify_and_log_path("unknown_path", "CREATE", "Test", 0, 1, None, None);
-        // Volume class is None, which is correct fail-closed behavior.
+    fn shutdown_pass_through_skips_classification() {
+        // With no agent running, a normal call would fail-closed (DENY).
+        // When shutting down, the call should pass through and also return None
+        // so the trampoline calls the original API. In the test binary there is
+        // no original function installed, so classify_and_log_handle returns None
+        // because shutdown mode bypasses classification. The important invariant
+        // is that no pipe round-trip or snapshot is produced.
+        crate::set_shutting_down_for_test(true);
+        let result = classify_and_log_handle(0x1234, "WRITE", "WriteFile", 2, "");
+        crate::set_shutting_down_for_test(false);
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn active_call_counter_increments_and_decrements() {
+        // Ensure shutdown flag is clear; a prior test may have left it set.
+        crate::set_shutting_down_for_test(false);
+        let before = crate::active_call_count();
+        {
+            let guard = crate::ActiveCallGuard::new();
+            assert!(guard.is_active());
+            assert_eq!(crate::active_call_count(), before + 1);
+        }
+        assert_eq!(crate::active_call_count(), before);
+    }
+
+    #[test]
+    fn active_call_guard_skips_when_shutting_down() {
+        crate::set_shutting_down_for_test(true);
+        let guard = crate::ActiveCallGuard::new();
+        assert!(!guard.is_active());
+        crate::set_shutting_down_for_test(false);
     }
 }
