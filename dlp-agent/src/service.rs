@@ -4086,17 +4086,18 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
     crate::ui_spawner::kill_all();
     crate::password_stop::debug_log("run_loop: UI processes killed");
 
+    // Phase 58.5: Request cooperative unhook from all injected processes.
+    // This must happen while the hook IPC server is still running so that
+    // PollControl frames receive UnhookCommand replies, and before the audit
+    // flush task stops so the resulting events are flushed.
+    request_unhook_from_injected(&ctx.process_registry, &ctx.audit_ctx).await;
+
     // Stop the audit buffer flush task (final flush runs inside).
     let _ = ctx.audit_shutdown_tx.send(true);
     if let Some(h) = ctx.audit_flush_handle {
         let _ = h.await;
     }
     crate::password_stop::debug_log("run_loop: audit buffer stopped");
-
-    // Phase 58.5: Request cooperative unhook from all injected processes.
-    // This must happen while the hook IPC server is still running so that
-    // PollControl frames receive UnhookCommand replies.
-    request_unhook_from_injected(&ctx.process_registry, &ctx.audit_ctx).await;
 
     // Phase 53: Stop bypass correlator.
     if let Some(shutdown_tx) = ctx.correlator_shutdown {
