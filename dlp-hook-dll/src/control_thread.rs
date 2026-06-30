@@ -141,6 +141,9 @@ pub fn start_control_thread() {
 
     match &*guard {
         ControlThreadState::NotStarted => {
+            // Reset the stopping flag in case a previous shutdown left it set
+            // (e.g., an in-process DLL reload or service restart).
+            CONTROL_THREAD_STOPPING.store(false, Ordering::SeqCst);
             *guard = ControlThreadState::Starting;
         }
         ControlThreadState::Starting | ControlThreadState::Running(_) => {
@@ -195,6 +198,9 @@ pub fn shutdown_control_thread() {
             }
             ControlThreadState::NotStarted | ControlThreadState::Starting => {
                 *guard = ControlThreadState::NotStarted;
+                // No thread was running, but ensure the stopping flag is cleared
+                // so a future start is not immediately suppressed.
+                CONTROL_THREAD_STOPPING.store(false, Ordering::SeqCst);
                 return;
             }
         }
@@ -216,6 +222,10 @@ pub fn shutdown_control_thread() {
             let _ = handle.join();
         }
     }
+
+    // Reset the flag so a subsequent start_control_thread (e.g., after an
+    // in-process service restart or DLL reload) can run the loop.
+    CONTROL_THREAD_STOPPING.store(false, Ordering::SeqCst);
 }
 
 /// Main loop for the control/watchdog thread.
