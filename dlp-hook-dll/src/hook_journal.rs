@@ -179,6 +179,21 @@ impl HookJournal {
         Some(view)
     }
 
+    /// Advance the global sequence counter for the next journal entry.
+    ///
+    /// This must be called after each successful write so `next_seq` is
+    /// incremented on the authoritative `HookJournal` instance rather than on
+    /// a local `JournalView` copy.
+    pub fn advance_seq() {
+        let mut guard = match JOURNAL.lock() {
+            Ok(g) => g,
+            Err(e) => e.into_inner(),
+        };
+        if let Some(ref mut journal) = *guard {
+            journal.next_seq += 1;
+        }
+    }
+
     /// Attempt to create or open the shared-memory journal mapping.
     ///
     /// # Safety
@@ -396,17 +411,11 @@ pub fn journal_write(handle_value: u64, op: u8, path: &str, ts_qpc: u64, etw_tim
 
     journal.write(handle_value, op, path, ts_qpc, etw_timestamp);
 
-    // Increment next_seq for the next write. Use Relaxed because the
-    // sequence number is only meaningful within this process.
-    // SAFETY: next_seq is only mutated by the single producer (this function).
-    // We use a raw pointer write to avoid &mut self.
-    let journal_ptr = &journal as *const JournalView as *mut JournalView;
-    unsafe {
-        std::ptr::write_volatile(
-            std::ptr::addr_of_mut!((*journal_ptr).next_seq),
-            journal.next_seq + 1,
-        );
-    }
+    // Advance the authoritative sequence counter while the journal is still
+    // held, so the next write receives a monotonically increasing seq. The
+    // previous implementation incremented next_seq on a local JournalView copy,
+    // which never updated the global HookJournal (WR-02 fix).
+    HookJournal::advance_seq();
 }
 
 /// Write a journal entry from a trampoline, capturing the current QPC timestamp.
