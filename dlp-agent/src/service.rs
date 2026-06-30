@@ -3748,12 +3748,35 @@ fn init_session_map() -> Arc<crate::session_identity::SessionIdentityMap> {
     session_map
 }
 
+/// Resolves the service's own user SID and interactive session ID.
+///
+/// Opens the current process token to obtain the SID and calls
+/// `ProcessIdToSessionId` for the session. Returns `None` if SID resolution
+/// fails; the session ID falls back to 0 on failure.
+#[cfg(windows)]
+fn resolve_service_identity() -> Option<(String, u32)> {
+    use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+
+    let sid = get_process_user_sid(std::process::id())?;
+    let mut session_id: u32 = 0;
+    let _ = unsafe { ProcessIdToSessionId(std::process::id(), &mut session_id) };
+    Some((sid, session_id))
+}
+
+/// Non-Windows fallback for service identity resolution.
+#[cfg(not(windows))]
+fn resolve_service_identity() -> Option<(String, u32)> {
+    Some(("S-1-5-18".to_string(), 0))
+}
+
 /// Builds the default [`EmitContext`] used for audit events.
 fn build_audit_ctx(machine_name: Option<String>) -> crate::audit_emitter::EmitContext {
+    let (sid, session) =
+        resolve_service_identity().unwrap_or_else(|| ("S-1-5-18".to_string(), 0));
     crate::audit_emitter::EmitContext {
         agent_id: std::env::var("DLP_AGENT_ID").unwrap_or_else(|_| "AGENT-UNKNOWN".to_string()),
-        session_id: 1,
-        user_sid: "S-1-5-18".to_string(), // default; overridden per-event
+        session_id: session,
+        user_sid: sid,
         user_name: "SYSTEM".to_string(),
         machine_name,
     }
