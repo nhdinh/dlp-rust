@@ -233,7 +233,18 @@ fn control_thread_loop(shutdown_event: HANDLE) {
     let mut last_agent_response = Instant::now();
 
     loop {
-        let wait_result = unsafe { WaitForSingleObject(shutdown_event, CONTROL_POLL_INTERVAL_MS) };
+        // Wait until the watchdog deadline or the next poll interval, whichever
+        // comes first. This avoids the ~1 s granularity delay when the watchdog
+        // is about to fire (WR-09).
+        let deadline = last_agent_response + Duration::from_millis(watchdog_timeout_ms());
+        let wait_ms = if Instant::now() >= deadline {
+            0
+        } else {
+            let remaining_ms = (deadline - Instant::now()).as_millis() as u32;
+            remaining_ms.min(CONTROL_POLL_INTERVAL_MS)
+        };
+
+        let wait_result = unsafe { WaitForSingleObject(shutdown_event, wait_ms) };
         if wait_result == WAIT_OBJECT_0 {
             break;
         }
@@ -311,11 +322,16 @@ pub(crate) fn handle_unhook_command(cmd: UnhookCommand, pid: u32, creation_time:
     };
     let _ = crate::pipe_client::send_unhook_ack(crate::DEFAULT_PIPE_NAME, &ack);
 
-    #[cfg(test)]
-    {}
-    #[cfg(not(test))]
-    unsafe {
-        crate::self_unload();
+    // Only unload the DLL if unhook succeeded. If unhook failed, remain loaded
+    // so the agent can retry or escalate instead of leaving the process with
+    // partially restored IAT entries.
+    if unhook_ok {
+        #[cfg(test)]
+        {}
+        #[cfg(not(test))]
+        unsafe {
+            crate::self_unload();
+        }
     }
 }
 
@@ -436,7 +452,15 @@ pub(crate) fn run_control_loop_for_test(
     let mut iterations = 0usize;
 
     while iterations < max_iterations {
-        let wait_result = unsafe { WaitForSingleObject(shutdown_event, CONTROL_POLL_INTERVAL_MS) };
+        let deadline = last_agent_response + Duration::from_millis(watchdog_timeout_ms());
+        let wait_ms = if Instant::now() >= deadline {
+            0
+        } else {
+            let remaining_ms = (deadline - Instant::now()).as_millis() as u32;
+            remaining_ms.min(CONTROL_POLL_INTERVAL_MS)
+        };
+
+        let wait_result = unsafe { WaitForSingleObject(shutdown_event, wait_ms) };
         if wait_result == WAIT_OBJECT_0 {
             break;
         }
