@@ -867,6 +867,22 @@ pub fn set_shutting_down_for_test(shutting_down: bool) {
 /// Must be called from a thread that is not needed after unload. This function
 /// never returns.
 pub unsafe fn self_unload() -> ! {
+    debug_log("[dlp-hook] self_unload: waiting for active hook calls to drain\0");
+    // Two-phase teardown: no new calls can enter while SHUTTING_DOWN is set,
+    // but threads that passed the check before it was raised may still be
+    // executing trampoline code. Wait for them to finish before freeing the
+    // image to avoid a use-after-free.
+    const FINAL_DRAIN_TIMEOUT_MS: u64 = 5_000;
+    const FINAL_DRAIN_POLL_US: u64 = 100;
+    let deadline =
+        std::time::Instant::now() + std::time::Duration::from_millis(FINAL_DRAIN_TIMEOUT_MS);
+    while ACTIVE_CALLS.load(Ordering::SeqCst) > 0 && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_micros(FINAL_DRAIN_POLL_US));
+    }
+    if ACTIVE_CALLS.load(Ordering::SeqCst) > 0 {
+        debug_log("[dlp-hook] self_unload: active-call drain timed out -- unloading anyway\0");
+    }
+
     debug_log("[dlp-hook] self_unload: acquiring DLL instance\0");
     let instance = DLL_INSTANCE
         .lock()
