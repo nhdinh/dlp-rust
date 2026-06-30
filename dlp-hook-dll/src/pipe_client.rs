@@ -5,12 +5,14 @@
 //! All errors are mapped to [`PipeError`] so the caller can fail-closed.
 
 use std::cell::RefCell;
-use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FlushFileBuffers, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES,
     FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_NONE, OPEN_EXISTING,
 };
+use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Pipes::{SetNamedPipeHandleState, PIPE_READMODE_MESSAGE};
+use windows::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject};
 
 use dlp_common::{HookRequest, HookResponse};
 
@@ -409,10 +411,10 @@ fn write_frame(pipe: HANDLE, payload: &[u8]) -> Result<(), PipeError> {
     Ok(())
 }
 
-/// Reads a length-prefixed frame.
-fn read_frame(pipe: HANDLE, _timeout_ms: u32) -> Result<Vec<u8>, PipeError> {
+/// Reads a length-prefixed frame, respecting `timeout_ms` per read.
+fn read_frame(pipe: HANDLE, timeout_ms: u32) -> Result<Vec<u8>, PipeError> {
     let mut len_buf = [0u8; 4];
-    read_exact(pipe, &mut len_buf)?;
+    read_exact_with_timeout(pipe, &mut len_buf, timeout_ms)?;
     let len = u32::from_le_bytes(len_buf) as usize;
 
     const MAX_PAYLOAD: usize = 67_108_864; // 64 MiB
@@ -421,7 +423,7 @@ fn read_frame(pipe: HANDLE, _timeout_ms: u32) -> Result<Vec<u8>, PipeError> {
     }
 
     let mut payload = vec![0u8; len];
-    read_exact(pipe, &mut payload)?;
+    read_exact_with_timeout(pipe, &mut payload, timeout_ms)?;
     Ok(payload)
 }
 
@@ -447,27 +449,101 @@ fn write_all(pipe: HANDLE, buf: &[u8]) -> Result<(), PipeError> {
     Ok(())
 }
 
-fn read_exact(pipe: HANDLE, buf: &mut [u8]) -> Result<(), PipeError> {
+/// Reads exactly `buf.len()` bytes from `pipe`, returning [`PipeError::Timeout`]
+/// if the operation does not complete within `timeout_ms`.
+///
+/// Uses overlapped I/O so the watchdog can detect an unresponsive agent even
+/// when the pipe remains connected.
+fn read_exact_with_timeout(
+    pipe: HANDLE,
+    buf: &mut [u8],
+    timeout_ms: u32,
+) -> Result<(), PipeError> {
+    let event = unsafe {
+        match CreateEventW(None, true, false, None) {
+            Ok(h) => h,
+            Err(_) => return Err(PipeError::Win32(0)),
+        }
+    };
+
     let mut remaining = buf.len();
     while remaining > 0 {
         let offset = buf.len() - remaining;
         let slice_len = remaining.min(65536);
-        let mut read = 0u32;
+
+        let mut overlapped = OVERLAPPED::default();
+        overlapped.hEvent = event;
+
         let result = unsafe {
             ReadFile(
                 pipe,
                 Some(&mut buf[offset..offset + slice_len]),
-                Some(&mut read),
                 None,
+                Some(std::ptr::addr_of_mut!(overlapped)),
             )
         };
-        if result.is_err() {
-            return Err(PipeError::ConnectionRefused);
+
+        let pending = match result {
+            Ok(()) => false,
+            Err(e) => {
+                let code = (e.code().0 as u32) & 0xFFFF;
+                if code == 997 {
+                    // ERROR_IO_PENDING
+                    true
+                } else {
+                    unsafe {
+                        let _ = CloseHandle(event);
+                    }
+                    if code == 109 {
+                        // ERROR_BROKEN_PIPE
+                        return Err(PipeError::ConnectionRefused);
+                    }
+                    return Err(PipeError::Win32(code));
+                }
+            }
+        };
+
+        if pending {
+            let wait = unsafe { WaitForSingleObject(event, timeout_ms) };
+            if wait != WAIT_OBJECT_0 {
+                unsafe {
+                    let _ = CancelIoEx(pipe, Some(std::ptr::addr_of!(overlapped)));
+                    let _ = WaitForSingleObject(event, 1000);
+                    let _ = CloseHandle(event);
+                }
+                return Err(PipeError::Timeout);
+            }
+        }
+
+        let mut read = 0u32;
+        let get_result =
+            unsafe { GetOverlappedResult(pipe, std::ptr::addr_of!(overlapped), &mut read, false) };
+        if let Err(e) = get_result {
+            let code = (e.code().0 as u32) & 0xFFFF;
+            unsafe {
+                let _ = CloseHandle(event);
+            }
+            if code == 109 {
+                // ERROR_BROKEN_PIPE
+                return Err(PipeError::ConnectionRefused);
+            }
+            return Err(PipeError::Win32(code));
         }
         if read == 0 {
+            unsafe {
+                let _ = CloseHandle(event);
+            }
             return Err(PipeError::Malformed);
         }
         remaining -= read as usize;
+
+        unsafe {
+            let _ = ResetEvent(event);
+        }
+    }
+
+    unsafe {
+        let _ = CloseHandle(event);
     }
     Ok(())
 }
