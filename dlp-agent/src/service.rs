@@ -356,6 +356,10 @@ pub fn run_service() -> Result<()> {
     // with a clean state so that blocking threads do not exit immediately.
     reset_shutdown_signal();
 
+    // Phase 58.5: also reset the global unhook signal so freshly injected
+    // processes do not receive a stale UnhookCommand before real shutdown.
+    reset_unhook_signal();
+
     // Load the config early — only to read `log_level` before the subscriber
     // is initialised.  The full config load happens later at its normal site.
     let log_level = crate::config::AgentConfig::load_default().resolved_log_level();
