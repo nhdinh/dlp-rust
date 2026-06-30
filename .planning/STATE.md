@@ -5,15 +5,15 @@ milestone_name: Real-Time File Access Prevention
 current_phase: 59
 current_phase_name: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 status: completed
-stopped_at: Phase 58.3 context gathered
-last_updated: "2026-06-30T04:32:48.080Z"
+stopped_at: Completed 58.5-03-PLAN.md
+last_updated: "2026-06-30T07:36:20.074Z"
 last_activity: 2026-06-29
 last_activity_desc: Phase 58.4 complete, transitioned to Phase 59
 progress:
   total_phases: 47
   completed_phases: 37
   total_plans: 197
-  completed_plans: 173
+  completed_plans: 174
   percent: 79
 ---
 
@@ -179,9 +179,9 @@ Phase 59 and later are complete and shipped as part of v0.11.0.
 
 ## Session Continuity
 
-Last session: 2026-06-30T04:32:48.068Z
-Stopped at: Phase 58.3 context gathered
-Resume file: .planning/phases/58.3-close-gap-ops-04-execute-physical-windows-11-uat/58.3-CONTEXT.md
+Last session: 2026-06-30T07:36:20.061Z
+Stopped at: Completed 58.5-03-PLAN.md
+Resume file: None
 
 ## Operator Next Steps
 
@@ -223,6 +223,7 @@ Resume file: .planning/phases/58.3-close-gap-ops-04-execute-physical-windows-11-
 | Phase 58.4 P04 | 25min | 3 tasks | 5 files |
 | Phase 58.5 P01 | 18 min | 2 tasks | 2 files |
 | Phase 58.5 P02 | 47min | 3 tasks | 11 files |
+| Phase 58.5 P03 | 95min | 3 tasks | 7 files |
 
 ## Quick Tasks Completed
 
@@ -253,3 +254,7 @@ Resume file: .planning/phases/58.3-close-gap-ops-04-execute-physical-windows-11-
 - [Phase ?]: Started control-poll/watchdog thread from enter_hook_call as safest post-attach path.
 - [Phase ?]: Used Mutex<Option<Mapping>> instead of OnceLock reset for safe shared-memory unmapping.
 - [Phase ?]: Returned None from classify_and_log_path/handle during shutdown for original-API pass-through.
+- [Phase ?]: Kept UNHOOK_WAIT_BUDGET at 5 seconds to preserve remaining SHUTDOWN_TIMEOUT budget — The existing service shutdown path has a 10-second SHUTDOWN_TIMEOUT; reserving 5 seconds for DLLs to poll and ack leaves 5 seconds for the rest of shutdown.
+- [Phase ?]: Used Vec snapshot from iter_injected to avoid holding DashMap across await points — DashMap guards are not Send/Sync across await boundaries; returning a Vec snapshot keeps the async shutdown code simple and correct.
+- [Phase ?]: Propagated per-thread audit capture token to mock server thread for multi-threaded test isolation — Audit events emitted on the mock server thread were not visible to the test thread's capture sink; a thread-local token propagated to the server thread makes cross-thread assertions deterministic.
+- [Phase ?]: Retained unmatched watchdog evidence files and emitted untracked WatchdogSelfUnload audit — Deleting unmatched evidence would lose the signal that a prior agent crash occurred; retaining the file for bounded retry and emitting an untracked audit preserves observability.
