@@ -864,9 +864,10 @@ pub fn set_shutting_down_for_test(shutting_down: bool) {
 ///
 /// # Safety
 ///
-/// Must be called from a thread that is not needed after unload. This function
-/// never returns.
-pub unsafe fn self_unload() -> ! {
+/// Must be called from a thread that is not needed after unload. If active
+/// hook calls remain after the drain timeout, the function returns `false`
+/// and the DLL image is left loaded so those calls do not fault.
+pub unsafe fn self_unload() -> bool {
     debug_log("[dlp-hook] self_unload: waiting for active hook calls to drain\0");
     // Two-phase teardown: no new calls can enter while SHUTTING_DOWN is set,
     // but threads that passed the check before it was raised may still be
@@ -880,7 +881,8 @@ pub unsafe fn self_unload() -> ! {
         std::thread::sleep(std::time::Duration::from_micros(FINAL_DRAIN_POLL_US));
     }
     if ACTIVE_CALLS.load(Ordering::SeqCst) > 0 {
-        debug_log("[dlp-hook] self_unload: active-call drain timed out -- unloading anyway\0");
+        debug_log("[dlp-hook] self_unload: active calls remain -- aborting unload\0");
+        return false;
     }
 
     debug_log("[dlp-hook] self_unload: acquiring DLL instance\0");

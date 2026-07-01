@@ -288,7 +288,12 @@ fn control_thread_loop(shutdown_event: HANDLE) {
                     }
                     #[cfg(not(test))]
                     unsafe {
-                        crate::self_unload();
+                        if !crate::self_unload() {
+                            crate::debug_log(
+                                "[dlp-hook] watchdog: self_unload aborted -- remaining loaded but unhooked\0",
+                            );
+                            break;
+                        }
                     }
                 }
             }
@@ -330,7 +335,11 @@ pub(crate) fn handle_unhook_command(cmd: UnhookCommand, pid: u32, creation_time:
         {}
         #[cfg(not(test))]
         unsafe {
-            crate::self_unload();
+            if !crate::self_unload() {
+                crate::debug_log(
+                    "[dlp-hook] handle_unhook_command: self_unload aborted -- remaining loaded but unhooked\0",
+                );
+            }
         }
     }
 }
