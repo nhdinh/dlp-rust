@@ -8,10 +8,13 @@
 //!    replies with `ControlResponse { command: Some(UnhookCommand) }`, the DLL
 //!    acknowledges with `UnhookAck` and initiates cooperative self-unhook.
 //!
-//! 2. **Watchdog**: If the agent pipe disappears for `WATCHDOG_TIMEOUT_MS`,
-//!    the DLL assumes the agent has died/exited and self-unhooks to avoid
-//!    leaving stale hooks in the host process. Evidence of the watchdog
-//!    self-unload is persisted to disk for the agent to reconcile on restart.
+//! 2. **Watchdog**: If the agent pipe fails `MAX_FAILURES` consecutive polls
+//!    and the cumulative time since the first failure reaches
+//!    `WATCHDOG_TIMEOUT_MS`, the DLL assumes the agent has died/exited and
+//!    self-unhooks to avoid leaving stale hooks in the host process. This
+//!    consecutive-failure + grace-window design avoids false-positive unhooks
+//!    during short agent restarts. Evidence of the watchdog self-unload is
+//!    persisted to disk for the agent to reconcile on restart.
 //!
 //! # Safety
 //!
@@ -77,6 +80,9 @@ const CONTROL_POLL_INTERVAL_MS: u32 = 1_000;
 
 /// Watchdog timeout: if the agent does not respond for this long, self-unhook.
 const WATCHDOG_TIMEOUT_MS: u64 = 30_000;
+
+/// Maximum consecutive poll failures before the watchdog is eligible to fire.
+const MAX_FAILURES: u32 = 3;
 
 /// Maximum time to wait for the control thread to exit during shutdown.
 #[allow(dead_code)]
@@ -230,18 +236,38 @@ pub fn shutdown_control_thread() {
 
 /// Main loop for the control/watchdog thread.
 fn control_thread_loop(shutdown_event: HANDLE) {
-    let mut last_agent_response = Instant::now();
+    let mut last_poll_attempt = Instant::now();
+    let mut consecutive_failures: u32 = 0;
+    let mut first_failure_time: Option<Instant> = None;
 
     loop {
-        // Wait until the watchdog deadline or the next poll interval, whichever
-        // comes first. This avoids the ~1 s granularity delay when the watchdog
-        // is about to fire (WR-09).
-        let deadline = last_agent_response + Duration::from_millis(watchdog_timeout_ms());
-        let wait_ms = if Instant::now() >= deadline {
-            0
-        } else {
-            let remaining_ms = (deadline - Instant::now()).as_millis() as u32;
-            remaining_ms.min(CONTROL_POLL_INTERVAL_MS)
+        // Wait until the next poll interval or the watchdog grace deadline,
+        // whichever comes first. This avoids the ~1 s granularity delay when
+        // the watchdog is about to fire (WR-09).
+        let now = Instant::now();
+        let wait_ms = {
+            let next_poll =
+                last_poll_attempt + Duration::from_millis(CONTROL_POLL_INTERVAL_MS as u64);
+            let mut next_wake = next_poll;
+
+            // If we have accumulated enough consecutive failures, also wake at
+            // the grace deadline so the watchdog fires promptly.
+            if consecutive_failures >= MAX_FAILURES {
+                if let Some(first_failure) = first_failure_time {
+                    let grace_deadline =
+                        first_failure + Duration::from_millis(watchdog_timeout_ms());
+                    if grace_deadline < next_wake {
+                        next_wake = grace_deadline;
+                    }
+                }
+            }
+
+            if now >= next_wake {
+                0
+            } else {
+                let remaining_ms = (next_wake - now).as_millis() as u32;
+                remaining_ms.min(CONTROL_POLL_INTERVAL_MS)
+            }
         };
 
         let wait_result = unsafe { WaitForSingleObject(shutdown_event, wait_ms) };
@@ -252,6 +278,8 @@ fn control_thread_loop(shutdown_event: HANDLE) {
         if CONTROL_THREAD_STOPPING.load(Ordering::SeqCst) {
             break;
         }
+
+        last_poll_attempt = Instant::now();
 
         let pid = std::process::id();
         let creation_time = match process_creation_time() {
@@ -266,33 +294,46 @@ fn control_thread_loop(shutdown_event: HANDLE) {
 
         match crate::pipe_client::poll_control(crate::DEFAULT_PIPE_NAME, &poll, 1_000) {
             Ok(ControlResponse { command: Some(cmd) }) => {
-                last_agent_response = Instant::now();
+                consecutive_failures = 0;
+                first_failure_time = None;
                 handle_unhook_command(cmd, pid, creation_time);
             }
             Ok(ControlResponse { command: None }) => {
-                last_agent_response = Instant::now();
+                consecutive_failures = 0;
+                first_failure_time = None;
             }
             Err(_) => {
-                // No response from agent. If we have not heard from the agent
-                // for WATCHDOG_TIMEOUT_MS, self-unhook.
-                if last_agent_response.elapsed().as_millis() as u64 >= watchdog_timeout_ms() {
-                    crate::debug_log(
-                        "[dlp-hook] watchdog: agent unresponsive, initiating self-unhook\0",
-                    );
-                    persist_watchdog_evidence(pid, creation_time);
-                    crate::UnhookAll();
-                    #[cfg(test)]
-                    {
-                        WATCHDOG_TRIGGERED.store(true, Ordering::SeqCst);
-                        break;
-                    }
-                    #[cfg(not(test))]
-                    unsafe {
-                        if !crate::self_unload() {
+                consecutive_failures += 1;
+                if first_failure_time.is_none() {
+                    first_failure_time = Some(Instant::now());
+                }
+
+                // Only self-unload after MAX_FAILURES consecutive failures AND
+                // the cumulative grace window has elapsed. This prevents a
+                // single transient error or short agent restart from evicting
+                // a healthy hook.
+                if consecutive_failures >= MAX_FAILURES {
+                    if let Some(first_failure) = first_failure_time {
+                        if first_failure.elapsed().as_millis() as u64 >= watchdog_timeout_ms() {
                             crate::debug_log(
-                                "[dlp-hook] watchdog: self_unload aborted -- remaining loaded but unhooked\0",
+                                "[dlp-hook] watchdog: agent unresponsive, initiating self-unhook\0",
                             );
-                            break;
+                            persist_watchdog_evidence(pid, creation_time);
+                            crate::UnhookAll();
+                            #[cfg(test)]
+                            {
+                                WATCHDOG_TRIGGERED.store(true, Ordering::SeqCst);
+                                break;
+                            }
+                            #[cfg(not(test))]
+                            unsafe {
+                                if !crate::self_unload() {
+                                    crate::debug_log(
+                                        "[dlp-hook] watchdog: self_unload aborted -- remaining loaded but unhooked\0",
+                                    );
+                                    break;
+                                }
+                            }
                         }
                     }
                 }
@@ -457,22 +498,42 @@ pub(crate) fn run_control_loop_for_test(
         }
     };
 
-    let mut last_agent_response = Instant::now();
+    let mut last_poll_attempt = Instant::now();
+    let mut consecutive_failures: u32 = 0;
+    let mut first_failure_time: Option<Instant> = None;
     let mut iterations = 0usize;
 
     while iterations < max_iterations {
-        let deadline = last_agent_response + Duration::from_millis(watchdog_timeout_ms());
-        let wait_ms = if Instant::now() >= deadline {
-            0
-        } else {
-            let remaining_ms = (deadline - Instant::now()).as_millis() as u32;
-            remaining_ms.min(CONTROL_POLL_INTERVAL_MS)
+        let now = Instant::now();
+        let wait_ms = {
+            let next_poll =
+                last_poll_attempt + Duration::from_millis(CONTROL_POLL_INTERVAL_MS as u64);
+            let mut next_wake = next_poll;
+
+            if consecutive_failures >= MAX_FAILURES {
+                if let Some(first_failure) = first_failure_time {
+                    let grace_deadline =
+                        first_failure + Duration::from_millis(watchdog_timeout_ms());
+                    if grace_deadline < next_wake {
+                        next_wake = grace_deadline;
+                    }
+                }
+            }
+
+            if now >= next_wake {
+                0
+            } else {
+                let remaining_ms = (next_wake - now).as_millis() as u32;
+                remaining_ms.min(CONTROL_POLL_INTERVAL_MS)
+            }
         };
 
         let wait_result = unsafe { WaitForSingleObject(shutdown_event, wait_ms) };
         if wait_result == WAIT_OBJECT_0 {
             break;
         }
+
+        last_poll_attempt = Instant::now();
 
         let pid = std::process::id();
         let creation_time = match process_creation_time() {
@@ -488,18 +549,28 @@ pub(crate) fn run_control_loop_for_test(
                 break;
             }
             Ok(ControlResponse { command: None }) => {
-                last_agent_response = Instant::now();
+                consecutive_failures = 0;
+                first_failure_time = None;
             }
             Err(_) => {
-                if last_agent_response.elapsed().as_millis() as u64 >= watchdog_timeout_ms() {
-                    crate::debug_log(
-                        "[dlp-hook] watchdog: agent unresponsive, initiating self-unhook\0",
-                    );
-                    persist_watchdog_evidence(pid, creation_time);
-                    crate::UnhookAll();
-                    WATCHDOG_TRIGGERED.store(true, Ordering::SeqCst);
-                    iterations += 1;
-                    break;
+                consecutive_failures += 1;
+                if first_failure_time.is_none() {
+                    first_failure_time = Some(Instant::now());
+                }
+
+                if consecutive_failures >= MAX_FAILURES {
+                    if let Some(first_failure) = first_failure_time {
+                        if first_failure.elapsed().as_millis() as u64 >= watchdog_timeout_ms() {
+                            crate::debug_log(
+                                "[dlp-hook] watchdog: agent unresponsive, initiating self-unhook\0",
+                            );
+                            persist_watchdog_evidence(pid, creation_time);
+                            crate::UnhookAll();
+                            WATCHDOG_TRIGGERED.store(true, Ordering::SeqCst);
+                            iterations += 1;
+                            break;
+                        }
+                    }
                 }
             }
         }
