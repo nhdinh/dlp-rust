@@ -193,6 +193,18 @@ thread_local! {
     static REENTRANT: Cell<bool> = const { Cell::new(false) };
 }
 
+/// Resets the thread-local reentrancy flag and active-call counter when the
+/// guarded hook body returns or panics. This prevents a panic from leaking
+/// the reentrant state and inflating `ACTIVE_CALLS` forever.
+struct ReentrancyGuard;
+
+impl Drop for ReentrancyGuard {
+    fn drop(&mut self) {
+        REENTRANT.set(false);
+        crate::exit_hook_call();
+    }
+}
+
 /// Prevents recursive hook entry on the same thread.
 ///
 /// If the hook is already active on this thread (e.g. because IPC, logging,
@@ -230,10 +242,8 @@ pub fn with_reentrancy_guard<T>(f: impl FnOnce() -> T, fallback: impl FnOnce() -
         return fallback();
     }
     REENTRANT.set(true);
-    let result = f();
-    REENTRANT.set(false);
-    crate::exit_hook_call();
-    result
+    let _guard = ReentrancyGuard;
+    f()
 }
 
 // ---------------------------------------------------------------------------
