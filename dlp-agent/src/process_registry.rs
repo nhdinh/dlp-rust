@@ -4,6 +4,7 @@
 //! false "already injected" states when Windows recycles PIDs rapidly.
 //! All state transitions are atomic via DashMap entry API.
 
+use crossbeam_channel::Sender;
 use dashmap::mapref::one::Ref as DashMapRef;
 use dashmap::DashMap;
 use std::ops::Deref;
@@ -114,6 +115,9 @@ impl Deref for ProcessStateRef<'_> {
 pub struct ProcessRegistry {
     states: Arc<DashMap<ProcessKey, ProcessEntry>>,
     next_seq: Arc<AtomicU64>,
+    /// Optional channel for notifying observers when a process exits or
+    /// unhooks so they can release per-PID resources.
+    lifecycle_tx: Option<Sender<ProcessKey>>,
 }
 
 impl ProcessRegistry {
@@ -123,7 +127,19 @@ impl ProcessRegistry {
         Self {
             states: Arc::new(DashMap::new()),
             next_seq: Arc::new(AtomicU64::new(0)),
+            lifecycle_tx: None,
         }
+    }
+
+    /// Attach a lifecycle notifier channel.
+    ///
+    /// The registry will send the process key on this channel whenever
+    /// `record_exited` or `record_unhooked` transitions a process out of
+    /// the `Injected` state.
+    #[must_use]
+    pub fn with_lifecycle_notifier(mut self, tx: Sender<ProcessKey>) -> Self {
+        self.lifecycle_tx = Some(tx);
+        self
     }
 
     /// Returns the next monotonically increasing sequence number.
@@ -264,6 +280,9 @@ impl ProcessRegistry {
     /// * `key` — The process key.
     pub fn record_exited(&self, key: ProcessKey) {
         self.insert_with_eviction(key, ProcessState::Exited);
+        if let Some(ref tx) = self.lifecycle_tx {
+            let _ = tx.try_send(key);
+        }
     }
 
     /// Record that a hooked process successfully unhooked itself.
@@ -276,10 +295,17 @@ impl ProcessRegistry {
     ///
     /// * `key` — The process key.
     pub fn record_unhooked(&self, key: &ProcessKey) {
+        let mut transitioned = false;
         if let Some(mut entry) = self.states.get_mut(key) {
             let ProcessEntry { ref mut state, .. } = *entry.value_mut();
             if matches!(*state, ProcessState::Injected { .. }) {
                 *state = ProcessState::Exited;
+                transitioned = true;
+            }
+        }
+        if transitioned {
+            if let Some(ref tx) = self.lifecycle_tx {
+                let _ = tx.try_send(*key);
             }
         }
     }

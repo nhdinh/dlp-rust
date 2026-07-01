@@ -1809,6 +1809,11 @@ async fn run_loop_init(
     // SIEM.
     let (bypass_tx, bypass_rx) = crossbeam_channel::bounded::<BypassAlert>(1000);
 
+    // Lifecycle notifier channel: process registry -> bypass correlator.
+    // The correlator releases per-PID resources when a process exits or unhooks.
+    let (lifecycle_tx, lifecycle_rx) =
+        crossbeam_channel::bounded::<crate::process_registry::ProcessKey>(1024);
+
     // ── HookInjector (M017/S01) ───────────────────────────────────────────
     let hook_injector_opt: Option<crate::hook_injector::HookInjector> =
         if agent_config.cloud_hook_enabled.unwrap_or(false) {
@@ -1854,6 +1859,7 @@ async fn run_loop_init(
     ) = init_universal_injection(
         hook_injector_opt.as_ref(),
         agent_config.universal_injection_enabled.unwrap_or(false),
+        lifecycle_tx.clone(),
     )
     .await;
 
@@ -2146,7 +2152,7 @@ async fn run_loop_init(
             let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
             let handle = tokio::spawn(async move {
                 tokio::select! {
-                    _ = correlator.run(etw_rx, process_rx, bypass_rx, sc) => {},
+                    _ = correlator.run(etw_rx, process_rx, bypass_rx, sc, lifecycle_rx) => {},
                     _ = shutdown_rx.changed() => {
                         info!("bypass correlator shutting down");
                     }
@@ -2968,6 +2974,7 @@ fn spawn_pipe1_heartbeat_task() -> (
 async fn init_universal_injection(
     hook_injector_opt: Option<&crate::hook_injector::HookInjector>,
     enabled: bool,
+    lifecycle_tx: crossbeam_channel::Sender<crate::process_registry::ProcessKey>,
 ) -> (
     Option<crate::process_watcher::ProcessWatcher>,
     Option<Arc<crate::universal_injector::UniversalInjector>>,
@@ -2980,7 +2987,10 @@ async fn init_universal_injection(
 ) {
     if !enabled || hook_injector_opt.is_none() {
         tracing::info!("universal injection disabled — skipping Phase 49 init");
-        let registry = Arc::new(crate::process_registry::ProcessRegistry::new());
+        let registry = Arc::new(
+            crate::process_registry::ProcessRegistry::new()
+                .with_lifecycle_notifier(lifecycle_tx.clone()),
+        );
         let matcher = Arc::new(crate::allowlist::AllowlistMatcher::new(
             vec![],
             std::env::current_exe()
@@ -3013,7 +3023,10 @@ async fn init_universal_injection(
         .unwrap_or_else(|| std::path::PathBuf::from("dlp_hook_dll_x86.dll"));
 
     // 1. Construct process registry.
-    let registry = Arc::new(crate::process_registry::ProcessRegistry::new());
+    let registry = Arc::new(
+        crate::process_registry::ProcessRegistry::new()
+            .with_lifecycle_notifier(lifecycle_tx.clone()),
+    );
 
     // 2. Load allowlist entries from config (or empty vec if not configured yet).
     let self_image_path = std::env::current_exe()

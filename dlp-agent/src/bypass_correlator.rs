@@ -26,6 +26,7 @@ use tokio::sync::Mutex;
 use tracing::{debug, error, info, trace, warn};
 
 use crate::etw_kernel_file::{EtwFileEvent, FileOp};
+use crate::process_registry::ProcessKey;
 use crate::process_watcher::ProcessEvent;
 use crate::server_client::ServerClient;
 
@@ -383,6 +384,16 @@ impl BypassCorrelator {
     pub fn with_protected_paths(mut self, paths: Vec<String>) -> Self {
         self.protected_paths = paths;
         self
+    }
+
+    /// Release per-PID resources held by the correlator.
+    ///
+    /// Called when the process registry observes that a process has exited
+    /// or unhooked itself, so the open journal reader and pending-discovery
+    /// metadata do not leak over long agent uptime.
+    pub fn remove_pid(&self, pid: u32) {
+        self.journals.remove(&pid);
+        self.pending_journals.remove(&pid);
     }
 
     /// Test-only accessor for the pending alert batch length.
@@ -1045,17 +1056,20 @@ impl BypassCorrelator {
 
     /// Runs the correlator event loop.
     ///
-    /// Spawns four tasks:
+    /// Spawns five tasks:
     /// 1. Process event handler
     /// 2. ETW event handler
     /// 3. Bypass alert handler (from hook DLL IPC)
     /// 4. Batch flush task
+    /// 5. Lifecycle exit handler (releases per-PID resources when a process
+    ///    exits or unhooks)
     pub async fn run(
         self,
         etw_rx: Receiver<EtwFileEvent>,
         process_rx: Receiver<ProcessEvent>,
         bypass_rx: Receiver<BypassAlert>,
         server_client: ServerClient,
+        lifecycle_rx: Receiver<ProcessKey>,
     ) {
         let correlator = Arc::new(self);
 
@@ -1118,6 +1132,21 @@ impl BypassCorrelator {
             }
         });
 
+        // Task 5: Lifecycle exit handler.
+        // Removes per-PID resources when the process registry observes an exit
+        // or unhook event, preventing journal reader leaks over long uptime.
+        let lifecycle_corr = Arc::clone(&correlator);
+        let lifecycle_handle = tokio::task::spawn_blocking(move || {
+            while let Ok(key) = lifecycle_rx.recv() {
+                lifecycle_corr.remove_pid(key.pid);
+            }
+            tracing::warn!(
+                metric = "lifecycle_rx_dropped",
+                reason = "channel_closed",
+                "lifecycle_rx channel closed — exiting lifecycle exit handler"
+            );
+        });
+
         // Wait for any task to complete (they run until channels close).
         tokio::select! {
             _ = proc_handle => {},
@@ -1125,6 +1154,7 @@ impl BypassCorrelator {
             _ = bypass_handle => {},
             _ = bypass_bridge_handle => {},
             _ = flush_handle => {},
+            _ = lifecycle_handle => {},
         }
     }
 }
