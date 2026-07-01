@@ -29,8 +29,8 @@ use windows::Win32::Storage::FileSystem::{
     PIPE_ACCESS_DUPLEX,
 };
 use windows::Win32::System::Pipes::{
-    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, GetNamedPipeClientProcessId,
-    NAMED_PIPE_MODE, PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_WAIT,
+    ConnectNamedPipe, CreateNamedPipeW, DisconnectNamedPipe, NAMED_PIPE_MODE,
+    PIPE_READMODE_MESSAGE, PIPE_TYPE_MESSAGE, PIPE_WAIT,
 };
 
 use dlp_common::hook_ipc::{
@@ -332,7 +332,9 @@ fn create_pipe(pipe_name: &str) -> Result<HANDLE> {
 /// any authenticated user process (the injected DLLs run as the interactive
 /// user), so caller-PID validation is the defense against cross-process ack
 /// spoofing.
+#[cfg(not(test))]
 fn named_pipe_client_pid(pipe: HANDLE) -> Option<u32> {
+    use windows::Win32::System::Pipes::GetNamedPipeClientProcessId;
     let mut pid: u32 = 0;
     // SAFETY: `pipe` is a valid named-pipe server handle and `pid` is a valid
     // stack-allocated `u32`. The API writes exactly one `DWORD` on success.
@@ -341,6 +343,22 @@ fn named_pipe_client_pid(pipe: HANDLE) -> Option<u32> {
             .ok()
             .map(|_| pid)
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test-only hook to bypass PID validation in unit tests.
+    ///
+    /// The real implementation validates that `UnhookAck.pid` matches the PID of
+    /// the pipe client (defense against cross-process ack spoofing). In tests the
+    /// client and server run in the same process, so this override returns the
+    /// claimed PID to keep routing tests meaningful.
+    static TEST_UNHOOK_ACK_OVERRIDE_PID: std::cell::Cell<Option<u32>> = std::cell::Cell::new(None);
+}
+
+#[cfg(test)]
+fn named_pipe_client_pid(_pipe: HANDLE) -> Option<u32> {
+    TEST_UNHOOK_ACK_OVERRIDE_PID.with(|cell| cell.get())
 }
 
 /// Sanitizes the free-form `UnhookAck.error` string before it is forwarded to
@@ -625,7 +643,7 @@ fn handle_connection(
                     // user process (injected DLLs run as the interactive user),
                     // so this check is the anti-spoofing control.
                     let client_pid = named_pipe_client_pid(pipe);
-                    if client_pid.map_or(true, |cpid| cpid != ack.pid) {
+                    if client_pid != Some(ack.pid) {
                         warn!(
                             ack_pid = ack.pid,
                             client_pid = client_pid.unwrap_or(0),
@@ -1849,6 +1867,26 @@ mod tests {
 
     // ── Plan 58.5-03: PollControl / UnhookAck routing tests ────────────────
 
+    #[cfg(test)]
+    fn set_test_unhook_ack_pid(pid: Option<u32>) -> TestUnhookAckPidGuard {
+        let previous = TEST_UNHOOK_ACK_OVERRIDE_PID.with(|cell| {
+            let prev = cell.get();
+            cell.set(pid);
+            prev
+        });
+        TestUnhookAckPidGuard(previous)
+    }
+
+    #[cfg(test)]
+    struct TestUnhookAckPidGuard(Option<u32>);
+
+    #[cfg(test)]
+    impl Drop for TestUnhookAckPidGuard {
+        fn drop(&mut self) {
+            TEST_UNHOOK_ACK_OVERRIDE_PID.with(|cell| cell.set(self.0));
+        }
+    }
+
     /// Builds a minimal registry with one Injected entry and returns it.
     fn registry_with_injected(
         pid: u32,
@@ -1863,6 +1901,7 @@ mod tests {
 
     #[test]
     fn unhook_ack_success_routing_test() {
+        let pid_guard = set_test_unhook_ack_pid(Some(1234));
         let pipe_name = r"\\.\pipe\DlpHookPipeTestUnhookAckSuccess";
         let registry = registry_with_injected(1234, 1000);
         let registry_for_server = Arc::clone(&registry);
@@ -1878,6 +1917,8 @@ mod tests {
         let server = HookIpcServer::new(pipe_name, handler).with_registry(registry_for_server);
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let _server_handle = std::thread::spawn(move || {
+            // Inherit the override PID on the server thread.
+            let _guard = set_test_unhook_ack_pid(Some(1234));
             server.run_with_ready(|| {
                 let _ = tx.send(());
             })
@@ -1885,6 +1926,7 @@ mod tests {
         rx.recv_timeout(Duration::from_secs(5))
             .expect("server ready");
         std::thread::sleep(Duration::from_millis(50));
+        drop(pid_guard);
 
         let client = connect_client(pipe_name).expect("client connect");
         let ack = dlp_common::hook_ipc::UnhookAck {
@@ -1920,8 +1962,8 @@ mod tests {
     }
 
     #[test]
-    #[serial_test::serial]
     fn unhook_ack_failure_routing_test() {
+        let _pid_guard = set_test_unhook_ack_pid(Some(1234));
         let _guard = crate::audit_emitter::audit_test_lock();
         let pipe_name = r"\\.\pipe\DlpHookPipeTestUnhookAckFailure";
         let registry = registry_with_injected(1234, 1000);
@@ -1935,10 +1977,14 @@ mod tests {
             approval_override: None,
         });
 
-        let server = HookIpcServer::new(pipe_name, handler).with_registry(registry_for_server);
+        let server = HookIpcServer::new(pipe_name, handler)
+            .with_registry(registry_for_server)
+            .with_audit_ctx(crate::audit_emitter::EmitContext::default());
         let token = crate::audit_emitter::enable_test_capture();
         let (tx, rx) = std::sync::mpsc::channel::<()>();
         let _server_handle = std::thread::spawn(move || {
+            // Inherit the override PID on the server thread.
+            let _guard = set_test_unhook_ack_pid(Some(1234));
             crate::audit_emitter::set_current_capture_token(token);
             server.run_with_ready(|| {
                 let _ = tx.send(());

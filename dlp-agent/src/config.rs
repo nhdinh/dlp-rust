@@ -736,6 +736,7 @@ mod tests {
             enable_bypass_correlator: None,
             protected_paths: Vec::new(),
             enforcement: EnforcementConfig::default(),
+            unhook_wait_budget_ms: None,
             // machine_name is #[serde(skip)] — not written or loaded
             machine_name: Some("MY-PC".to_string()),
         };
@@ -786,6 +787,7 @@ mod tests {
             enable_bypass_correlator: None,
             protected_paths: Vec::new(),
             enforcement: EnforcementConfig::default(),
+            unhook_wait_budget_ms: None,
         };
 
         let tmp_path = std::env::temp_dir().join("test_agent_config_save_server_url.toml");

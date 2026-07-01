@@ -339,6 +339,18 @@ pub struct EmitContext {
     pub machine_name: Option<String>,
 }
 
+impl Default for EmitContext {
+    fn default() -> Self {
+        Self {
+            agent_id: "AGENT-TEST".to_string(),
+            session_id: 0,
+            user_sid: "S-1-5-18".to_string(),
+            user_name: "SYSTEM".to_string(),
+            machine_name: None,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum AuditError {
     #[error("failed to open audit log: {0}")]

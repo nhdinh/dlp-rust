@@ -184,16 +184,15 @@ async fn request_unhook_from_injected(
     registry: &Arc<crate::process_registry::ProcessRegistry>,
     audit_ctx: &crate::audit_emitter::EmitContext,
 ) {
-    let injected_before: Vec<(crate::process_registry::ProcessKey, crate::process_registry::ProcessState)> =
-        registry.iter_injected();
+    let injected_before: Vec<(
+        crate::process_registry::ProcessKey,
+        crate::process_registry::ProcessState,
+    )> = registry.iter_injected();
     if injected_before.is_empty() {
         return;
     }
 
-    let target_pids: Vec<u32> = injected_before
-        .iter()
-        .map(|(key, _)| key.pid)
-        .collect();
+    let target_pids: Vec<u32> = injected_before.iter().map(|(key, _)| key.pid).collect();
     let pids_str = if target_pids.len() > 32 {
         format!(
             "[{},...]",
@@ -225,10 +224,7 @@ async fn request_unhook_from_injected(
             injected_before.len(),
             pids_str
         )),
-        Some(format!(
-            "agent://{}/unhook_request",
-            std::process::id()
-        )),
+        Some(format!("agent://{}/unhook_request", std::process::id())),
     );
 
     UNHOOK_ALL_REQUESTED.store(true, Ordering::Release);
@@ -3834,8 +3830,7 @@ fn resolve_service_identity() -> Option<(String, u32)> {
 
 /// Builds the default [`EmitContext`] used for audit events.
 fn build_audit_ctx(machine_name: Option<String>) -> crate::audit_emitter::EmitContext {
-    let (sid, session) =
-        resolve_service_identity().unwrap_or_else(|| ("S-1-5-18".to_string(), 0));
+    let (sid, session) = resolve_service_identity().unwrap_or_else(|| ("S-1-5-18".to_string(), 0));
     crate::audit_emitter::EmitContext {
         agent_id: std::env::var("DLP_AGENT_ID").unwrap_or_else(|_| "AGENT-UNKNOWN".to_string()),
         session_id: session,

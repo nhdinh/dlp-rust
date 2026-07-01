@@ -10,9 +10,9 @@ use windows::Win32::Storage::FileSystem::{
     CreateFileW, FlushFileBuffers, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES,
     FILE_GENERIC_READ, FILE_GENERIC_WRITE, FILE_SHARE_NONE, OPEN_EXISTING,
 };
-use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 use windows::Win32::System::Pipes::{SetNamedPipeHandleState, PIPE_READMODE_MESSAGE};
 use windows::Win32::System::Threading::{CreateEventW, ResetEvent, WaitForSingleObject};
+use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
 use dlp_common::{HookRequest, HookResponse};
 
@@ -454,11 +454,7 @@ fn write_all(pipe: HANDLE, buf: &[u8]) -> Result<(), PipeError> {
 ///
 /// Uses overlapped I/O so the watchdog can detect an unresponsive agent even
 /// when the pipe remains connected.
-fn read_exact_with_timeout(
-    pipe: HANDLE,
-    buf: &mut [u8],
-    timeout_ms: u32,
-) -> Result<(), PipeError> {
+fn read_exact_with_timeout(pipe: HANDLE, buf: &mut [u8], timeout_ms: u32) -> Result<(), PipeError> {
     let event = unsafe {
         match CreateEventW(None, true, false, None) {
             Ok(h) => h,
@@ -471,8 +467,10 @@ fn read_exact_with_timeout(
         let offset = buf.len() - remaining;
         let slice_len = remaining.min(65536);
 
-        let mut overlapped = OVERLAPPED::default();
-        overlapped.hEvent = event;
+        let mut overlapped = OVERLAPPED {
+            hEvent: event,
+            ..Default::default()
+        };
 
         let result = unsafe {
             ReadFile(
