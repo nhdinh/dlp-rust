@@ -377,7 +377,7 @@ fn persist_watchdog_evidence(pid: u32, creation_time: u64) {
         return;
     }
 
-    let path = dir.join(format!("{}.evidence.json", pid));
+    let path = dir.join(format!("{}_{}.evidence.json", pid, creation_time));
     match std::fs::File::create(&path) {
         Ok(mut file) => {
             if let Err(e) = file.write_all(json.as_bytes()) {
