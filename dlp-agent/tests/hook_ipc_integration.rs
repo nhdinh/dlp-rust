@@ -1001,6 +1001,16 @@ fn test_blocked_write_audit_contains_hash() {
 // Phase 58.5: Unhook polling protocol integration tests
 // ---------------------------------------------------------------------------
 
+/// Returns the process ID used by the unhook polling protocol integration tests.
+///
+/// `UnhookAck` validation compares the ack's claimed PID against the real
+/// named-pipe client PID. Integration tests link against the non-test build of
+/// `dlp-agent`, so they cannot use the unit-test PID override; instead they use
+/// the current process ID and seed the registry with the same value.
+fn test_pid() -> u32 {
+    std::process::id()
+}
+
 /// Seeds a registry with one Injected process and returns it.
 fn registry_with_injected(
     pid: u32,
@@ -1057,7 +1067,7 @@ fn unhook_polling_protocol_roundtrip() {
     dlp_agent::service::reset_unhook_signal();
     let pipe_name = r"\\.\pipe\DlpHookPipeTestUnhookRoundtrip";
 
-    let registry = registry_with_injected(1234, 1000);
+    let registry = registry_with_injected(test_pid(), 1000);
     let registry_for_server = Arc::clone(&registry);
 
     let handler = Arc::new(move |_req: HookRequest| HookResponse {
@@ -1084,7 +1094,7 @@ fn unhook_polling_protocol_roundtrip() {
 
     // Step 1: no unhook requested -> no command.
     let poll = PollControl {
-        pid: 1234,
+        pid: test_pid(),
         creation_time: 1000,
     };
     let response = send_poll_control(client, &poll);
@@ -1104,7 +1114,7 @@ fn unhook_polling_protocol_roundtrip() {
 
     // Step 3: successful ack -> registry entry Exited.
     let ack = UnhookAck {
-        pid: 1234,
+        pid: test_pid(),
         creation_time: 1000,
         success: true,
         error: None,
@@ -1116,7 +1126,7 @@ fn unhook_polling_protocol_roundtrip() {
 
     let state = registry
         .get(&dlp_agent::process_registry::ProcessKey {
-            pid: 1234,
+            pid: test_pid(),
             creation_time: 1000,
         })
         .expect("key should exist");
@@ -1134,7 +1144,7 @@ fn unhook_polling_protocol_failed_ack() {
     dlp_agent::service::reset_unhook_signal();
     let pipe_name = r"\\.\pipe\DlpHookPipeTestUnhookFailedAck";
 
-    let registry = registry_with_injected(1234, 1000);
+    let registry = registry_with_injected(test_pid(), 1000);
     let registry_for_server = Arc::clone(&registry);
 
     let handler = Arc::new(move |_req: HookRequest| HookResponse {
@@ -1145,7 +1155,9 @@ fn unhook_polling_protocol_failed_ack() {
         approval_override: None,
     });
 
-    let server = HookIpcServer::new(pipe_name, handler).with_registry(registry_for_server);
+    let server = HookIpcServer::new(pipe_name, handler)
+        .with_registry(registry_for_server)
+        .with_audit_ctx(dlp_agent::audit_emitter::EmitContext::default());
 
     let token = dlp_agent::audit_emitter::enable_test_capture();
     let handle = std::thread::Builder::new()
@@ -1164,14 +1176,14 @@ fn unhook_polling_protocol_failed_ack() {
 
     dlp_agent::service::UNHOOK_ALL_REQUESTED.store(true, Ordering::Release);
     let poll = PollControl {
-        pid: 1234,
+        pid: test_pid(),
         creation_time: 1000,
     };
     let response = send_poll_control(client, &poll);
     assert!(response.command.is_some(), "UnhookCommand expected");
 
     let ack = UnhookAck {
-        pid: 1234,
+        pid: test_pid(),
         creation_time: 1000,
         success: false,
         error: Some("unload failed".to_string()),
@@ -1184,7 +1196,7 @@ fn unhook_polling_protocol_failed_ack() {
     // Registry must remain Injected.
     let state = registry
         .get(&dlp_agent::process_registry::ProcessKey {
-            pid: 1234,
+            pid: test_pid(),
             creation_time: 1000,
         })
         .expect("key should exist");
@@ -1200,7 +1212,10 @@ fn unhook_polling_protocol_failed_ack() {
         .filter(|e| e.event_type == dlp_common::EventType::UnhookFailure)
         .collect();
     assert_eq!(failure_events.len(), 1);
-    assert_eq!(failure_events[0].resource_path, "pid=1234");
+    assert_eq!(
+        failure_events[0].resource_path,
+        format!("pid={}", test_pid())
+    );
     assert!(
         failure_events[0]
             .justification

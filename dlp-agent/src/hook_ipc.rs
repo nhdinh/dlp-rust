@@ -353,12 +353,29 @@ thread_local! {
     /// the pipe client (defense against cross-process ack spoofing). In tests the
     /// client and server run in the same process, so this override returns the
     /// claimed PID to keep routing tests meaningful.
-    static TEST_UNHOOK_ACK_OVERRIDE_PID: std::cell::Cell<Option<u32>> = std::cell::Cell::new(None);
+    static TEST_UNHOOK_ACK_OVERRIDE_PID: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]
-fn named_pipe_client_pid(_pipe: HANDLE) -> Option<u32> {
-    TEST_UNHOOK_ACK_OVERRIDE_PID.with(|cell| cell.get())
+fn named_pipe_client_pid(pipe: HANDLE) -> Option<u32> {
+    TEST_UNHOOK_ACK_OVERRIDE_PID.with(|cell| {
+        if let Some(pid) = cell.get() {
+            return Some(pid);
+        }
+        // Integration tests link against the non-test build of this crate, so
+        // they cannot set the thread-local override. Fall back to the real pipe
+        // client PID; integration tests seed the registry with the current
+        // process ID so the validation still exercises the spoofing check.
+        use windows::Win32::System::Pipes::GetNamedPipeClientProcessId;
+        let mut pid: u32 = 0;
+        // SAFETY: `pipe` is a valid named-pipe server handle and `pid` is a valid
+        // stack-allocated `u32`. The API writes exactly one `DWORD` on success.
+        unsafe {
+            GetNamedPipeClientProcessId(pipe, &mut pid)
+                .ok()
+                .map(|_| pid)
+        }
+    })
 }
 
 /// Sanitizes the free-form `UnhookAck.error` string before it is forwarded to
@@ -965,6 +982,33 @@ pub fn start_mock_server(
 // ─────────────────────────────────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+/// Sets the PID that the test-only `named_pipe_client_pid` implementation
+/// returns, bypassing the real Win32 PID query.
+///
+/// Unit and integration tests run the pipe client and server in the same
+/// process, so real PID validation would reject the fixed test PIDs. This
+/// helper must be called on every thread that executes `handle_connection`
+/// (including server threads spawned by tests).
+pub(crate) fn set_test_unhook_ack_pid(pid: Option<u32>) -> TestUnhookAckPidGuard {
+    let previous = TEST_UNHOOK_ACK_OVERRIDE_PID.with(|cell| {
+        let prev = cell.get();
+        cell.set(pid);
+        prev
+    });
+    TestUnhookAckPidGuard(previous)
+}
+
+#[cfg(test)]
+pub struct TestUnhookAckPidGuard(Option<u32>);
+
+#[cfg(test)]
+impl Drop for TestUnhookAckPidGuard {
+    fn drop(&mut self) {
+        TEST_UNHOOK_ACK_OVERRIDE_PID.with(|cell| cell.set(self.0));
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -1866,26 +1910,6 @@ mod tests {
     }
 
     // ── Plan 58.5-03: PollControl / UnhookAck routing tests ────────────────
-
-    #[cfg(test)]
-    fn set_test_unhook_ack_pid(pid: Option<u32>) -> TestUnhookAckPidGuard {
-        let previous = TEST_UNHOOK_ACK_OVERRIDE_PID.with(|cell| {
-            let prev = cell.get();
-            cell.set(pid);
-            prev
-        });
-        TestUnhookAckPidGuard(previous)
-    }
-
-    #[cfg(test)]
-    struct TestUnhookAckPidGuard(Option<u32>);
-
-    #[cfg(test)]
-    impl Drop for TestUnhookAckPidGuard {
-        fn drop(&mut self) {
-            TEST_UNHOOK_ACK_OVERRIDE_PID.with(|cell| cell.set(self.0));
-        }
-    }
 
     /// Builds a minimal registry with one Injected entry and returns it.
     fn registry_with_injected(
