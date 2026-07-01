@@ -2393,15 +2393,6 @@ pub fn reconcile_watchdog_evidence_in_dir(
         let reason = evidence.reason.as_str();
         let timestamp_secs = Some(evidence.timestamp_secs);
 
-        // Stale evidence cleanup: remove files older than the retention window
-        // regardless of match status so the directory does not grow unbounded.
-        if timestamp_secs.is_some_and(|ts| ts < retention_cutoff) {
-            if let Err(e) = std::fs::remove_file(&path) {
-                warn!(path = %path.display(), error = %e, "cannot remove stale watchdog evidence file");
-            }
-            continue;
-        }
-
         let resource_path = pid.map_or_else(
             || "unknown".to_string(),
             |p| format!(r"process://{}/watchdog_self_unload", p),
@@ -2418,6 +2409,22 @@ pub fn reconcile_watchdog_evidence_in_dir(
             audit_ctx.agent_id.clone(),
             audit_ctx.session_id,
         );
+
+        // Stale evidence cleanup: remove files older than the retention window
+        // regardless of match status so the directory does not grow unbounded.
+        // Emit a `WatchdogSelfUnload` audit event first so the self-unload leaves
+        // a durable record even if the agent was down when the evidence was created.
+        if timestamp_secs.is_some_and(|ts| ts < retention_cutoff) {
+            event.justification = Some(format!(
+                "reason={}; stale=true; pid={}; creation_time={}",
+                reason, evidence.pid, evidence.creation_time
+            ));
+            crate::audit_emitter::emit_audit(audit_ctx, &mut event);
+            if let Err(e) = std::fs::remove_file(&path) {
+                warn!(path = %path.display(), error = %e, "cannot remove stale watchdog evidence file");
+            }
+            continue;
+        }
 
         // Determine whether this evidence matches a known injected process.
         let matched = if let (Some(pid), Some(creation_time), Some(ref registry)) =
