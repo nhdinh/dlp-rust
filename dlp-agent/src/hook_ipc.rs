@@ -345,17 +345,19 @@ fn named_pipe_client_pid(pipe: HANDLE) -> Option<u32> {
 
 /// Sanitizes the free-form `UnhookAck.error` string before it is forwarded to
 /// the audit log. Empty strings are discarded and over-length strings are
-/// truncated to [`MAX_UNHOOK_ERROR_LEN`] to prevent log injection and SIEM
-/// noise from a compromised hook DLL.
+/// truncated to [`MAX_UNHOOK_ERROR_LEN`] **bytes** after UTF-8 encoding to
+/// prevent log injection and SIEM noise from a compromised hook DLL.
 fn sanitize_unhook_error(error: Option<String>) -> Option<String> {
     error.and_then(|e| {
         let trimmed = e.trim().to_string();
         if trimmed.is_empty() {
             None
-        } else if trimmed.chars().count() > MAX_UNHOOK_ERROR_LEN {
-            Some(trimmed.chars().take(MAX_UNHOOK_ERROR_LEN).collect())
         } else {
-            Some(trimmed)
+            let mut out = trimmed;
+            while out.len() > MAX_UNHOOK_ERROR_LEN {
+                out.pop();
+            }
+            Some(out)
         }
     })
 }
