@@ -526,25 +526,28 @@ pub fn ensure_app_identity_fields(event: &mut AuditEvent) {
 
 /// Emit an unhook-related audit event.
 ///
-/// Constructs an `AuditEvent` with `resource_path` formatted as `pid={pid}`,
-/// sets the decision based on `success`, and copies `error` into `reason` when
-/// present. The event is then enriched with the shared fields in `ctx` and
-/// written to the audit log.
+/// Constructs an `AuditEvent` with `resource_path` formatted as `pid={pid}`
+/// when no custom path is provided, sets the decision based on `success`,
+/// and copies `error` into `reason` when present. The event is then enriched
+/// with the shared fields in `ctx` and written to the audit log.
 ///
 /// # Arguments
 ///
 /// * `ctx` — Shared emit context (agent_id, session_id, user identity).
 /// * `event_type` — Must be one of `AgentShutdownUnhook`, `UnhookFailure`, or
 ///   `WatchdogSelfUnload`.
-/// * `pid` — Process ID to record in `resource_path`.
+/// * `pid` — Process ID to record in `resource_path` when `resource_path` is
+///   `None`.
 /// * `success` — Whether the unhook operation succeeded; drives `decision`.
 /// * `error` — Optional human-readable error metadata (no PII or paths).
+/// * `resource_path` — Optional custom resource path; defaults to `pid={pid}`.
 pub fn emit_unhook_audit(
     ctx: &EmitContext,
     event_type: dlp_common::EventType,
     pid: u32,
     success: bool,
     error: Option<String>,
+    resource_path: Option<String>,
 ) {
     use dlp_common::{Action, AuditEvent, Classification, Decision};
 
@@ -557,7 +560,7 @@ pub fn emit_unhook_audit(
         event_type,
         ctx.user_sid.clone(),
         ctx.user_name.clone(),
-        format!("pid={pid}"),
+        resource_path.unwrap_or_else(|| format!("pid={pid}")),
         Classification::T1,
         Action::READ,
         decision,
@@ -1315,6 +1318,7 @@ mod tests {
             std::process::id(),
             true,
             Some("injected_count=5".to_string()),
+            None,
         );
 
         let events = drain_test_events();
@@ -1339,6 +1343,7 @@ mod tests {
             1234,
             false,
             Some("creation_time=9876".to_string()),
+            None,
         );
 
         let events = drain_test_events();
@@ -1363,6 +1368,7 @@ mod tests {
             5678,
             false,
             Some("unload failed".to_string()),
+            None,
         );
 
         let events = drain_test_events();

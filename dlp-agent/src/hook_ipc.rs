@@ -659,6 +659,7 @@ fn handle_connection(
                                 false,
                                 sanitize_unhook_error(ack.error.clone())
                                     .or_else(|| Some("unhook failed".to_string())),
+                                None,
                             );
                         }
                         IpcPayloadV1::Response(HookResponse {

@@ -184,10 +184,35 @@ async fn request_unhook_from_injected(
     registry: &Arc<crate::process_registry::ProcessRegistry>,
     audit_ctx: &crate::audit_emitter::EmitContext,
 ) {
-    let injected_before = registry.iter_injected().len();
-    if injected_before == 0 {
+    let injected_before: Vec<(crate::process_registry::ProcessKey, crate::process_registry::ProcessState)> =
+        registry.iter_injected();
+    if injected_before.is_empty() {
         return;
     }
+
+    let target_pids: Vec<u32> = injected_before
+        .iter()
+        .map(|(key, _)| key.pid)
+        .collect();
+    let pids_str = if target_pids.len() > 32 {
+        format!(
+            "[{},...]",
+            target_pids[..32]
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    } else {
+        format!(
+            "[{}]",
+            target_pids
+                .iter()
+                .map(|p| p.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        )
+    };
 
     crate::password_stop::debug_log("run_loop: requesting unhook from injected processes");
     crate::audit_emitter::emit_unhook_audit(
@@ -195,7 +220,15 @@ async fn request_unhook_from_injected(
         dlp_common::EventType::AgentShutdownUnhook,
         std::process::id(),
         true,
-        Some(format!("injected_count={}", injected_before)),
+        Some(format!(
+            "injected_count={}; target_pids={}",
+            injected_before.len(),
+            pids_str
+        )),
+        Some(format!(
+            "agent://{}/unhook_request",
+            std::process::id()
+        )),
     );
 
     UNHOOK_ALL_REQUESTED.store(true, Ordering::Release);
@@ -215,6 +248,7 @@ async fn request_unhook_from_injected(
             key.pid,
             false,
             Some(format!("creation_time={}", key.creation_time)),
+            None,
         );
     }
 
@@ -6220,13 +6254,18 @@ fn test_request_unhook_from_injected_sets_flag_and_emits() {
     assert_eq!(shutdown_events[0].decision, dlp_common::Decision::ALLOW);
     assert_eq!(
         shutdown_events[0].resource_path,
-        format!("pid={}", std::process::id())
+        format!("agent://{}/unhook_request", std::process::id())
     );
     assert!(shutdown_events[0]
         .justification
         .as_deref()
         .unwrap_or("")
         .contains("injected_count=1"));
+    assert!(shutdown_events[0]
+        .justification
+        .as_deref()
+        .unwrap_or("")
+        .contains("target_pids=[1234]"));
 
     // The entry never acked, so it should still be Injected and an UnhookFailure
     // event should have been emitted.
