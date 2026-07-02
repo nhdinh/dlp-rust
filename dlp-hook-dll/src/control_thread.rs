@@ -89,11 +89,21 @@ const MAX_FAILURES: u32 = 3;
 const SHUTDOWN_WAIT_MS: u32 = 5_000;
 
 /// Directory where watchdog self-unload evidence is persisted.
-#[cfg(not(test))]
-const WATCHDOG_EVIDENCE_DIR: &str = r"C:\ProgramData\DLP\WatchdogSelfUnload";
-
-#[cfg(test)]
-const WATCHDOG_EVIDENCE_DIR: &str = r"C:\ProgramData\DLP\WatchdogSelfUnload_Test";
+///
+/// Tests use a per-process temporary directory to avoid collisions with
+/// parallel runs or leftover files from previous runs.
+fn watchdog_evidence_dir() -> std::path::PathBuf {
+    #[cfg(not(test))]
+    {
+        std::path::PathBuf::from(r"C:\ProgramData\DLP\WatchdogSelfUnload")
+    }
+    #[cfg(test)]
+    {
+        std::env::temp_dir()
+            .join("dlp-watchdog-test")
+            .join(std::process::id().to_string())
+    }
+}
 
 /// Lifecycle state of the control/watchdog thread.
 enum ControlThreadState {
@@ -423,7 +433,7 @@ fn persist_watchdog_evidence(pid: u32, creation_time: u64) {
         }
     };
 
-    let dir = std::path::Path::new(WATCHDOG_EVIDENCE_DIR);
+    let dir = watchdog_evidence_dir();
     if let Err(e) = std::fs::create_dir_all(dir) {
         let msg = format!("[dlp-hook] watchdog evidence dir create failed: {}\0", e);
         crate::debug_log(&msg);
