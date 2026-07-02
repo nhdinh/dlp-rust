@@ -175,6 +175,9 @@ pub mod etw_kernel_file;
 pub mod bypass_correlator;
 
 #[cfg(windows)]
+pub mod process_utils;
+
+#[cfg(windows)]
 pub mod universal_injector;
 
 /// Re-export hook IPC configuration and helpers for integration tests.

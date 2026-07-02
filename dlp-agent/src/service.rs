@@ -3263,7 +3263,36 @@ async fn init_universal_injection(
     )
 }
 
-/// Startup sweep: enumerate all running PIDs, attempt injection into non-allowlisted.
+/// Build a [`ProcessKey`] for `pid` using the real process creation time.
+///
+/// Falls back to `creation_time: 0` and logs a warning if the creation time
+/// cannot be queried. This keeps the registry usable when a process exits
+/// between enumeration and OpenProcess.
+#[cfg(windows)]
+fn build_process_key(pid: u32) -> crate::process_registry::ProcessKey {
+    match crate::process_utils::get_process_creation_time(pid) {
+        Some(creation_time) => crate::process_registry::ProcessKey {
+            pid,
+            creation_time,
+        },
+        None => {
+            tracing::warn!(pid, "failed to query process creation time; falling back to 0");
+            crate::process_registry::ProcessKey {
+                pid,
+                creation_time: 0,
+            }
+        }
+    }
+}
+
+/// Non-Windows stub: process keys cannot be enriched.
+#[cfg(not(windows))]
+fn build_process_key(pid: u32) -> crate::process_registry::ProcessKey {
+    crate::process_registry::ProcessKey {
+        pid,
+        creation_time: 0,
+    }
+}
 ///
 /// Review fix: bounded concurrency (max 32 parallel), per-process 5-second timeout.
 async fn startup_sweep(
@@ -3293,10 +3322,7 @@ async fn startup_sweep(
 
             let handle = tokio::spawn(async move {
                 let _permit = permit; // hold until task completes
-                let key = crate::process_registry::ProcessKey {
-                    pid,
-                    creation_time: 0, // startup sweep: creation_time unknown, use PID only
-                };
+                let key = build_process_key(pid);
 
                 if let crate::process_registry::ClaimResult::AlreadyClaimed(_) =
                     registry.try_claim(key)
@@ -3390,10 +3416,7 @@ async fn backstop_sweep(
         let mut skipped = 0u64;
 
         for pid in pids {
-            let key = crate::process_registry::ProcessKey {
-                pid,
-                creation_time: 0,
-            };
+            let key = build_process_key(pid);
 
             // Skip if already processed.
             if registry.get(&key).is_some() {
@@ -6272,6 +6295,33 @@ fn test_request_unhook_from_injected_sets_flag_and_emits() {
     assert_eq!(failure_events[0].resource_path, "pid=1234");
 
     reset_unhook_signal();
+}
+
+/// Verify that `build_process_key` returns a non-zero creation time for the
+/// current process. This is the value that matches the hook DLL's
+/// `PollControl` frame.
+#[cfg(test)]
+#[test]
+#[cfg(windows)]
+fn test_build_process_key_current_process_has_creation_time() {
+    let key = build_process_key(std::process::id());
+    assert_eq!(key.pid, std::process::id());
+    assert!(
+        key.creation_time > 0,
+        "expected non-zero creation_time for current process"
+    );
+}
+
+/// Verify that `build_process_key` degrades gracefully for an invalid PID.
+#[cfg(test)]
+#[test]
+fn test_build_process_key_invalid_pid_falls_back_to_zero() {
+    let key = build_process_key(0);
+    assert_eq!(key.pid, 0);
+    assert_eq!(
+        key.creation_time, 0,
+        "expected creation_time fallback to 0 for invalid PID"
+    );
 }
 
 /// Test that `wait_for_unhook_acks` returns immediately when the registry has
