@@ -78,6 +78,17 @@ enum BackgroundThreadState {
 static BACKGROUND_THREAD_STATE: std::sync::Mutex<BackgroundThreadState> =
     std::sync::Mutex::new(BackgroundThreadState::NotStarted);
 
+/// Test-only hook that forces `shutdown_background_thread` to report a timeout.
+#[cfg(test)]
+static FORCE_SHUTDOWN_TIMEOUT: AtomicBool = AtomicBool::new(false);
+
+/// Test-only helper to force the next `shutdown_background_thread` call to
+/// behave as if the thread did not exit within its timeout.
+#[cfg(test)]
+pub fn force_shutdown_timeout_for_test(force: bool) {
+    FORCE_SHUTDOWN_TIMEOUT.store(force, Ordering::SeqCst);
+}
+
 /// Background thread for ISOLATED-state RESYNC detection.
 pub struct BackgroundThread {
     /// Handle to the shutdown event (signaled to stop the thread).
@@ -186,8 +197,11 @@ pub fn start_background_thread(
 /// Signals the shutdown event and waits up to 5 seconds for the thread to exit
 /// using `WaitForSingleObject` on the thread handle. If the timeout expires,
 /// logs a warning and detaches the thread rather than blocking forever.
+///
+/// Returns `true` if the thread was not running or exited within the timeout,
+/// and `false` if the timeout expired while the thread was still running.
 #[allow(dead_code)]
-pub fn shutdown_background_thread() {
+pub fn shutdown_background_thread() -> bool {
     let mut guard = BACKGROUND_THREAD_STATE.lock().unwrap();
 
     let (event, handle) = match &mut *guard {
@@ -208,12 +222,32 @@ pub fn shutdown_background_thread() {
         }
         BackgroundThreadState::NotStarted | BackgroundThreadState::Starting => {
             // Nothing to shut down.
-            return;
+            return true;
         }
     };
 
     // Drop the lock before waiting so other operations can proceed.
     drop(guard);
+
+    let mut joined_cleanly = true;
+
+    #[cfg(test)]
+    if FORCE_SHUTDOWN_TIMEOUT.swap(false, Ordering::SeqCst) {
+        // Test-only path: simulate a timeout without blocking. We still close
+        // the event handle below, but we detach the thread as if it did not
+        // exit in time.
+        joined_cleanly = false;
+        tracing::warn!("background_thread shutdown timed out after 5s; detaching thread");
+        if let Some(handle) = handle {
+            drop(handle);
+        }
+        if let Some(event) = event {
+            unsafe {
+                let _ = windows::Win32::Foundation::CloseHandle(event);
+            }
+        }
+        return joined_cleanly;
+    }
 
     if let (Some(event), Some(handle)) = (event, handle) {
         // Use WaitForSingleObject on the thread handle for precise timeout.
@@ -231,6 +265,7 @@ pub fn shutdown_background_thread() {
             let _ = handle.join();
         } else {
             // Timeout — log warning and detach (drop without join).
+            joined_cleanly = false;
             tracing::warn!("background_thread shutdown timed out after 5s; detaching thread");
             // Dropping the JoinHandle without calling join() detaches the thread.
             drop(handle);
@@ -241,6 +276,8 @@ pub fn shutdown_background_thread() {
             let _ = windows::Win32::Foundation::CloseHandle(event);
         }
     }
+
+    joined_cleanly
 }
 
 /// Reset the background thread for test use.
@@ -373,6 +410,7 @@ mod tests {
 
     #[test]
     fn background_thread_stub_exists() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         // Verify the module compiles and functions are callable.
         let state = Arc::new(FailModeState::new());
         start_background_thread(std::ptr::null(), state, None, None);
@@ -402,6 +440,7 @@ mod tests {
 
     #[test]
     fn thread_start_is_idempotent() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         let state = Arc::new(FailModeState::new());
 
         // Reset state for test.
@@ -418,6 +457,34 @@ mod tests {
 
         // Clean up.
         shutdown_background_thread();
+    }
+
+    #[test]
+    fn shutdown_background_thread_returns_true_when_not_started() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+        reset_background_thread_for_test();
+        assert!(shutdown_background_thread());
+    }
+
+    #[test]
+    fn shutdown_background_thread_returns_true_after_clean_start_stop() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+        let state = Arc::new(FailModeState::new());
+        reset_background_thread_for_test();
+        start_background_thread(std::ptr::null(), Arc::clone(&state), None, None);
+        assert!(shutdown_background_thread());
+    }
+
+    #[test]
+    fn shutdown_background_thread_returns_false_on_forced_timeout() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+        let state = Arc::new(FailModeState::new());
+        reset_background_thread_for_test();
+        start_background_thread(std::ptr::null(), Arc::clone(&state), None, None);
+        force_shutdown_timeout_for_test(true);
+        assert!(!shutdown_background_thread());
+        // Clean up the detached thread so later tests are not affected.
+        reset_background_thread_for_test();
     }
 
     #[test]

@@ -334,11 +334,9 @@ fn control_thread_loop(shutdown_event: HANDLE) {
                                 "[dlp-hook] watchdog: agent unresponsive, initiating self-unhook\0",
                             );
                             persist_watchdog_evidence(pid, creation_time);
-                            let unhook_ok = crate::unhook_all_internal();
+
+                            let unhook_ok = stop_and_unhook();
                             if !unhook_ok {
-                                crate::debug_log(
-                                    "[dlp-hook] watchdog: UnhookAll failed -- remaining loaded but unhooked\0",
-                                );
                                 break;
                             }
 
@@ -353,14 +351,60 @@ fn control_thread_loop(shutdown_event: HANDLE) {
                                     crate::debug_log(
                                         "[dlp-hook] watchdog: self_unload aborted -- remaining loaded but unhooked\0",
                                     );
-                                    break;
                                 }
+                                break;
                             }
                         }
                     }
                 }
             }
         }
+    }
+}
+
+/// Stop the hook DLL background thread and restore all trampolines.
+///
+/// This is the safe portion of self-unhook shared by the watchdog timeout
+/// path and the explicit [`UnhookCommand`] handler. The caller is responsible
+/// for sending any required acknowledgements before calling [`self_unload`].
+///
+/// Returns `true` only if the background thread exited within its timeout and
+/// `unhook_all_internal` reported success.
+fn stop_and_unhook() -> bool {
+    // Stop the background thread before unhooking so that unhook_all_internal
+    // can safely unmap shared memory and self_unload can free the DLL image
+    // without a DLL-owned thread returning into unmapped code.
+    let background_stopped = crate::background_thread::shutdown_background_thread();
+    if !background_stopped {
+        crate::debug_log(
+            "[dlp-hook] background thread shutdown timed out -- aborting self-unhook\0",
+        );
+        return false;
+    }
+
+    let unhook_ok = crate::unhook_all_internal();
+    if !unhook_ok {
+        crate::debug_log("[dlp-hook] UnhookAll failed -- remaining loaded but unhooked\0");
+        return false;
+    }
+
+    true
+}
+
+/// Attempt to self-unload the DLL after a successful unhook.
+///
+/// # Safety
+///
+/// Calls [`self_unload`], which uses `FreeLibraryAndExitThread` and must only
+/// be invoked from a thread that is safe to terminate.
+#[cfg(not(test))]
+unsafe fn unload_self(context: &str) {
+    if !crate::self_unload() {
+        let msg = format!(
+            "[dlp-hook] {}: self_unload aborted -- remaining loaded but unhooked\0",
+            context
+        );
+        crate::debug_log(&msg);
     }
 }
 
@@ -376,7 +420,7 @@ pub(crate) fn handle_unhook_command(cmd: UnhookCommand, pid: u32, creation_time:
     );
     crate::debug_log(&msg);
 
-    let unhook_ok = crate::unhook_all_internal();
+    let unhook_ok = stop_and_unhook();
 
     let ack = UnhookAck {
         pid,
@@ -390,19 +434,14 @@ pub(crate) fn handle_unhook_command(cmd: UnhookCommand, pid: u32, creation_time:
     };
     let _ = crate::pipe_client::send_unhook_ack(crate::DEFAULT_PIPE_NAME, &ack);
 
-    // Only unload the DLL if unhook succeeded. If unhook failed, remain loaded
-    // so the agent can retry or escalate instead of leaving the process with
-    // partially restored IAT entries.
+    // Only unload the DLL if unhook succeeded and the background thread is
+    // known to have exited. If unhook failed, remain loaded so the agent can
+    // retry or escalate instead of leaving the process with partially restored
+    // IAT entries.
     if unhook_ok {
-        #[cfg(test)]
-        {}
         #[cfg(not(test))]
         unsafe {
-            if !crate::self_unload() {
-                crate::debug_log(
-                    "[dlp-hook] handle_unhook_command: self_unload aborted -- remaining loaded but unhooked\0",
-                );
-            }
+            unload_self("handle_unhook_command");
         }
     }
 }
@@ -608,7 +647,10 @@ pub(crate) fn run_control_loop_for_test(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::Ordering;
+
     use super::*;
+    use crate::SHUTTING_DOWN;
 
     #[test]
     fn control_thread_start_is_idempotent() {
@@ -643,6 +685,31 @@ mod tests {
     #[test]
     fn process_creation_time_returns_some() {
         assert!(process_creation_time().is_some());
+    }
+
+    #[test]
+    fn stop_and_unhook_returns_true_when_background_thread_not_started() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+        crate::background_thread::reset_background_thread_for_test();
+        crate::reset_hook_globals();
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+        assert!(stop_and_unhook());
+    }
+
+    #[test]
+    fn stop_and_unhook_returns_false_when_background_thread_times_out() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+        let state = std::sync::Arc::new(crate::fail_mode::FailModeState::new());
+        crate::background_thread::reset_background_thread_for_test();
+        crate::background_thread::start_background_thread(
+            std::ptr::null(),
+            std::sync::Arc::clone(&state),
+            None,
+            None,
+        );
+        crate::background_thread::force_shutdown_timeout_for_test(true);
+        assert!(!stop_and_unhook());
+        crate::background_thread::reset_background_thread_for_test();
     }
 
     #[test]

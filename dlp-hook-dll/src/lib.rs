@@ -1618,6 +1618,51 @@ mod tests {
     }
 
     #[test]
+    fn handle_unhook_command_sends_failure_ack_when_background_thread_times_out() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+        reset_hook_globals();
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+        crate::control_thread::reset_watchdog_test_state();
+        ACTIVE_CALLS.store(0, Ordering::SeqCst);
+
+        // Start a background thread and force its shutdown to time out so that
+        // handle_unhook_command aborts the unhook and reports failure.
+        crate::background_thread::reset_background_thread_for_test();
+        let state = std::sync::Arc::new(crate::fail_mode::FailModeState::new());
+        crate::background_thread::start_background_thread(
+            std::ptr::null(),
+            std::sync::Arc::clone(&state),
+            None,
+            None,
+        );
+        crate::background_thread::force_shutdown_timeout_for_test(true);
+
+        std::env::set_var("DLP_HOOK_TEST_MOCK_ACK", "1");
+        let cmd = UnhookCommand {
+            reason: UnhookReason::AgentShutdown,
+            timestamp_secs: 1_700_000_000,
+        };
+        crate::control_thread::handle_unhook_command(cmd, std::process::id(), 12345);
+        std::env::remove_var("DLP_HOOK_TEST_MOCK_ACK");
+
+        let captured = {
+            let mut sink = crate::pipe_client::MOCK_UNHOOK_ACK_SINK
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            sink.pop()
+        };
+        assert!(captured.is_some(), "expected an UnhookAck to be sent");
+        let captured = captured.unwrap();
+        assert!(
+            !captured.success,
+            "expected ack.success == false when background thread shutdown times out"
+        );
+
+        crate::background_thread::reset_background_thread_for_test();
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
     fn control_poll_thread_starts_from_post_attach_path() {
         let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         // Reset control thread state so enter_hook_call will start it.
