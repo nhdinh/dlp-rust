@@ -1780,7 +1780,11 @@ mod tests {
         // Locate the built DLL next to the workspace root.
         let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
         let workspace_root = manifest_dir.parent().expect("workspace root");
-        let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+        let profile = if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        };
         let dll_path = workspace_root
             .join("target")
             .join(profile)
@@ -1817,12 +1821,7 @@ mod tests {
         );
         let module = module.unwrap();
 
-        let proc = unsafe {
-            GetProcAddress(
-                module,
-                windows::core::s!("StartDlpControlThread"),
-            )
-        };
+        let proc = unsafe { GetProcAddress(module, windows::core::s!("StartDlpControlThread")) };
         assert!(
             proc.is_some(),
             "StartDlpControlThread export should be resolvable in built DLL"
@@ -1853,10 +1852,7 @@ mod tests {
 
         // Second call should be idempotent (return 0, no crash).
         let result2 = StartDlpControlThread();
-        assert_eq!(
-            result2, 0,
-            "StartDlpControlThread should be idempotent"
-        );
+        assert_eq!(result2, 0, "StartDlpControlThread should be idempotent");
 
         crate::control_thread::shutdown_control_thread();
     }

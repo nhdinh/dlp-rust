@@ -180,9 +180,13 @@ async fn wait_for_unhook_acks(
 ///
 /// * `registry` — Process registry containing the lifecycle state of hooked PIDs.
 /// * `audit_ctx` — Audit emit context for `AgentShutdownUnhook` / `UnhookFailure`.
+/// * `budget` — Maximum time to wait for acks. The caller (typically the
+///   shutdown sequence) should cap this to the remaining [`SHUTDOWN_TIMEOUT`]
+///   budget so the service does not exceed its graceful shutdown deadline.
 async fn request_unhook_from_injected(
     registry: &Arc<crate::process_registry::ProcessRegistry>,
     audit_ctx: &crate::audit_emitter::EmitContext,
+    budget: Duration,
 ) {
     let injected_before: Vec<(
         crate::process_registry::ProcessKey,
@@ -220,20 +224,15 @@ async fn request_unhook_from_injected(
         std::process::id(),
         true,
         Some(format!(
-            "injected_count={}; target_pids={}",
+            "injected_count={}; target_pids={}; budget_ms={}",
             injected_before.len(),
-            pids_str
+            pids_str,
+            budget.as_millis()
         )),
         Some(format!("agent://{}/unhook_request", std::process::id())),
     );
 
     UNHOOK_ALL_REQUESTED.store(true, Ordering::Release);
-
-    // Use the configured unhook wait budget, clamped to a sensible minimum.
-    let budget = with_config(|cfg| {
-        Duration::from_millis(cfg.unhook_wait_budget_ms.unwrap_or(30_000).max(1_000))
-    })
-    .unwrap_or(UNHOOK_WAIT_BUDGET);
 
     let remaining = wait_for_unhook_acks(registry, budget).await;
 
@@ -2633,6 +2632,24 @@ fn init_offline_manager(
     Arc::new(om)
 }
 
+/// Return type for [`init_dacl_watcher`] and [`init_dacl_watcher_without_staging`].
+///
+/// The nine-element tuple is verbose because it carries every handle created by
+/// the watcher subsystem.  Using a type alias keeps the two function signatures
+/// in sync and avoids a large duplicated type annotation.
+#[allow(clippy::type_complexity)]
+type DaclWatcherInitResult = (
+    Option<std::sync::Arc<crate::dacl_repair_watcher::DaclWatcher>>,
+    Option<tokio::sync::watch::Sender<bool>>,
+    Option<tokio::task::JoinHandle<()>>,
+    Option<tokio::task::JoinHandle<()>>,
+    Option<Arc<crate::dacl_staging::DaclStaging>>,
+    Option<tokio::sync::watch::Sender<bool>>,
+    Option<tokio::task::JoinHandle<()>>,
+    Option<tokio::sync::watch::Sender<bool>>,
+    Option<tokio::task::JoinHandle<()>>,
+);
+
 /// Initialises the DACL repair watcher for protected path ACL tamper detection.
 ///
 /// For each path in `agent_config.monitored_paths` (temporary until dedicated
@@ -2648,21 +2665,10 @@ fn init_offline_manager(
 ///
 /// Returns `(watcher, shutdown_tx, repair_handle, poll_handle, staging, gc_handle, removal_handle)`
 /// where all are `None` when no monitored paths are configured or the watcher is disabled.
-#[allow(clippy::type_complexity)]
 async fn init_dacl_watcher(
     agent_config: &crate::config::AgentConfig,
     ad_client: Option<&dlp_common::AdClient>,
-) -> (
-    Option<std::sync::Arc<crate::dacl_repair_watcher::DaclWatcher>>,
-    Option<tokio::sync::watch::Sender<bool>>,
-    Option<tokio::task::JoinHandle<()>>,
-    Option<tokio::task::JoinHandle<()>>,
-    Option<Arc<crate::dacl_staging::DaclStaging>>,
-    Option<tokio::sync::watch::Sender<bool>>,
-    Option<tokio::task::JoinHandle<()>>,
-    Option<tokio::sync::watch::Sender<bool>>,
-    Option<tokio::task::JoinHandle<()>>,
-) {
+) -> DaclWatcherInitResult {
     if agent_config.monitored_paths.is_empty() {
         info!("no monitored paths configured — skipping DaclWatcher");
         return (None, None, None, None, None, None, None, None, None);
@@ -2809,21 +2815,10 @@ async fn init_dacl_watcher(
 }
 
 /// Fallback initialisation without staging (when DaclStaging creation fails).
-#[allow(clippy::type_complexity)]
 async fn init_dacl_watcher_without_staging(
     agent_config: &crate::config::AgentConfig,
     ad_client: Option<&dlp_common::AdClient>,
-) -> (
-    Option<std::sync::Arc<crate::dacl_repair_watcher::DaclWatcher>>,
-    Option<tokio::sync::watch::Sender<bool>>,
-    Option<tokio::task::JoinHandle<()>>,
-    Option<tokio::task::JoinHandle<()>>,
-    Option<Arc<crate::dacl_staging::DaclStaging>>,
-    Option<tokio::sync::watch::Sender<bool>>,
-    Option<tokio::task::JoinHandle<()>>,
-    Option<tokio::sync::watch::Sender<bool>>,
-    Option<tokio::task::JoinHandle<()>>,
-) {
+) -> DaclWatcherInitResult {
     if agent_config.monitored_paths.is_empty() {
         return (None, None, None, None, None, None, None, None, None);
     }
@@ -3271,12 +3266,12 @@ async fn init_universal_injection(
 #[cfg(windows)]
 fn build_process_key(pid: u32) -> crate::process_registry::ProcessKey {
     match crate::process_utils::get_process_creation_time(pid) {
-        Some(creation_time) => crate::process_registry::ProcessKey {
-            pid,
-            creation_time,
-        },
+        Some(creation_time) => crate::process_registry::ProcessKey { pid, creation_time },
         None => {
-            tracing::warn!(pid, "failed to query process creation time; falling back to 0");
+            tracing::warn!(
+                pid,
+                "failed to query process creation time; falling back to 0"
+            );
             crate::process_registry::ProcessKey {
                 pid,
                 creation_time: 0,
@@ -3973,6 +3968,11 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
     // Reference approval_cache to keep the field alive until Plan 04 consumes it.
     let _ = &ctx.approval_cache;
 
+    // Phase 58.5: Track the overall shutdown deadline so the cooperative unhook
+    // wait cannot consume the entire SHUTDOWN_TIMEOUT budget and force the SCM
+    // to terminate the service.
+    let shutdown_start = Instant::now();
+
     crate::password_stop::debug_log("run_loop: starting graceful shutdown");
     info!(
         service_name = SERVICE_NAME,
@@ -4162,7 +4162,22 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
     // This must happen while the hook IPC server is still running so that
     // PollControl frames receive UnhookCommand replies, and before the audit
     // flush task stops so the resulting events are flushed.
-    request_unhook_from_injected(&ctx.process_registry, &ctx.audit_ctx).await;
+    //
+    // Cap the unhook wait budget to the remaining SHUTDOWN_TIMEOUT so earlier
+    // shutdown steps cannot starve the service's overall deadline.
+    let configured_budget = with_config(|cfg| {
+        Duration::from_millis(cfg.unhook_wait_budget_ms.unwrap_or(30_000).max(1_000))
+    })
+    .unwrap_or(UNHOOK_WAIT_BUDGET);
+    let elapsed = shutdown_start.elapsed();
+    let remaining_shutdown = SHUTDOWN_TIMEOUT.saturating_sub(elapsed);
+    let unhook_budget = configured_budget.min(remaining_shutdown);
+    request_unhook_from_injected(
+        &ctx.process_registry,
+        &ctx.audit_ctx,
+        unhook_budget.max(Duration::from_millis(100)),
+    )
+    .await;
 
     // Stop the audit buffer flush task (final flush runs inside).
     let _ = ctx.audit_shutdown_tx.send(true);
@@ -5572,13 +5587,11 @@ fn test_offline_manager() -> Arc<crate::offline::OfflineManager> {
     ))
 }
 
-/// Test that `spawn_hook_ipc_server` spawns a named thread and returns a
-/// handle that can be joined after shutdown is requested.
-#[test]
-fn test_spawn_hook_ipc_server_starts_named_thread() {
-    let _guard = SHUTDOWN_TEST_MUTEX.lock().unwrap();
-    reset_shutdown_signal();
-
+/// Builds a minimal [`HookIpcServerConfig`] for service-level tests with the
+/// given named-pipe path.  Centralising the construction removes the repeated
+/// dependency wiring that was flagged by SonarCloud as duplicated new code.
+#[cfg(test)]
+fn test_hook_ipc_config(pipe_name: &str) -> HookIpcServerConfig {
     let cache: Arc<dyn crate::hook_ipc::CacheAccessor> = Arc::new(MockCache { version: 1 });
     let offline = test_offline_manager();
     let (bypass_tx, _bypass_rx) = crossbeam_channel::unbounded::<BypassAlert>();
@@ -5588,8 +5601,8 @@ fn test_spawn_hook_ipc_server_starts_named_thread() {
         tokio::sync::mpsc::channel::<dlp_common::hook_ipc::OverrideRequest>(100);
     let approval = Arc::new(crate::approval_cache::ApprovalCache::new());
 
-    let config = HookIpcServerConfig {
-        pipe_name: crate::hook_ipc::DEFAULT_PIPE_NAME.to_string(),
+    HookIpcServerConfig {
+        pipe_name: pipe_name.to_string(),
         cache,
         offline,
         bypass_tx,
@@ -5606,7 +5619,69 @@ fn test_spawn_hook_ipc_server_starts_named_thread() {
             user_name: "SYSTEM".to_string(),
             machine_name: None,
         },
-    };
+    }
+}
+
+/// Starts a test hook IPC server on `pipe_name`, waits for the pipe to be
+/// created, and connects a client.  Returns the server thread handle and the
+/// client pipe handle so tests can focus on request/response assertions.
+#[cfg(test)]
+fn start_test_hook_ipc_server(
+    pipe_name: &str,
+) -> (
+    std::thread::JoinHandle<()>,
+    windows::Win32::Foundation::HANDLE,
+) {
+    let config = test_hook_ipc_config(pipe_name);
+    let handle = spawn_hook_ipc_server(config).expect("hook IPC server thread should spawn");
+
+    // Give the server time to create the pipe.
+    std::thread::sleep(std::time::Duration::from_millis(100));
+
+    let client = crate::hook_ipc::connect_client(pipe_name).expect("client connect");
+    (handle, client)
+}
+
+/// Sends a `HookRequest` over `client` and returns the deserialized response
+/// envelope.  Centralises the frame encode/decode dance used by multiple
+/// service-level hook IPC tests.
+#[cfg(test)]
+fn send_request_and_read_response(
+    client: windows::Win32::Foundation::HANDLE,
+    req: dlp_common::HookRequest,
+) -> dlp_common::hook_ipc::IpcEnvelope {
+    let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+        payload: dlp_common::hook_ipc::IpcPayloadV1::Request(req),
+    });
+
+    let payload = bincode::serialize(&envelope).expect("serialize envelope");
+    crate::ipc::frame::write_frame(client, &payload).expect("write frame");
+
+    let frame = crate::ipc::frame::read_frame(client).expect("read frame");
+    bincode::deserialize(&frame).expect("deserialize envelope")
+}
+
+/// Closes `client`, requests server shutdown, and joins the server thread.
+/// Resets the shutdown signal so the next serial test starts from a clean state.
+#[cfg(test)]
+fn shutdown_test_hook_ipc_server(
+    handle: std::thread::JoinHandle<()>,
+    client: windows::Win32::Foundation::HANDLE,
+) {
+    crate::hook_ipc::close_pipe(client);
+    request_shutdown();
+    handle.join().expect("server thread should join cleanly");
+    reset_shutdown_signal();
+}
+
+/// Test that `spawn_hook_ipc_server` spawns a named thread and returns a
+/// handle that can be joined after shutdown is requested.
+#[test]
+fn test_spawn_hook_ipc_server_starts_named_thread() {
+    let _guard = SHUTDOWN_TEST_MUTEX.lock().unwrap();
+    reset_shutdown_signal();
+
+    let config = test_hook_ipc_config(crate::hook_ipc::DEFAULT_PIPE_NAME);
 
     let handle = spawn_hook_ipc_server(config).expect("hook IPC server thread should spawn");
 
@@ -5897,43 +5972,7 @@ fn test_invalid_pid_returns_deny_identity_resolution_failed() {
     let _guard = SHUTDOWN_TEST_MUTEX.lock().unwrap();
     reset_shutdown_signal();
 
-    let cache: Arc<dyn crate::hook_ipc::CacheAccessor> = Arc::new(MockCache { version: 1 });
-    let offline = test_offline_manager();
-    let (bypass_tx, _bypass_rx) = crossbeam_channel::unbounded::<BypassAlert>();
-    let diag = Arc::new(crate::diagnostic_aggregator::DiagnosticAggregator::new());
-    let health = Arc::new(crate::health_aggregator::HealthAggregator::new());
-    let (override_tx, _override_rx) =
-        tokio::sync::mpsc::channel::<dlp_common::hook_ipc::OverrideRequest>(100);
-    let approval = Arc::new(crate::approval_cache::ApprovalCache::new());
-
-    let config = HookIpcServerConfig {
-        pipe_name: r"\\.\pipe\DlpHookPipeTestInvalidPid".to_string(),
-        cache,
-        offline,
-        bypass_tx,
-        diagnostic_aggregator: diag,
-        health_aggregator: health,
-        override_tx,
-        approval_cache: approval,
-        hash_cache: crate::hash_cache::create_hash_cache(),
-        process_registry: Arc::new(crate::process_registry::ProcessRegistry::new()),
-        audit_ctx: crate::audit_emitter::EmitContext {
-            agent_id: "AGENT-TEST".to_string(),
-            session_id: 0,
-            user_sid: "S-1-5-18".to_string(),
-            user_name: "SYSTEM".to_string(),
-            machine_name: None,
-        },
-    };
-
-    let handle = spawn_hook_ipc_server(config).expect("hook IPC server thread should spawn");
-
-    // Give the server time to create the pipe.
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    // Connect a client and send a Request with pid=0.
-    let client = crate::hook_ipc::connect_client(r"\\.\pipe\DlpHookPipeTestInvalidPid")
-        .expect("client connect");
+    let (handle, client) = start_test_hook_ipc_server(r"\\.\pipe\DlpHookPipeTestInvalidPid");
 
     let req = dlp_common::HookRequest {
         path: r"C:\test\file.txt".to_string(),
@@ -5946,16 +5985,7 @@ fn test_invalid_pid_returns_deny_identity_resolution_failed() {
         pid: 0,
     };
 
-    let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
-        payload: dlp_common::hook_ipc::IpcPayloadV1::Request(req),
-    });
-
-    let payload = bincode::serialize(&envelope).expect("serialize envelope");
-    crate::ipc::frame::write_frame(client, &payload).expect("write frame");
-
-    let frame = crate::ipc::frame::read_frame(client).expect("read frame");
-    let response_envelope: dlp_common::hook_ipc::IpcEnvelope =
-        bincode::deserialize(&frame).expect("deserialize envelope");
+    let response_envelope = send_request_and_read_response(client, req);
 
     match response_envelope {
         dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
@@ -5976,11 +6006,7 @@ fn test_invalid_pid_returns_deny_identity_resolution_failed() {
         other => panic!("Expected Response frame, got {:?}", other),
     }
 
-    crate::hook_ipc::close_pipe(client);
-
-    request_shutdown();
-    handle.join().expect("server thread should join cleanly");
-    reset_shutdown_signal();
+    shutdown_test_hook_ipc_server(handle, client);
 }
 
 // ---------------------------------------------------------------------------
@@ -6003,43 +6029,7 @@ fn test_copy_move_none_volume_class_logs_warning() {
         guard.clear();
     }
 
-    let cache: Arc<dyn crate::hook_ipc::CacheAccessor> = Arc::new(MockCache { version: 1 });
-    let offline = test_offline_manager();
-    let (bypass_tx, _bypass_rx) = crossbeam_channel::unbounded::<BypassAlert>();
-    let diag = Arc::new(crate::diagnostic_aggregator::DiagnosticAggregator::new());
-    let health = Arc::new(crate::health_aggregator::HealthAggregator::new());
-    let (override_tx, _override_rx) =
-        tokio::sync::mpsc::channel::<dlp_common::hook_ipc::OverrideRequest>(100);
-    let approval = Arc::new(crate::approval_cache::ApprovalCache::new());
-
-    let config = HookIpcServerConfig {
-        pipe_name: r"\\.\pipe\DlpHookPipeTestWarning".to_string(),
-        cache,
-        offline,
-        bypass_tx,
-        diagnostic_aggregator: diag,
-        health_aggregator: health,
-        override_tx,
-        approval_cache: approval,
-        hash_cache: crate::hash_cache::create_hash_cache(),
-        process_registry: Arc::new(crate::process_registry::ProcessRegistry::new()),
-        audit_ctx: crate::audit_emitter::EmitContext {
-            agent_id: "AGENT-TEST".to_string(),
-            session_id: 0,
-            user_sid: "S-1-5-18".to_string(),
-            user_name: "SYSTEM".to_string(),
-            machine_name: None,
-        },
-    };
-
-    let handle = spawn_hook_ipc_server(config).expect("hook IPC server thread should spawn");
-
-    // Give the server time to create the pipe.
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    // Connect a client and send a COPY request with None volume classes.
-    let client = crate::hook_ipc::connect_client(r"\\.\pipe\DlpHookPipeTestWarning")
-        .expect("client connect");
+    let (handle, client) = start_test_hook_ipc_server(r"\\.\pipe\DlpHookPipeTestWarning");
 
     let req = dlp_common::HookRequest {
         path: r"C:\test\file.txt".to_string(),
@@ -6052,16 +6042,7 @@ fn test_copy_move_none_volume_class_logs_warning() {
         pid: std::process::id(),
     };
 
-    let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
-        payload: dlp_common::hook_ipc::IpcPayloadV1::Request(req),
-    });
-
-    let payload = bincode::serialize(&envelope).expect("serialize envelope");
-    crate::ipc::frame::write_frame(client, &payload).expect("write frame");
-
-    let frame = crate::ipc::frame::read_frame(client).expect("read frame");
-    let response_envelope: dlp_common::hook_ipc::IpcEnvelope =
-        bincode::deserialize(&frame).expect("deserialize envelope");
+    let response_envelope = send_request_and_read_response(client, req);
 
     // Verify we got a response (the server processed the request).
     match response_envelope {
@@ -6071,11 +6052,7 @@ fn test_copy_move_none_volume_class_logs_warning() {
         other => panic!("Expected Response frame, got {:?}", other),
     }
 
-    crate::hook_ipc::close_pipe(client);
-
-    request_shutdown();
-    handle.join().expect("server thread should join cleanly");
-    reset_shutdown_signal();
+    shutdown_test_hook_ipc_server(handle, client);
 
     // Verify the warning was logged.
     let log_text = {
@@ -6110,6 +6087,30 @@ fn make_test_emit_context() -> crate::audit_emitter::EmitContext {
     }
 }
 
+/// Creates a watchdog evidence file in `dir` and returns its path.
+///
+/// Centralises the JSON shape used by Phase 58.5 watchdog reconciliation tests.
+#[cfg(test)]
+fn write_watchdog_evidence(
+    dir: &std::path::Path,
+    pid: u32,
+    creation_time: u64,
+    reason: &str,
+) -> std::path::PathBuf {
+    let evidence_path = dir.join(format!("{}.evidence.json", pid));
+    let evidence = serde_json::json!({
+        "pid": pid,
+        "creation_time": creation_time,
+        "reason": reason,
+        "timestamp_secs": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs(),
+    });
+    std::fs::write(&evidence_path, serde_json::to_string(&evidence).unwrap()).unwrap();
+    evidence_path
+}
+
 /// Test that `reconcile_watchdog_evidence` transitions a matching Injected
 /// entry to Exited, emits `WatchdogSelfUnload`, and removes the evidence file.
 #[cfg(test)]
@@ -6128,17 +6129,9 @@ fn test_reconcile_watchdog_evidence_transitions_and_emits() {
     std::fs::create_dir_all(&dir).unwrap();
 
     // Write a test evidence file.
-    let evidence_path = dir.join("1234.evidence.json");
-    let evidence = serde_json::json!({
-        "pid": 1234,
-        "creation_time": 1000,
-        "reason": "watchdog_timeout",
-        "timestamp_secs": std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
-    });
-    std::fs::write(&evidence_path, serde_json::to_string(&evidence).unwrap()).unwrap();
+    let _evidence_path = write_watchdog_evidence(&dir, 1234, 1000, "watchdog_timeout");
+
+    // Seed the registry with a matching Injected entry.
 
     // Seed the registry with a matching Injected entry.
     let registry = Arc::new(crate::process_registry::ProcessRegistry::new());
@@ -6192,17 +6185,7 @@ fn test_reconcile_watchdog_evidence_untracked_emits_and_retains() {
         .join("WatchdogSelfUnload");
     std::fs::create_dir_all(&dir).unwrap();
 
-    let evidence_path = dir.join("9999.evidence.json");
-    let evidence = serde_json::json!({
-        "pid": 9999,
-        "creation_time": 1000,
-        "reason": "watchdog_timeout",
-        "timestamp_secs": std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap()
-            .as_secs(),
-    });
-    std::fs::write(&evidence_path, serde_json::to_string(&evidence).unwrap()).unwrap();
+    let evidence_path = write_watchdog_evidence(&dir, 9999, 1000, "watchdog_timeout");
 
     let registry = Arc::new(crate::process_registry::ProcessRegistry::new());
     let audit_ctx = make_test_emit_context();
@@ -6256,7 +6239,11 @@ fn test_request_unhook_from_injected_sets_flag_and_emits() {
     let audit_ctx = make_test_emit_context();
     tokio::runtime::Runtime::new()
         .unwrap()
-        .block_on(request_unhook_from_injected(&registry, &audit_ctx));
+        .block_on(request_unhook_from_injected(
+            &registry,
+            &audit_ctx,
+            Duration::from_millis(50),
+        ));
 
     assert!(
         UNHOOK_ALL_REQUESTED.load(Ordering::Acquire),
@@ -6293,6 +6280,56 @@ fn test_request_unhook_from_injected_sets_flag_and_emits() {
         .collect();
     assert_eq!(failure_events.len(), 1);
     assert_eq!(failure_events[0].resource_path, "pid=1234");
+
+    reset_unhook_signal();
+}
+
+/// Test that `request_unhook_from_injected` respects a tight shutdown budget
+/// and returns without waiting for the full configured unhook wait time.
+#[cfg(test)]
+#[test]
+#[serial_test::serial]
+fn shutdown_budget_request_unhook_from_injected_respects_deadline() {
+    let _guard = crate::audit_emitter::audit_test_lock();
+    reset_shutdown_signal();
+    reset_unhook_signal();
+    crate::audit_emitter::enable_test_capture();
+
+    let registry = Arc::new(crate::process_registry::ProcessRegistry::new());
+    let key = crate::process_registry::ProcessKey {
+        pid: 5678,
+        creation_time: 2000,
+    };
+    registry.try_claim(key);
+    registry.record_injected(key, "x64".to_string());
+
+    let audit_ctx = make_test_emit_context();
+    let start = Instant::now();
+    tokio::runtime::Runtime::new()
+        .unwrap()
+        .block_on(request_unhook_from_injected(
+            &registry,
+            &audit_ctx,
+            Duration::from_millis(100),
+        ));
+    let elapsed = start.elapsed();
+
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "request_unhook_from_injected should return within the small budget, took {:?}",
+        elapsed
+    );
+    assert!(
+        UNHOOK_ALL_REQUESTED.load(Ordering::Acquire),
+        "UNHOOK_ALL_REQUESTED should be set"
+    );
+
+    // The entry should still be injected because the budget was too short for an ack.
+    let state = registry.get(&key).expect("key should exist");
+    assert!(matches!(
+        *state,
+        crate::process_registry::ProcessState::Injected { .. }
+    ));
 
     reset_unhook_signal();
 }

@@ -12,7 +12,7 @@
 /// `PollControl` frame and by [`ProcessKey`], so matching registry keys to
 /// injected processes is PID-reuse safe.
 #[cfg(windows)]
-pub(crate) fn get_process_creation_time(pid: u32) -> Option<u64> {
+pub fn get_process_creation_time(pid: u32) -> Option<u64> {
     use windows::Win32::Foundation::{CloseHandle, FILETIME};
     use windows::Win32::System::Threading::{
         GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -42,7 +42,7 @@ pub(crate) fn get_process_creation_time(pid: u32) -> Option<u64> {
 
 /// Non-Windows stub: process creation time is unavailable.
 #[cfg(not(windows))]
-pub(crate) fn get_process_creation_time(_pid: u32) -> Option<u64> {
+pub fn get_process_creation_time(_pid: u32) -> Option<u64> {
     None
 }
 
@@ -59,7 +59,10 @@ mod tests {
             creation_time.is_some(),
             "current process creation time should be queryable"
         );
-        assert!(creation_time.unwrap() > 0, "creation time should be non-zero");
+        assert!(
+            creation_time.unwrap() > 0,
+            "creation time should be non-zero"
+        );
     }
 
     /// Invalid PIDs yield `None` rather than panicking.

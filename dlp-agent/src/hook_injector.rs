@@ -66,15 +66,68 @@ pub struct HookInjector {
     dll_path_x64: PathBuf,
     /// Path to the x86 hook DLL (if available).
     dll_path_x86: Option<PathBuf>,
+    /// Phase 58.5: Cached RVA of `StartDlpControlThread` in the x64 DLL.
+    control_thread_rva_x64: Option<usize>,
+    /// Phase 58.5: Cached RVA of `StartDlpControlThread` in the x86 DLL.
+    control_thread_rva_x86: Option<usize>,
 }
 
 impl HookInjector {
     /// Creates a new injector with the given DLL paths.
     pub fn new(dll_path_x64: impl Into<PathBuf>, dll_path_x86: Option<PathBuf>) -> Self {
+        let dll_path_x64 = dll_path_x64.into();
+
+        // Pre-compute the StartDlpControlThread export RVA for each configured
+        // DLL. Loading with DONT_RESOLVE_DLL_REFERENCES avoids executing DllMain
+        // in the agent process (which would patch the agent's IAT).
+        let control_thread_rva_x64 = Self::compute_control_thread_rva(&dll_path_x64);
+        let control_thread_rva_x86 = dll_path_x86
+            .as_ref()
+            .and_then(|p| Self::compute_control_thread_rva(p));
+
         Self {
-            dll_path_x64: dll_path_x64.into(),
+            dll_path_x64,
             dll_path_x86,
+            control_thread_rva_x64,
+            control_thread_rva_x86,
         }
+    }
+
+    /// Phase 58.5: Load `dll_path` locally without executing DllMain and return
+    /// the RVA of the `StartDlpControlThread` export.
+    fn compute_control_thread_rva(dll_path: &std::path::Path) -> Option<usize> {
+        use std::os::windows::ffi::OsStrExt;
+        use windows::Win32::System::LibraryLoader::{
+            GetProcAddress, LoadLibraryExW, DONT_RESOLVE_DLL_REFERENCES,
+        };
+
+        let wide: Vec<u16> = dll_path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        // SAFETY: LoadLibraryExW with DONT_RESOLVE_DLL_REFERENCES maps the DLL
+        // as a data image without calling DllMain or resolving imports, so it
+        // does not patch the agent's IAT. The handle is intentionally leaked
+        // because windows-rs 0.62 does not expose FreeLibrary in this build.
+        let module = unsafe {
+            LoadLibraryExW(
+                windows::core::PCWSTR(wide.as_ptr()),
+                None,
+                DONT_RESOLVE_DLL_REFERENCES,
+            )
+            .ok()?
+        };
+
+        let module_base = module.0 as usize;
+        let proc = unsafe { GetProcAddress(module, windows::core::s!("StartDlpControlThread"))? };
+        let export_addr = proc as usize;
+
+        if export_addr <= module_base {
+            return None;
+        }
+        Some(export_addr - module_base)
     }
 
     /// Injects the appropriate DLL into the process identified by `pid`.
@@ -122,7 +175,12 @@ impl HookInjector {
                 .map_err(|_| HookError::AccessDenied { pid })?
         };
 
-        let result = self.inject_into_process(process, pid, dll_path_str);
+        let result = self.inject_into_process(
+            process,
+            pid,
+            dll_path_str,
+            self.control_thread_rva_for_path(dll_path_str),
+        );
 
         unsafe {
             let _ = CloseHandle(process);
@@ -207,12 +265,24 @@ impl HookInjector {
         }
     }
 
+    /// Returns the cached `StartDlpControlThread` RVA for the selected DLL path.
+    fn control_thread_rva_for_path(&self, dll_path: &str) -> Option<usize> {
+        if self.dll_path_x64.to_str() == Some(dll_path) {
+            self.control_thread_rva_x64
+        } else if self.dll_path_x86.as_ref().and_then(|p| p.to_str()) == Some(dll_path) {
+            self.control_thread_rva_x86
+        } else {
+            None
+        }
+    }
+
     /// Performs the actual remote-thread injection.
     fn inject_into_process(
         &self,
         process: HANDLE,
         pid: u32,
         dll_path: &str,
+        control_thread_rva: Option<usize>,
     ) -> Result<(), HookError> {
         // Encode DLL path as wide string (including null terminator).
         let dll_wide: Vec<u16> = dll_path.encode_utf16().chain(std::iter::once(0)).collect();
@@ -317,17 +387,175 @@ impl HookInjector {
             })?;
         }
 
+        // The remote thread handle can be closed; the DLL remains loaded.
         unsafe {
             let _ = CloseHandle(thread);
-            let _ = VirtualFreeEx(process, remote_mem, 0, MEM_RELEASE);
         }
 
         if exit_code == 0 {
+            unsafe {
+                let _ = VirtualFreeEx(process, remote_mem, 0, MEM_RELEASE);
+            }
             return Err(HookError::InjectionFailed { pid, exit_code });
         }
 
         debug!(pid, exit_code, "remote LoadLibraryW completed");
+
+        // Phase 58.5: On 64-bit Windows the real module base may have non-zero
+        // upper 32 bits, but GetExitCodeThread only returns a DWORD. Enumerate
+        // the remote process modules to obtain the full HMODULE value.
+        let remote_module_base = match Self::remote_module_base(process, "dlp_hook_dll.dll") {
+            Some(base) => base,
+            None => {
+                warn!(
+                    pid,
+                    "control thread start: could not resolve remote module base"
+                );
+                // Free the remote DLL path memory; LoadLibraryW already copied it.
+                unsafe {
+                    let _ = VirtualFreeEx(process, remote_mem, 0, MEM_RELEASE);
+                }
+                return Ok(());
+            }
+        };
+
+        // Free the remote DLL path memory; LoadLibraryW already copied it.
+        unsafe {
+            let _ = VirtualFreeEx(process, remote_mem, 0, MEM_RELEASE);
+        }
+
+        // Phase 58.5: Start the hook DLL control-poll thread immediately so
+        // idle injected processes receive UnhookCommand during agent shutdown.
+        if let Some(rva) = control_thread_rva {
+            Self::start_remote_control_thread(process, pid, remote_module_base, rva);
+        } else {
+            warn!(
+                pid,
+                "control thread start: export RVA not available; lazy start will be used"
+            );
+        }
+
         Ok(())
+    }
+
+    /// Phase 58.5: Create a second remote thread that calls the hook DLL's
+    /// `StartDlpControlThread` export.
+    ///
+    /// This is best-effort: if the remote thread fails or returns non-zero, a
+    /// warning is logged but the overall injection is considered successful
+    /// because the DLL is already loaded and will lazily start the control
+    /// thread on the first hooked API call.
+    fn start_remote_control_thread(
+        process: HANDLE,
+        pid: u32,
+        remote_module_base: usize,
+        export_rva: usize,
+    ) {
+        let remote_start_addr = remote_module_base.saturating_add(export_rva);
+        if remote_start_addr == 0 {
+            warn!(pid, "control thread start: computed remote address is null");
+            return;
+        }
+
+        // Create remote thread at StartDlpControlThread RVA.
+        let thread = unsafe {
+            match CreateRemoteThread(
+                process,
+                None,
+                0,
+                Some(std::mem::transmute::<
+                    usize,
+                    unsafe extern "system" fn(*mut core::ffi::c_void) -> u32,
+                >(remote_start_addr)),
+                None,
+                0,
+                None,
+            ) {
+                Ok(t) => t,
+                Err(e) => {
+                    warn!(pid, error = %e, "control thread start: CreateRemoteThread failed");
+                    return;
+                }
+            }
+        };
+
+        let wait_result = unsafe { WaitForSingleObject(thread, 10_000) };
+        let mut control_exit_code: u32 = 0;
+        let exit_code_ok = unsafe { GetExitCodeThread(thread, &mut control_exit_code).is_ok() };
+
+        unsafe {
+            let _ = CloseHandle(thread);
+        }
+
+        if wait_result != WAIT_OBJECT_0 {
+            warn!(
+                pid,
+                "control thread start: remote thread did not complete within 10 seconds"
+            );
+            return;
+        }
+
+        if !exit_code_ok {
+            warn!(
+                pid,
+                "control thread start: could not read remote thread exit code"
+            );
+            return;
+        }
+
+        if control_exit_code != 0 {
+            warn!(
+                pid,
+                exit_code = control_exit_code,
+                "control thread start: remote export returned failure"
+            );
+            return;
+        }
+
+        debug!(
+            pid,
+            "control thread start: StartDlpControlThread completed successfully"
+        );
+    }
+
+    /// Returns the base address of `module_name` in `process`, or `None` if not
+    /// found. This is needed for 64-bit injection because `GetExitCodeThread`
+    /// only returns a 32-bit value, which may truncate the real `HMODULE`.
+    fn remote_module_base(process: HANDLE, module_name: &str) -> Option<usize> {
+        let mut needed: u32 = 0;
+        let mut modules: [HMODULE; 1024] = [HMODULE(std::ptr::null_mut()); 1024];
+
+        let enum_result = unsafe {
+            EnumProcessModules(
+                process,
+                modules.as_mut_ptr(),
+                (modules.len() * std::mem::size_of::<HMODULE>()) as u32,
+                &mut needed,
+            )
+        };
+
+        if enum_result.is_err() {
+            return None;
+        }
+
+        let count = (needed as usize) / std::mem::size_of::<HMODULE>();
+        for &h in &modules[..count] {
+            if h.0.is_null() {
+                continue;
+            }
+            let mut buf = [0u16; 260];
+            let ok = unsafe { GetModuleBaseNameW(process, Some(h), &mut buf) };
+            if ok == 0 {
+                continue;
+            }
+            let len = buf.iter().position(|&c| c == 0).unwrap_or(buf.len());
+            let name = String::from_utf16_lossy(&buf[..len]);
+            if name.to_lowercase().contains(&module_name.to_lowercase()) {
+                return Some(h.0 as usize);
+            }
+        }
+
+        None
     }
 
     /// Returns `true` if the given module name is loaded in the target process.
@@ -416,6 +644,33 @@ mod tests {
             .join("target")
             .join(profile)
             .join("dlp_hook_dll.dll")
+    }
+
+    #[test]
+    fn test_compute_control_thread_rva_for_built_dll() {
+        let dll_path = hook_dll_path();
+        if !dll_path.exists() {
+            eprintln!(
+                "Skipping RVA test: DLL not found at {}. Run `cargo build -p dlp-hook-dll` first.",
+                dll_path.display()
+            );
+            return;
+        }
+
+        let rva = HookInjector::compute_control_thread_rva(&dll_path);
+        assert!(
+            rva.is_some(),
+            "StartDlpControlThread export should be resolvable"
+        );
+        assert!(rva.unwrap() > 0, "export RVA should be positive");
+    }
+
+    #[test]
+    fn test_compute_control_thread_rva_missing_dll() {
+        let rva = HookInjector::compute_control_thread_rva(std::path::Path::new(
+            "C:\\NonExistent\\hook.dll",
+        ));
+        assert!(rva.is_none());
     }
 
     #[test]

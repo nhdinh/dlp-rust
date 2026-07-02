@@ -73,6 +73,10 @@ pub type HealthHandler = Arc<dyn Fn(PullHealthRequest) -> HealthResponse + Send 
 pub type OverrideHandler =
     Arc<dyn Fn(dlp_common::hook_ipc::OverrideRequest) + Send + Sync + 'static>;
 
+/// Phase 58.5: Handler type called whenever a `PollControl` frame is received.
+pub type PollControlHandler =
+    Arc<dyn Fn(&dlp_common::hook_ipc::PollControl) + Send + Sync + 'static>;
+
 /// Classification cache accessor for the hook IPC handler.
 ///
 /// This trait abstracts over `ClassificationCache` so that tests can inject
@@ -109,6 +113,8 @@ pub struct HookIpcServer {
     registry: Option<Arc<crate::process_registry::ProcessRegistry>>,
     /// Phase 58.5: Audit emit context for unhook failure events.
     audit_ctx: Option<crate::audit_emitter::EmitContext>,
+    /// Phase 58.5: Optional observer invoked for every received `PollControl` frame.
+    poll_control_handler: Option<PollControlHandler>,
 }
 
 impl HookIpcServer {
@@ -128,6 +134,7 @@ impl HookIpcServer {
             health_aggregator: None,
             registry: None,
             audit_ctx: None,
+            poll_control_handler: None,
         }
     }
 
@@ -162,6 +169,7 @@ impl HookIpcServer {
             health_aggregator: None,
             registry: None,
             audit_ctx: None,
+            poll_control_handler: None,
         }
     }
 
@@ -187,6 +195,7 @@ impl HookIpcServer {
             health_aggregator: None,
             registry: None,
             audit_ctx: None,
+            poll_control_handler: None,
         }
     }
 
@@ -213,6 +222,7 @@ impl HookIpcServer {
             health_aggregator: None,
             registry: None,
             audit_ctx: None,
+            poll_control_handler: None,
         }
     }
 
@@ -265,6 +275,12 @@ impl HookIpcServer {
         self
     }
 
+    /// Phase 58.5: Sets an observer invoked for every received `PollControl` frame.
+    pub fn with_poll_control_handler(mut self, handler: PollControlHandler) -> Self {
+        self.poll_control_handler = Some(handler);
+        self
+    }
+
     /// Runs the blocking accept loop on the current thread.
     ///
     /// Callers should spawn this in a dedicated `std::thread`.  Connections
@@ -292,6 +308,7 @@ impl HookIpcServer {
             self.health_aggregator,
             self.registry,
             self.audit_ctx.as_ref(),
+            self.poll_control_handler,
         )
     }
 }
@@ -410,6 +427,7 @@ fn accept_loop(
     health_aggregator: Option<Arc<crate::health_aggregator::HealthAggregator>>,
     registry: Option<Arc<crate::process_registry::ProcessRegistry>>,
     audit_ctx: Option<&crate::audit_emitter::EmitContext>,
+    poll_control_handler: Option<PollControlHandler>,
 ) -> Result<()> {
     let mut pipe = first_pipe;
     loop {
@@ -448,6 +466,7 @@ fn accept_loop(
             health_aggregator.as_ref(),
             registry.as_ref(),
             audit_ctx,
+            poll_control_handler.as_ref(),
         ) {
             warn!(error = %e, "Hook IPC: connection handler error");
         }
@@ -470,6 +489,7 @@ fn handle_connection(
     health_aggregator: Option<&Arc<crate::health_aggregator::HealthAggregator>>,
     registry: Option<&Arc<crate::process_registry::ProcessRegistry>>,
     audit_ctx: Option<&crate::audit_emitter::EmitContext>,
+    poll_control_handler: Option<&PollControlHandler>,
 ) -> Result<()> {
     loop {
         let frame = match read_frame(pipe) {
@@ -623,6 +643,9 @@ fn handle_connection(
                         creation_time = poll.creation_time,
                         "Hook IPC: poll control received"
                     );
+                    if let Some(pch) = poll_control_handler {
+                        pch(poll);
+                    }
                     let command = if crate::service::UNHOOK_ALL_REQUESTED
                         .load(std::sync::atomic::Ordering::Acquire)
                     {

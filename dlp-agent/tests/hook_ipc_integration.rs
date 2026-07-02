@@ -11,6 +11,7 @@
 //! This is distinct from `volume_class_integration.rs`, which focuses on
 //! volume-class policy enforcement via `start_mock_server` with raw handlers.
 
+use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
@@ -56,6 +57,43 @@ fn shutdown_and_join(handle: std::thread::JoinHandle<()>, pipe_name: &str) {
     dlp_agent::service::reset_shutdown_signal();
 }
 
+/// Default mock hook handler used by most integration tests.
+fn default_mock_handler() -> dlp_agent::hook_ipc::HookHandler {
+    Arc::new(move |_req: HookRequest| HookResponse {
+        decision: Decision::DENY,
+        reason: "default mock".to_string(),
+        cache_hint: None,
+        cache_version: 0,
+        approval_override: None,
+    })
+}
+
+/// Spawns a `HookIpcServer` on a named thread and returns the join handle.
+fn spawn_test_server(server: dlp_agent::hook_ipc::HookIpcServer) -> std::thread::JoinHandle<()> {
+    std::thread::Builder::new()
+        .name("hook-ipc-server".to_string())
+        .spawn(move || {
+            if let Err(e) = server.run() {
+                eprintln!("Hook IPC server exited with error: {}", e);
+            }
+        })
+        .expect("server thread should spawn")
+}
+
+/// Starts a test server, waits for its pipe, and connects a client.
+fn start_test_server(
+    pipe_name: &str,
+    server: dlp_agent::hook_ipc::HookIpcServer,
+) -> (
+    std::thread::JoinHandle<()>,
+    windows::Win32::Foundation::HANDLE,
+) {
+    let handle = spawn_test_server(server);
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+    (handle, client)
+}
+
 // ---------------------------------------------------------------------------
 // Test: consolidated server routes all four frame types
 // ---------------------------------------------------------------------------
@@ -84,14 +122,7 @@ fn test_consolidated_server_routes_request_frame() {
 
     let server = HookIpcServer::new(pipe_name, handler);
 
-    let handle = std::thread::Builder::new()
-        .name("hook-ipc-server".to_string())
-        .spawn(move || {
-            if let Err(e) = server.run() {
-                eprintln!("Hook IPC server exited with error: {}", e);
-            }
-        })
-        .expect("server thread should spawn");
+    let handle = spawn_test_server(server);
 
     assert_eq!(handle.thread().name(), Some("hook-ipc-server"));
 
@@ -140,13 +171,7 @@ fn test_consolidated_server_routes_request_frame() {
 fn test_consolidated_server_routes_diagnostics_frame_with_snapshots() {
     let pipe_name = r"\\.\pipe\DlpHookPipeTestConsolidatedDiagSnapshots";
 
-    let handler = Arc::new(move |_req: HookRequest| HookResponse {
-        decision: Decision::DENY,
-        reason: "default mock".to_string(),
-        cache_hint: None,
-        cache_version: 0,
-        approval_override: None,
-    });
+    let handler = default_mock_handler();
 
     let diag_handler =
         Arc::new(
@@ -169,18 +194,7 @@ fn test_consolidated_server_routes_diagnostics_frame_with_snapshots() {
 
     let server = HookIpcServer::new(pipe_name, handler).with_diagnostics_handler(diag_handler);
 
-    let handle = std::thread::Builder::new()
-        .name("hook-ipc-server".to_string())
-        .spawn(move || {
-            if let Err(e) = server.run() {
-                eprintln!("Hook IPC server exited with error: {}", e);
-            }
-        })
-        .expect("server thread should spawn");
-
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+    let (handle, client) = start_test_server(pipe_name, server);
 
     let envelope = IpcEnvelope::V1(IpcMessageV1 {
         payload: IpcPayloadV1::PullDiagnostics(PullDiagnosticsRequest { max_entries: 10 }),
@@ -218,13 +232,7 @@ fn test_consolidated_server_routes_diagnostics_frame_with_snapshots() {
 fn test_consolidated_server_routes_health_frame() {
     let pipe_name = r"\\.\pipe\DlpHookPipeTestConsolidatedHealth";
 
-    let handler = Arc::new(move |_req: HookRequest| HookResponse {
-        decision: Decision::DENY,
-        reason: "default mock".to_string(),
-        cache_hint: None,
-        cache_version: 0,
-        approval_override: None,
-    });
+    let handler = default_mock_handler();
 
     let health_handler =
         Arc::new(
@@ -242,18 +250,7 @@ fn test_consolidated_server_routes_health_frame() {
 
     let server = HookIpcServer::new(pipe_name, handler).with_health_handler(health_handler);
 
-    let handle = std::thread::Builder::new()
-        .name("hook-ipc-server".to_string())
-        .spawn(move || {
-            if let Err(e) = server.run() {
-                eprintln!("Hook IPC server exited with error: {}", e);
-            }
-        })
-        .expect("server thread should spawn");
-
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+    let (handle, client) = start_test_server(pipe_name, server);
 
     let envelope = IpcEnvelope::V1(IpcMessageV1 {
         payload: IpcPayloadV1::PullHealth(PullHealthRequest {}),
@@ -283,13 +280,7 @@ fn test_consolidated_server_routes_health_frame() {
 fn test_consolidated_server_routes_override_frame() {
     let pipe_name = r"\\.\pipe\DlpHookPipeTestConsolidatedOverride";
 
-    let handler = Arc::new(move |_req: HookRequest| HookResponse {
-        decision: Decision::DENY,
-        reason: "default mock".to_string(),
-        cache_hint: None,
-        cache_version: 0,
-        approval_override: None,
-    });
+    let handler = default_mock_handler();
 
     let override_count = Arc::new(AtomicUsize::new(0));
     let override_count_clone = Arc::clone(&override_count);
@@ -303,18 +294,7 @@ fn test_consolidated_server_routes_override_frame() {
 
     let server = HookIpcServer::new(pipe_name, handler).with_override_handler(override_handler);
 
-    let handle = std::thread::Builder::new()
-        .name("hook-ipc-server".to_string())
-        .spawn(move || {
-            if let Err(e) = server.run() {
-                eprintln!("Hook IPC server exited with error: {}", e);
-            }
-        })
-        .expect("server thread should spawn");
-
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+    let (handle, client) = start_test_server(pipe_name, server);
 
     let envelope = IpcEnvelope::V1(IpcMessageV1 {
         payload: IpcPayloadV1::RequestOverride(OverrideRequest {
@@ -376,15 +356,9 @@ fn test_consolidated_server_volume_class_allow_deny() {
 
     let server = HookIpcServer::new(pipe_name, handler);
 
-    let handle = std::thread::Builder::new()
-        .name("hook-ipc-server".to_string())
-        .spawn(move || {
-            if let Err(e) = server.run() {
-                eprintln!("Hook IPC server exited with error: {}", e);
-            }
-        })
-        .expect("server thread should spawn");
+    let handle = spawn_test_server(server);
 
+    // Give the server time to create the pipe.
     std::thread::sleep(std::time::Duration::from_millis(100));
 
     // 1. COPY should ALLOW.
@@ -461,13 +435,7 @@ fn test_consolidated_server_volume_class_allow_deny() {
 fn test_consolidated_server_ingests_health_response() {
     let pipe_name = r"\\.\pipe\DlpHookPipeTestHealthResponseIngest";
 
-    let handler = Arc::new(move |_req: HookRequest| HookResponse {
-        decision: Decision::DENY,
-        reason: "default mock".to_string(),
-        cache_hint: None,
-        cache_version: 0,
-        approval_override: None,
-    });
+    let handler = default_mock_handler();
 
     let health_aggregator = Arc::new(dlp_agent::health_aggregator::HealthAggregator::new());
     let health_aggregator_clone = Arc::clone(&health_aggregator);
@@ -475,18 +443,7 @@ fn test_consolidated_server_ingests_health_response() {
     let server = dlp_agent::hook_ipc::HookIpcServer::new(pipe_name, handler)
         .with_health_aggregator(health_aggregator_clone);
 
-    let handle = std::thread::Builder::new()
-        .name("hook-ipc-server".to_string())
-        .spawn(move || {
-            if let Err(e) = server.run() {
-                eprintln!("Hook IPC server exited with error: {}", e);
-            }
-        })
-        .expect("server thread should spawn");
-
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+    let (handle, client) = start_test_server(pipe_name, server);
 
     // Send a one-way HealthResponse frame (as the hook DLL would).
     let envelope = IpcEnvelope::V1(IpcMessageV1 {
@@ -541,29 +498,12 @@ fn test_consolidated_server_ingests_health_response() {
 fn test_consolidated_server_health_response_without_aggregator() {
     let pipe_name = r"\\.\pipe\DlpHookPipeTestHealthResponseNoAgg";
 
-    let handler = Arc::new(move |_req: HookRequest| HookResponse {
-        decision: Decision::DENY,
-        reason: "default mock".to_string(),
-        cache_hint: None,
-        cache_version: 0,
-        approval_override: None,
-    });
+    let handler = default_mock_handler();
 
     // No health aggregator configured.
     let server = dlp_agent::hook_ipc::HookIpcServer::new(pipe_name, handler);
 
-    let handle = std::thread::Builder::new()
-        .name("hook-ipc-server".to_string())
-        .spawn(move || {
-            if let Err(e) = server.run() {
-                eprintln!("Hook IPC server exited with error: {}", e);
-            }
-        })
-        .expect("server thread should spawn");
-
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+    let (handle, client) = start_test_server(pipe_name, server);
 
     let envelope = IpcEnvelope::V1(IpcMessageV1 {
         payload: IpcPayloadV1::HealthResponse(dlp_common::hook_ipc::HealthResponse {
@@ -605,13 +545,7 @@ fn test_consolidated_server_health_response_without_aggregator() {
 fn test_health_response_builds_aggregator_history() {
     let pipe_name = r"\\.\pipe\DlpHookPipeTestHealthResponseHistory";
 
-    let handler = Arc::new(move |_req: HookRequest| HookResponse {
-        decision: Decision::DENY,
-        reason: "default mock".to_string(),
-        cache_hint: None,
-        cache_version: 0,
-        approval_override: None,
-    });
+    let handler = default_mock_handler();
 
     let health_aggregator = Arc::new(dlp_agent::health_aggregator::HealthAggregator::new());
     let health_aggregator_clone = Arc::clone(&health_aggregator);
@@ -619,18 +553,7 @@ fn test_health_response_builds_aggregator_history() {
     let server = dlp_agent::hook_ipc::HookIpcServer::new(pipe_name, handler)
         .with_health_aggregator(health_aggregator_clone);
 
-    let handle = std::thread::Builder::new()
-        .name("hook-ipc-server".to_string())
-        .spawn(move || {
-            if let Err(e) = server.run() {
-                eprintln!("Hook IPC server exited with error: {}", e);
-            }
-        })
-        .expect("server thread should spawn");
-
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+    let (handle, client) = start_test_server(pipe_name, server);
 
     // Send 5 health snapshots with different hit rates to trigger status transitions.
     for i in 0..5 {
@@ -684,13 +607,7 @@ fn test_health_response_builds_aggregator_history() {
 fn test_pull_diagnostics_after_deny() {
     let pipe_name = r"\\.\pipe\DlpHookPipeTestPullDiagnosticsAfterDeny";
 
-    let handler = Arc::new(move |_req: HookRequest| HookResponse {
-        decision: Decision::DENY,
-        reason: "default mock".to_string(),
-        cache_hint: None,
-        cache_version: 0,
-        approval_override: None,
-    });
+    let handler = default_mock_handler();
 
     let diag_handler =
         Arc::new(
@@ -713,18 +630,7 @@ fn test_pull_diagnostics_after_deny() {
 
     let server = HookIpcServer::new(pipe_name, handler).with_diagnostics_handler(diag_handler);
 
-    let handle = std::thread::Builder::new()
-        .name("hook-ipc-server".to_string())
-        .spawn(move || {
-            if let Err(e) = server.run() {
-                eprintln!("Hook IPC server exited with error: {}", e);
-            }
-        })
-        .expect("server thread should spawn");
-
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+    let (handle, client) = start_test_server(pipe_name, server);
 
     let envelope = IpcEnvelope::V1(IpcMessageV1 {
         payload: IpcPayloadV1::PullDiagnostics(PullDiagnosticsRequest { max_entries: 10 }),
@@ -765,13 +671,7 @@ fn test_pull_diagnostics_after_deny() {
 fn test_pull_health_returns_snapshot() {
     let pipe_name = r"\\.\pipe\DlpHookPipeTestPullHealthReturnsSnapshot";
 
-    let handler = Arc::new(move |_req: HookRequest| HookResponse {
-        decision: Decision::DENY,
-        reason: "default mock".to_string(),
-        cache_hint: None,
-        cache_version: 0,
-        approval_override: None,
-    });
+    let handler = default_mock_handler();
 
     let health_handler =
         Arc::new(
@@ -789,18 +689,7 @@ fn test_pull_health_returns_snapshot() {
 
     let server = HookIpcServer::new(pipe_name, handler).with_health_handler(health_handler);
 
-    let handle = std::thread::Builder::new()
-        .name("hook-ipc-server".to_string())
-        .spawn(move || {
-            if let Err(e) = server.run() {
-                eprintln!("Hook IPC server exited with error: {}", e);
-            }
-        })
-        .expect("server thread should spawn");
-
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+    let (handle, client) = start_test_server(pipe_name, server);
 
     let envelope = IpcEnvelope::V1(IpcMessageV1 {
         payload: IpcPayloadV1::PullHealth(PullHealthRequest {}),
@@ -838,13 +727,7 @@ fn test_pull_health_returns_snapshot() {
 fn test_health_response_ingestion() {
     let pipe_name = r"\\.\pipe\DlpHookPipeTestHealthResponseIngestion";
 
-    let handler = Arc::new(move |_req: HookRequest| HookResponse {
-        decision: Decision::DENY,
-        reason: "default mock".to_string(),
-        cache_hint: None,
-        cache_version: 0,
-        approval_override: None,
-    });
+    let handler = default_mock_handler();
 
     let health_aggregator = Arc::new(dlp_agent::health_aggregator::HealthAggregator::new());
     let health_aggregator_clone = Arc::clone(&health_aggregator);
@@ -852,18 +735,7 @@ fn test_health_response_ingestion() {
     let server = dlp_agent::hook_ipc::HookIpcServer::new(pipe_name, handler)
         .with_health_aggregator(health_aggregator_clone);
 
-    let handle = std::thread::Builder::new()
-        .name("hook-ipc-server".to_string())
-        .spawn(move || {
-            if let Err(e) = server.run() {
-                eprintln!("Hook IPC server exited with error: {}", e);
-            }
-        })
-        .expect("server thread should spawn");
-
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+    let (handle, client) = start_test_server(pipe_name, server);
 
     // Send a one-way HealthResponse frame (as the hook DLL would).
     let envelope = IpcEnvelope::V1(IpcMessageV1 {
@@ -907,6 +779,145 @@ fn test_health_response_ingestion() {
     shutdown_and_join(handle, pipe_name);
 }
 
+/// Integration test: an injected idle child process (that never calls a hooked
+/// API) still connects to the agent pipe and sends a `PollControl` frame with
+/// the real process creation time.
+///
+/// This validates the Phase 58.5 fix: the agent records the real creation time
+/// and the hook DLL starts its control-poll thread immediately after injection.
+#[test]
+#[serial_test::serial]
+fn idle_injected_process_sends_poll_control_with_creation_time() {
+    use std::sync::Mutex;
+
+    dlp_agent::service::reset_unhook_signal();
+
+    let dll_path = {
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_root = manifest_dir.parent().expect("workspace root");
+        let profile = if cfg!(debug_assertions) {
+            "debug"
+        } else {
+            "release"
+        };
+        workspace_root
+            .join("target")
+            .join(profile)
+            .join("dlp_hook_dll.dll")
+    };
+
+    if !dll_path.exists() {
+        eprintln!(
+            "Skipping idle-injection test: DLL not found at {}. Run `cargo build -p dlp-hook-dll` first.",
+            dll_path.display()
+        );
+        return;
+    }
+
+    let pipe_name = dlp_agent::hook_ipc::DEFAULT_PIPE_NAME;
+
+    // Capture the first PollControl frame received from the injected process.
+    let captured_poll: Arc<Mutex<Option<PollControl>>> = Arc::new(Mutex::new(None));
+    let captured_poll_for_handler = Arc::clone(&captured_poll);
+    let poll_handler: dlp_agent::hook_ipc::PollControlHandler =
+        Arc::new(move |poll: &PollControl| {
+            let mut guard = captured_poll_for_handler.lock().unwrap();
+            if guard.is_none() {
+                *guard = Some(poll.clone());
+            }
+        });
+
+    let handler = Arc::new(move |_req: HookRequest| HookResponse {
+        decision: Decision::ALLOW,
+        reason: "ok".to_string(),
+        cache_hint: None,
+        cache_version: 0,
+        approval_override: None,
+    });
+
+    let server = dlp_agent::hook_ipc::HookIpcServer::new(pipe_name, handler)
+        .with_poll_control_handler(poll_handler);
+
+    let handle = std::thread::Builder::new()
+        .name("hook-ipc-server".to_string())
+        .spawn(move || {
+            if let Err(e) = server.run() {
+                eprintln!("Hook IPC server exited with error: {}", e);
+            }
+        })
+        .expect("server thread should spawn");
+
+    // Give the server time to create the pipe.
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    // Spawn an idle child process that will not call any hooked API.
+    // Use ping instead of timeout because MSYS/Cygwin timeout.exe may shadow
+    // the cmd built-in and reject the bare "30" argument.
+    let mut child = Command::new("cmd.exe")
+        .args(["/c", "ping", "-n", "31", "127.0.0.1"])
+        .stdout(Stdio::null())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .expect("spawn test process");
+
+    let child_pid = child.id();
+    let creation_time = dlp_agent::process_utils::get_process_creation_time(child_pid)
+        .expect("child creation time should be queryable");
+
+    eprintln!(
+        "Spawned idle test process PID {} creation_time {}",
+        child_pid, creation_time
+    );
+
+    // Inject the hook DLL. This should also start the control-poll thread.
+    let injector = dlp_agent::hook_injector::HookInjector::new(&dll_path, None);
+    let inject_result = injector.inject(child_pid);
+
+    // Wait for the first PollControl frame, with a generous timeout.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    let mut received = None;
+    while std::time::Instant::now() < deadline {
+        if let Some(poll) = captured_poll.lock().unwrap().clone() {
+            received = Some(poll);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+
+    // Clean up child regardless of injection result.
+    let _ = child.kill();
+    let _ = child.wait();
+
+    // Validate injection succeeded (or was skipped for privilege reasons).
+    match inject_result {
+        Ok(()) => {}
+        Err(dlp_agent::hook_injector::HookError::AccessDenied { .. })
+        | Err(dlp_agent::hook_injector::HookError::RemoteAllocFailed { .. })
+        | Err(dlp_agent::hook_injector::HookError::RemoteWriteFailed { .. })
+        | Err(dlp_agent::hook_injector::HookError::RemoteThreadFailed { .. }) => {
+            eprintln!(
+                "Skipping idle-injection test: insufficient privileges or security restriction"
+            );
+            shutdown_and_join(handle, pipe_name);
+            return;
+        }
+        Err(other) => panic!("injection should succeed: {:?}", other),
+    }
+
+    let poll = received.expect("agent should receive PollControl from idle injected process");
+    assert_eq!(
+        poll.pid, child_pid,
+        "PollControl pid should match child pid"
+    );
+    assert_eq!(
+        poll.creation_time, creation_time,
+        "PollControl creation_time should match real process creation time"
+    );
+
+    dlp_agent::service::reset_unhook_signal();
+    shutdown_and_join(handle, pipe_name);
+}
+
 /// Test that a blocked write audit event contains `content_sha256` via mocked
 /// `HashEvidence` frame ingestion.
 ///
@@ -919,13 +930,7 @@ fn test_health_response_ingestion() {
 fn test_blocked_write_audit_contains_hash() {
     let pipe_name = r"\\.\pipe\DlpHookPipeTestBlockedWriteAuditContainsHash";
 
-    let handler = Arc::new(move |_req: HookRequest| HookResponse {
-        decision: Decision::DENY,
-        reason: "default mock".to_string(),
-        cache_hint: None,
-        cache_version: 0,
-        approval_override: None,
-    });
+    let handler = default_mock_handler();
 
     let hash_cache = dlp_agent::hash_cache::create_hash_cache();
     let hash_cache_clone = Arc::clone(&hash_cache);
@@ -933,18 +938,7 @@ fn test_blocked_write_audit_contains_hash() {
     let server = dlp_agent::hook_ipc::HookIpcServer::new(pipe_name, handler)
         .with_hash_cache(hash_cache_clone);
 
-    let handle = std::thread::Builder::new()
-        .name("hook-ipc-server".to_string())
-        .spawn(move || {
-            if let Err(e) = server.run() {
-                eprintln!("Hook IPC server exited with error: {}", e);
-            }
-        })
-        .expect("server thread should spawn");
-
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+    let (handle, client) = start_test_server(pipe_name, server);
 
     // Send a HashEvidence frame with a known content_sha256.
     let known_hash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855".to_string();
@@ -1079,18 +1073,7 @@ fn unhook_polling_protocol_roundtrip() {
     });
 
     let server = HookIpcServer::new(pipe_name, handler).with_registry(registry_for_server);
-    let handle = std::thread::Builder::new()
-        .name("hook-ipc-server".to_string())
-        .spawn(move || {
-            if let Err(e) = server.run() {
-                eprintln!("Hook IPC server exited with error: {}", e);
-            }
-        })
-        .expect("server thread should spawn");
-
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+    let (handle, client) = start_test_server(pipe_name, server);
 
     // Step 1: no unhook requested -> no command.
     let poll = PollControl {
@@ -1249,18 +1232,7 @@ fn unhook_polling_protocol_unknown_caller() {
     });
 
     let server = HookIpcServer::new(pipe_name, handler).with_registry(registry_for_server);
-    let handle = std::thread::Builder::new()
-        .name("hook-ipc-server".to_string())
-        .spawn(move || {
-            if let Err(e) = server.run() {
-                eprintln!("Hook IPC server exited with error: {}", e);
-            }
-        })
-        .expect("server thread should spawn");
-
-    std::thread::sleep(std::time::Duration::from_millis(100));
-
-    let client = dlp_agent::hook_ipc::connect_client(pipe_name).expect("client connect");
+    let (handle, client) = start_test_server(pipe_name, server);
 
     dlp_agent::service::UNHOOK_ALL_REQUESTED.store(true, Ordering::Release);
     // Same PID but different creation_time -> not in registry as Injected.
