@@ -714,7 +714,7 @@ fn handle_connection(
                         } else if let Some(ctx) = audit_ctx {
                             crate::audit_emitter::emit_unhook_audit(
                                 ctx,
-                                dlp_common::EventType::UnhookFailure,
+                                crate::audit_emitter::UnhookEventType::UnhookFailure,
                                 ack.pid,
                                 false,
                                 sanitize_unhook_error(ack.error.clone())

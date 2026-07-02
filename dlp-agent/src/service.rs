@@ -220,7 +220,7 @@ async fn request_unhook_from_injected(
     crate::password_stop::debug_log("run_loop: requesting unhook from injected processes");
     crate::audit_emitter::emit_unhook_audit(
         audit_ctx,
-        dlp_common::EventType::AgentShutdownUnhook,
+        crate::audit_emitter::UnhookEventType::AgentShutdownUnhook,
         std::process::id(),
         true,
         Some(format!(
@@ -239,7 +239,7 @@ async fn request_unhook_from_injected(
     for (key, _) in registry.iter_injected() {
         crate::audit_emitter::emit_unhook_audit(
             audit_ctx,
-            dlp_common::EventType::UnhookFailure,
+            crate::audit_emitter::UnhookEventType::UnhookFailure,
             key.pid,
             false,
             Some(format!("creation_time={}", key.creation_time)),

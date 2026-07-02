@@ -536,6 +536,17 @@ pub fn ensure_app_identity_fields(event: &mut AuditEvent) {
     }
 }
 
+/// Bounded set of event types that may be emitted through [`emit_unhook_audit`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UnhookEventType {
+    /// Agent is shutting down and requested unhook from all injected processes.
+    AgentShutdownUnhook,
+    /// An injected process reported that unhooking itself failed.
+    UnhookFailure,
+    /// The hook DLL watchdog self-unloaded after the agent became unreachable.
+    WatchdogSelfUnload,
+}
+
 /// Emit an unhook-related audit event.
 ///
 /// Constructs an `AuditEvent` with `resource_path` formatted as `pid={pid}`
@@ -546,8 +557,8 @@ pub fn ensure_app_identity_fields(event: &mut AuditEvent) {
 /// # Arguments
 ///
 /// * `ctx` — Shared emit context (agent_id, session_id, user identity).
-/// * `event_type` — Must be one of `AgentShutdownUnhook`, `UnhookFailure`, or
-///   `WatchdogSelfUnload`.
+/// * `event_type` — One of [`UnhookEventType::AgentShutdownUnhook`],
+///   [`UnhookEventType::UnhookFailure`], or [`UnhookEventType::WatchdogSelfUnload`].
 /// * `pid` — Process ID to record in `resource_path` when `resource_path` is
 ///   `None`.
 /// * `success` — Whether the unhook operation succeeded; drives `decision`.
@@ -555,13 +566,19 @@ pub fn ensure_app_identity_fields(event: &mut AuditEvent) {
 /// * `resource_path` — Optional custom resource path; defaults to `pid={pid}`.
 pub fn emit_unhook_audit(
     ctx: &EmitContext,
-    event_type: dlp_common::EventType,
+    event_type: UnhookEventType,
     pid: u32,
     success: bool,
     error: Option<String>,
     resource_path: Option<String>,
 ) {
-    use dlp_common::{Action, AuditEvent, Classification, Decision};
+    use dlp_common::{Action, AuditEvent, Classification, Decision, EventType};
+
+    let event_type = match event_type {
+        UnhookEventType::AgentShutdownUnhook => EventType::AgentShutdownUnhook,
+        UnhookEventType::UnhookFailure => EventType::UnhookFailure,
+        UnhookEventType::WatchdogSelfUnload => EventType::WatchdogSelfUnload,
+    };
 
     let decision = if success {
         Decision::ALLOW
@@ -1326,7 +1343,7 @@ mod tests {
         let ctx = make_test_emit_context();
         emit_unhook_audit(
             &ctx,
-            dlp_common::EventType::AgentShutdownUnhook,
+            UnhookEventType::AgentShutdownUnhook,
             std::process::id(),
             true,
             Some("injected_count=5".to_string()),
@@ -1351,7 +1368,7 @@ mod tests {
         let ctx = make_test_emit_context();
         emit_unhook_audit(
             &ctx,
-            dlp_common::EventType::UnhookFailure,
+            UnhookEventType::UnhookFailure,
             1234,
             false,
             Some("creation_time=9876".to_string()),
@@ -1376,7 +1393,7 @@ mod tests {
         let ctx = make_test_emit_context();
         emit_unhook_audit(
             &ctx,
-            dlp_common::EventType::UnhookFailure,
+            UnhookEventType::UnhookFailure,
             5678,
             false,
             Some("unload failed".to_string()),
