@@ -2419,7 +2419,13 @@ pub fn reconcile_watchdog_evidence_in_dir(
 
         let pid = Some(evidence.pid);
         let creation_time = Some(evidence.creation_time);
-        let reason = evidence.reason.as_str();
+        let reason = match evidence.reason.as_str() {
+            "watchdog_timeout" => "watchdog_timeout",
+            other => {
+                tracing::warn!(reason = other, "unexpected watchdog evidence reason");
+                "unknown"
+            }
+        };
         let timestamp_secs = Some(evidence.timestamp_secs);
 
         let resource_path = pid.map_or_else(
