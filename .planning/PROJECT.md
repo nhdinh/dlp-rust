@@ -298,4 +298,4 @@ The earlier `.planning.legacy/` (phase-numbered GSD format) and `.gsd.legacy/` (
 
 ---
 
-*Last updated: 2026-06-21 — Phase 48 complete, transitioning to Phase 49.*
+*Last updated: 2026-07-02 — Phase 58.5 complete (unhook DLL on agent exit), transitioning to Phase 59.*
