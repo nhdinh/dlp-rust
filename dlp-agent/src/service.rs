@@ -218,6 +218,12 @@ async fn request_unhook_from_injected(
     };
 
     crate::password_stop::debug_log("run_loop: requesting unhook from injected processes");
+
+    // Arm the request flag before emitting the audit so that a crash between
+    // the two steps never leaves an audit record without a corresponding
+    // UnhookCommand being sent to injected processes.
+    UNHOOK_ALL_REQUESTED.store(true, Ordering::Release);
+
     crate::audit_emitter::emit_unhook_audit(
         audit_ctx,
         crate::audit_emitter::UnhookEventType::AgentShutdownUnhook,
@@ -231,8 +237,6 @@ async fn request_unhook_from_injected(
         )),
         Some(format!("agent://{}/unhook_request", std::process::id())),
     );
-
-    UNHOOK_ALL_REQUESTED.store(true, Ordering::Release);
 
     let remaining = wait_for_unhook_acks(registry, budget).await;
 
