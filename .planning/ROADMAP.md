@@ -76,6 +76,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [ ] **Phase 58.3: Close gap: OPS-04 — execute physical Windows 11 UAT (INSERTED)** — execute the v0.10.0 UAT plan on physical Windows 11 hardware and record actual results in `.planning/milestones/v0.10.0-UAT.md`.
 - [x] **Phase 58.4: Close gap: DIFF-02/03/04 — wire differentiators into hook DLL deny paths (INSERTED)** — invoke diagnostic snapshot capture, content SHA-256 hashing, and health snapshot ingestion from the hook DLL deny paths. (completed 2026-06-29)
 - [x] **Phase 58.5: Unhook dlp_hook_dll.dll when dlp-agent is killed/exited (INSERTED)** — TBD. (not started) (completed 2026-07-02)
+- [ ] **Phase 58.6: Targeted hook injection — only processes that perform file operations (INSERTED)** — investigate and implement selective hook injection based on process file-operation behavior instead of universal injection.
 
 ---
 
@@ -519,6 +520,32 @@ Plans:
 - [ ] `58.5-02-PLAN.md` — Implement hook DLL self-unhook (UnhookAll, watchdog, UnhookCommand handler).
 - [ ] `58.5-03-PLAN.md` — Implement agent-side unhook dispatch and registry transitions.
 - [ ] `58.5-04-PLAN.md` — Write tests and run quality gates across all three crates.
+
+### Phase 58.6: Targeted hook injection — only processes that perform file operations (INSERTED)
+
+**Goal**: Reduce hook-DLL footprint and host-process risk by injecting only into processes that actually perform file operations, instead of injecting into every non-allowlisted user process.
+**Depends on**: Phase 58.5
+**Requirements**: TGT-01, TGT-02, TGT-03, TGT-04, TGT-05, TGT-06
+**Success Criteria** (what must be TRUE):
+
+  1. The agent can identify processes that are likely to perform file operations (e.g., by executable image imports, command-line heuristics, known application categories, or runtime observation) with low false-negative rate for T3/T4 data handlers.
+  2. Processes that are not expected to touch the file system (e.g., pure rendering services, some background utility processes) are skipped by the injector unless runtime observation later indicates file I/O.
+  3. Coverage telemetry shows a measurable reduction in injected process count compared to universal injection, while maintaining >= 99% coverage of actual file-operation events that touch T3/T4 paths.
+  4. The change is backward-compatible with the existing allowlist and does not reintroduce bypass paths closed by Phases 48–58.5.
+  5. New or updated tests cover the targeting heuristic and fallback to universal injection when targeting data is insufficient.
+
+**Plans:** 8/8 plans planned
+
+Plans:
+
+- [ ] `58.6-01-PLAN.md` — Config, mode enum, and ProcessRegistry state extensions for targeted injection.
+- [ ] `58.6-02-PLAN.md` — PE import scanner with file-IO scoring and TTL cache.
+- [ ] `58.6-03-PLAN.md` — Remote PEB command-line reader and basename/command-line heuristic classifier.
+- [ ] `58.6-04-PLAN.md` — Hybrid ProcessClassifier combining allowlist/PPL, PE score, basename, and command-line signals.
+- [ ] `58.6-05-PLAN.md` — LazyInjector that consumes ETW Kernel-File T3/T4 events to backstop low-confidence processes.
+- [ ] `58.6-06-PLAN.md` — Integrate classifier and lazy injector into UniversalInjector and service.rs.
+- [ ] `58.6-07-PLAN.md` — Targeted injection telemetry counters and SIEM audit events.
+- [ ] `58.6-08-PLAN.md` — Integration tests, telemetry audit verification, and workspace quality gates.
 
 ### Phase 58.4: Close gap: DIFF-02/03/04 — wire differentiators into hook DLL deny paths (INSERTED)
 
