@@ -168,7 +168,7 @@ pub unsafe fn compute_content_hash_offloaded(
 ///
 /// Used by unit tests to ensure clean counter state between tests.
 #[cfg(test)]
-pub fn reset_hash_queue_depth() {
+pub(crate) fn reset_hash_queue_depth() {
     HASH_QUEUE_DEPTH.store(0, Ordering::Relaxed);
 }
 

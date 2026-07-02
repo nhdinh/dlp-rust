@@ -584,7 +584,7 @@ mod tests {
 
         #[test]
         fn test_write_index_wraps() {
-            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
+            let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
             cleanup_test_mapping();
 
             let name_wide: Vec<u16> = TEST_JOURNAL_NAME
@@ -680,7 +680,7 @@ mod tests {
 
         #[test]
         fn test_seq_monotonic() {
-            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
+            let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
             cleanup_test_mapping();
 
             let name_wide: Vec<u16> = TEST_JOURNAL_NAME
@@ -771,7 +771,7 @@ mod tests {
 
         #[test]
         fn test_path_hash_computed() {
-            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
+            let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
             cleanup_test_mapping();
 
             let name_wide: Vec<u16> = TEST_JOURNAL_NAME
@@ -852,7 +852,7 @@ mod tests {
 
         #[test]
         fn test_op_byte_stored() {
-            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
+            let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
             cleanup_test_mapping();
 
             let name_wide: Vec<u16> = TEST_JOURNAL_NAME
@@ -926,7 +926,7 @@ mod tests {
 
         #[test]
         fn test_ts_qpc_stored() {
-            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
+            let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
             cleanup_test_mapping();
 
             let name_wide: Vec<u16> = TEST_JOURNAL_NAME
@@ -1002,7 +1002,7 @@ mod tests {
 
         #[test]
         fn test_etw_timestamp_stored() {
-            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
+            let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
             cleanup_test_mapping();
 
             let name_wide: Vec<u16> = TEST_JOURNAL_NAME
@@ -1082,7 +1082,7 @@ mod tests {
 
         #[test]
         fn test_error_already_exists_opens_existing() {
-            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
+            let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
             cleanup_test_mapping();
 
             let name_wide: Vec<u16> = TEST_JOURNAL_NAME
@@ -1164,7 +1164,7 @@ mod tests {
 
         #[test]
         fn test_release_fence_prevents_torn_reads() {
-            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
+            let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
             cleanup_test_mapping();
 
             let name_wide: Vec<u16> = TEST_JOURNAL_NAME
@@ -1273,7 +1273,7 @@ mod tests {
 
         #[test]
         fn test_unmap_journal_releases_handle_and_view() {
-            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
+            let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
             cleanup_test_mapping();
 
             let name_wide: Vec<u16> = TEST_JOURNAL_NAME
@@ -1327,7 +1327,7 @@ mod tests {
 
         #[test]
         fn test_concurrent_read_and_unmap_no_deadlock() {
-            let _guard = crate::tests::PHASE_58_5_TEST_LOCK.lock().unwrap();
+            let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
             cleanup_test_mapping();
 
             let name_wide: Vec<u16> = TEST_JOURNAL_NAME

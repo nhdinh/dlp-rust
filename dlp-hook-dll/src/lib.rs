@@ -137,6 +137,33 @@ static ACTIVE_CALLS: AtomicUsize = AtomicUsize::new(0);
 /// to `HINSTANCE` only when `self_unload` is called on the owning thread.
 static DLL_INSTANCE: Mutex<Option<isize>> = Mutex::new(None);
 
+/// Serializes Phase 58.5 tests that mutate process-global hook state
+/// (IAT restore, ntdll patcher, control thread lifecycle, shared-memory
+/// mappings). Prevents parallel tests from corrupting each other's state.
+#[cfg(test)]
+pub(crate) static PHASE_58_5_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Reset process-global hook state to a clean baseline for tests.
+///
+/// Clears shutdown and active-call counters, resets the initialization flag,
+/// drops the captured DLL instance, disables ntdll patching, and unpatches any
+/// stubs that were initialized by prior tests.
+#[cfg(test)]
+pub(crate) fn reset_hook_globals() {
+    SHUTTING_DOWN.store(false, Ordering::SeqCst);
+    ACTIVE_CALLS.store(0, Ordering::SeqCst);
+    INITIALISED.store(false, Ordering::SeqCst);
+    if let Ok(mut guard) = DLL_INSTANCE.lock() {
+        *guard = None;
+    }
+    NTDLL_PATCHING_ENABLED.store(false, Ordering::Relaxed);
+    if let Some(patcher_lock) = NTDLL_PATCHER.get() {
+        if let Ok(mut patcher) = patcher_lock.lock() {
+            patcher.unpatch_all_stubs();
+        }
+    }
+}
+
 /// Phase 51: Whether ntdll patching is enabled (read from shared memory during init).
 /// Trampolines check this flag before attempting lazy initialization.
 static NTDLL_PATCHING_ENABLED: AtomicBool = AtomicBool::new(false);
@@ -1047,11 +1074,6 @@ mod tests {
     use std::sync::Arc;
     use std::time::Duration;
 
-    /// Serializes Phase 58.5 tests that mutate process-global hook state
-    /// (IAT restore, ntdll patcher, control thread lifecycle, shared-memory
-    /// mappings). Prevents parallel tests from corrupting each other's state.
-    pub(crate) static PHASE_58_5_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
     /// Starts a [`HookIpcServer`] on a dedicated thread using the given
     /// handler, waits until the pipe is ready, and returns the thread handle.
     pub fn start_agent_mock_server(
@@ -1220,7 +1242,7 @@ mod tests {
 
     #[test]
     fn unhook_all_is_idempotent() {
-        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         UnhookAll();
         UnhookAll();
     }
@@ -1345,7 +1367,7 @@ mod tests {
 
     #[test]
     fn unhook_all_sets_shutting_down() {
-        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         // Ensure we start from a clean state.
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
         UnhookAll();
@@ -1356,7 +1378,7 @@ mod tests {
 
     #[test]
     fn unhook_all_unpatches_ntdll_stubs() {
-        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
         INITIALISED.store(true, Ordering::SeqCst);
 
@@ -1393,7 +1415,7 @@ mod tests {
 
     #[test]
     fn unhook_all_unmaps_shared_memory() {
-        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
 
         // Seed the journal global with a dummy None; unmap_journal should clear it.
@@ -1411,7 +1433,7 @@ mod tests {
 
     #[test]
     fn unhook_all_infallible_per_stub() {
-        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         use windows::Win32::System::Memory::{
             VirtualAlloc, MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE,
         };
@@ -1458,7 +1480,7 @@ mod tests {
 
     #[test]
     fn unhook_all_drains_active_calls() {
-        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
         ACTIVE_CALLS.store(0, Ordering::SeqCst);
 
@@ -1489,7 +1511,7 @@ mod tests {
 
     #[test]
     fn handle_unhook_command_sends_success_ack() {
-        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
         crate::control_thread::reset_watchdog_test_state();
         ACTIVE_CALLS.store(0, Ordering::SeqCst);
@@ -1526,7 +1548,7 @@ mod tests {
 
     #[test]
     fn handle_unhook_command_sends_failure_ack() {
-        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
         crate::control_thread::reset_watchdog_test_state();
         ACTIVE_CALLS.store(0, Ordering::SeqCst);
@@ -1570,7 +1592,7 @@ mod tests {
 
     #[test]
     fn control_poll_thread_starts_from_post_attach_path() {
-        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         // Reset control thread state so enter_hook_call will start it.
         crate::control_thread::shutdown_control_thread();
 
@@ -1587,7 +1609,7 @@ mod tests {
 
     #[test]
     fn control_poll_thread_triggers_after_grace_and_failures() {
-        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         crate::control_thread::reset_watchdog_test_state();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
 
@@ -1615,7 +1637,7 @@ mod tests {
 
     #[test]
     fn control_poll_thread_resets_on_success() {
-        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         crate::control_thread::reset_watchdog_test_state();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
 
@@ -1641,7 +1663,7 @@ mod tests {
 
     #[test]
     fn control_poll_thread_handles_unhook_command() {
-        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         crate::control_thread::reset_watchdog_test_state();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
         std::env::set_var("DLP_HOOK_TEST_MOCK_ACK", "1");
@@ -1673,7 +1695,7 @@ mod tests {
 
     #[test]
     fn shutting_down_passes_through_create_file_w() {
-        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         crate::set_shutting_down_for_test(true);
         // classify_and_log_path is the internal helper used by HookCreateFileW.
         // When shutting down it must return None without attempting a pipe call.
@@ -1692,7 +1714,7 @@ mod tests {
 
     #[test]
     fn shutting_down_passes_through_nt_create_file() {
-        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         crate::set_shutting_down_for_test(true);
         let result = crate::trampolines::classify_and_log_path(
             r"C:\test.txt",
@@ -1709,7 +1731,7 @@ mod tests {
 
     #[test]
     fn trampoline_entry_counts_active_calls() {
-        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         crate::set_shutting_down_for_test(false);
         ACTIVE_CALLS.store(0, Ordering::SeqCst);
 
@@ -1724,7 +1746,7 @@ mod tests {
 
     #[test]
     fn dll_hinstance_captured_in_tests() {
-        let _guard = PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         // In the test binary DllMain is not invoked, so seed the instance and
         // verify the test accessor returns it.
         let host = unsafe { GetModuleHandleW(None).unwrap_or_default() };

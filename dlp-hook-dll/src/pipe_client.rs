@@ -27,6 +27,19 @@ pub(crate) static MOCK_POLL_CONTROL: std::sync::Mutex<Vec<Result<ControlResponse
 pub(crate) static MOCK_UNHOOK_ACK_SINK: std::sync::Mutex<Vec<UnhookAck>> =
     std::sync::Mutex::new(Vec::new());
 
+/// Test-only helper to clear the pipe-client mock queues.
+///
+/// Used by unit tests to ensure a clean mock state between tests.
+#[cfg(test)]
+pub(crate) fn reset_pipe_client_mocks() {
+    if let Ok(mut mock) = MOCK_POLL_CONTROL.lock() {
+        mock.clear();
+    }
+    if let Ok(mut sink) = MOCK_UNHOOK_ACK_SINK.lock() {
+        sink.clear();
+    }
+}
+
 thread_local! {
     /// Pre-allocated 4 KiB buffer reused per thread for pipe serialization.
     ///

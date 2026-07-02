@@ -115,6 +115,20 @@ pub fn set_patched_modules(count: u64) {
     PATCHED_MODULES.store(count, Ordering::Relaxed);
 }
 
+/// Test-only helper to reset all health snapshot counters.
+///
+/// Used by unit tests to ensure clean counter state between tests.
+#[cfg(test)]
+pub(crate) fn reset_perf_counters() {
+    PIPE_ROUND_TRIPS.store(0, Ordering::Relaxed);
+    CACHE_HITS_60S.store(0, Ordering::Relaxed);
+    CACHE_MISSES_60S.store(0, Ordering::Relaxed);
+    CURRENT_FAIL_STATE.store(0, Ordering::Relaxed);
+    INJECTED_PIDS.store(0, Ordering::Relaxed);
+    PATCHED_MODULES.store(0, Ordering::Relaxed);
+    HEALTH_EMIT_COUNTER.store(0, Ordering::Relaxed);
+}
+
 /// Emit a health snapshot from the current counter values.
 ///
 /// Reads and resets PIPE_ROUND_TRIPS, CACHE_HITS_60S, and CACHE_MISSES_60S
