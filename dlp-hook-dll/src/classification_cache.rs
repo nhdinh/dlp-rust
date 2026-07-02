@@ -21,7 +21,8 @@
 //!
 //! # Security
 //!
-//! - Mapped `FILE_MAP_ALL_ACCESS` only — Windows MMU enforces write protection.
+//! - Mapped `FILE_MAP_READ` only — the cache is agent-authored and the DLL is a
+//!   consumer; write access is not required and would increase attack surface.
 //! - All pointer arithmetic is bounds-checked against `header.total_size`.
 //! - Malformed cache (bad magic/version/checksum/counts) enters degraded mode.
 //! - Reparse points, symlinks, junctions, volume GUIDs, ADS force pipe fallback.
@@ -425,7 +426,7 @@ impl CacheLookup {
     /// (i.e., NOT from `DllMain`).
     unsafe fn try_init() -> Option<CacheLookup> {
         use windows::Win32::System::Memory::{
-            MapViewOfFile, OpenFileMappingW, FILE_MAP_ALL_ACCESS,
+            MapViewOfFile, OpenFileMappingW, FILE_MAP_READ,
         };
 
         let name_wide: Vec<u16> = CACHE_NAME
@@ -434,7 +435,7 @@ impl CacheLookup {
             .collect();
 
         let handle = OpenFileMappingW(
-            FILE_MAP_ALL_ACCESS.0,
+            FILE_MAP_READ.0,
             false,
             windows::core::PCWSTR::from_raw(name_wide.as_ptr()),
         );
@@ -447,7 +448,7 @@ impl CacheLookup {
             }
         };
 
-        let view = MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, 0);
+        let view = MapViewOfFile(handle, FILE_MAP_READ, 0, 0, 0);
         let ptr = match view {
             windows::Win32::System::Memory::MEMORY_MAPPED_VIEW_ADDRESS { Value: ptr }
                 if !ptr.is_null() =>
