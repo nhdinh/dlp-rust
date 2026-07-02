@@ -1044,6 +1044,7 @@ mod tests {
 
     #[test]
     fn test_unpatch_all_stubs_transitions_patched_to_unpatched() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         let mut patcher = NtdllPatcher::new(true);
 
         // Simulate all four stubs being patched.

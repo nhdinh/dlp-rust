@@ -1243,12 +1243,15 @@ mod tests {
     #[test]
     fn unhook_all_is_idempotent() {
         let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_hook_globals();
         UnhookAll();
         UnhookAll();
     }
 
     #[test]
     fn shutdown_flag_stops_new_hook_calls() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_hook_globals();
         SHUTTING_DOWN.store(true, Ordering::SeqCst);
         assert!(!enter_hook_call());
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
@@ -1256,6 +1259,8 @@ mod tests {
 
     #[test]
     fn active_call_guard_balanced() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_hook_globals();
         // Ensure shutdown flag is clear; a prior test may have left it set.
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
         let before = ACTIVE_CALLS.load(Ordering::SeqCst);
@@ -1379,6 +1384,7 @@ mod tests {
     #[test]
     fn unhook_all_unpatches_ntdll_stubs() {
         let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_hook_globals();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
         INITIALISED.store(true, Ordering::SeqCst);
 
@@ -1416,6 +1422,7 @@ mod tests {
     #[test]
     fn unhook_all_unmaps_shared_memory() {
         let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_hook_globals();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
 
         // Seed the journal global with a dummy None; unmap_journal should clear it.
@@ -1481,6 +1488,7 @@ mod tests {
     #[test]
     fn unhook_all_drains_active_calls() {
         let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_hook_globals();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
         ACTIVE_CALLS.store(0, Ordering::SeqCst);
 
@@ -1512,6 +1520,7 @@ mod tests {
     #[test]
     fn handle_unhook_command_sends_success_ack() {
         let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_hook_globals();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
         crate::control_thread::reset_watchdog_test_state();
         ACTIVE_CALLS.store(0, Ordering::SeqCst);
@@ -1549,6 +1558,7 @@ mod tests {
     #[test]
     fn handle_unhook_command_sends_failure_ack() {
         let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_hook_globals();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
         crate::control_thread::reset_watchdog_test_state();
         ACTIVE_CALLS.store(0, Ordering::SeqCst);
@@ -1610,6 +1620,7 @@ mod tests {
     #[test]
     fn control_poll_thread_triggers_after_grace_and_failures() {
         let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_hook_globals();
         crate::control_thread::reset_watchdog_test_state();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
 
@@ -1638,6 +1649,7 @@ mod tests {
     #[test]
     fn control_poll_thread_resets_on_success() {
         let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_hook_globals();
         crate::control_thread::reset_watchdog_test_state();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
 
@@ -1664,6 +1676,7 @@ mod tests {
     #[test]
     fn control_poll_thread_handles_unhook_command() {
         let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_hook_globals();
         crate::control_thread::reset_watchdog_test_state();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
         std::env::set_var("DLP_HOOK_TEST_MOCK_ACK", "1");
@@ -1747,6 +1760,7 @@ mod tests {
     #[test]
     fn dll_hinstance_captured_in_tests() {
         let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_hook_globals();
         // In the test binary DllMain is not invoked, so seed the instance and
         // verify the test accessor returns it.
         let host = unsafe { GetModuleHandleW(None).unwrap_or_default() };

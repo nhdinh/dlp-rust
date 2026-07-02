@@ -284,6 +284,9 @@ mod tests {
 
     #[test]
     fn test_hash_skipped_on_pool_saturation() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_hash_queue_depth();
+
         // Force saturation by manually setting queue depth above threshold.
         HASH_QUEUE_DEPTH.store(HASH_QUEUE_DEPTH_MAX + 1, Ordering::Relaxed);
 
@@ -292,7 +295,7 @@ mod tests {
             unsafe { compute_content_hash_offloaded(buffer.as_ptr(), buffer.len() as u32) };
 
         // Restore queue depth so other tests are not affected.
-        HASH_QUEUE_DEPTH.store(0, Ordering::Relaxed);
+        reset_hash_queue_depth();
 
         assert!(hash.is_none());
         assert!(!truncated);
@@ -301,8 +304,9 @@ mod tests {
 
     #[test]
     fn test_queue_depth_guard_increments_and_decrements() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         // Reset to known state.
-        HASH_QUEUE_DEPTH.store(0, Ordering::Relaxed);
+        reset_hash_queue_depth();
 
         {
             let _guard = QueueDepthGuard::new();

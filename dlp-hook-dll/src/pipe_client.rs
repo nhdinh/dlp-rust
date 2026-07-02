@@ -565,6 +565,9 @@ mod tests {
 
     #[test]
     fn test_mock_poll_control_queue() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_pipe_client_mocks();
+
         let expected = ControlResponse {
             command: Some(dlp_common::hook_ipc::UnhookCommand {
                 reason: dlp_common::hook_ipc::UnhookReason::AgentShutdown,
@@ -582,6 +585,9 @@ mod tests {
 
     #[test]
     fn test_mock_unhook_ack_sink() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_pipe_client_mocks();
+
         let ack = UnhookAck {
             pid: 1234,
             creation_time: 5678,

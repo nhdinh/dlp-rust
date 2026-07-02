@@ -2699,8 +2699,11 @@ mod tests {
     // --- DIFF-02: Diagnostic snapshot on DENY ---
 
     #[test]
-    #[ignore = "requires --test-threads=1 due to shared OnceLock and global counters"]
     fn test_diagnostic_snapshot_on_deny_path() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        crate::reset_hook_globals();
+        crate::perf_telemetry::reset_perf_counters();
+        crate::pipe_client::reset_pipe_client_mocks();
         // Drain any leftover snapshots from prior tests.
         crate::diagnostic_ring::drain_all_snapshots();
 
@@ -2751,8 +2754,11 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires --test-threads=1 due to shared OnceLock and global counters"]
     fn test_diagnostic_snapshot_on_deny_handle() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        crate::reset_hook_globals();
+        crate::perf_telemetry::reset_perf_counters();
+        crate::pipe_client::reset_pipe_client_mocks();
         // Drain any leftover snapshots from prior tests.
         crate::diagnostic_ring::drain_all_snapshots();
 
@@ -2785,6 +2791,11 @@ mod tests {
 
     #[test]
     fn test_classify_and_log_path_resolves_volume_class() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        crate::reset_hook_globals();
+        crate::perf_telemetry::reset_perf_counters();
+        crate::pipe_client::reset_pipe_client_mocks();
+
         // Pre-warm the cache so resolve_volume_class_from_path returns a known value.
         crate::volume_class_cache::invalidate_cache();
         crate::volume_class_cache::VOLUME_CLASS_CACHE.with(|cache| {
@@ -2807,6 +2818,11 @@ mod tests {
 
     #[test]
     fn test_classify_and_log_path_uses_pre_resolved_volume_class() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        crate::reset_hook_globals();
+        crate::perf_telemetry::reset_perf_counters();
+        crate::pipe_client::reset_pipe_client_mocks();
+
         // When source_volume_class is pre-resolved (e.g., from copy/move trampolines),
         // the function should use it directly without re-resolving.
         let _result = classify_and_log_path(
@@ -2824,6 +2840,10 @@ mod tests {
 
     #[test]
     fn shutdown_pass_through_skips_classification() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        crate::reset_hook_globals();
+        crate::perf_telemetry::reset_perf_counters();
+
         // With no agent running, a normal call would fail-closed (DENY).
         // When shutting down, the call should pass through and also return None
         // so the trampoline calls the original API. In the test binary there is
@@ -2838,6 +2858,9 @@ mod tests {
 
     #[test]
     fn active_call_counter_increments_and_decrements() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        crate::reset_hook_globals();
+
         // Ensure shutdown flag is clear; a prior test may have left it set.
         crate::set_shutting_down_for_test(false);
         let before = crate::active_call_count();
@@ -2851,6 +2874,9 @@ mod tests {
 
     #[test]
     fn active_call_guard_skips_when_shutting_down() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        crate::reset_hook_globals();
+
         crate::set_shutting_down_for_test(true);
         let guard = crate::ActiveCallGuard::new();
         assert!(!guard.is_active());

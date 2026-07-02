@@ -624,29 +624,32 @@ mod tests {
 
     #[test]
     fn health_counters_record_pipe_round_trip() {
-        // Reset counter first.
-        PIPE_ROUND_TRIPS.store(0, Ordering::Relaxed);
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_perf_counters();
         record_pipe_round_trip();
         assert_eq!(PIPE_ROUND_TRIPS.load(Ordering::Relaxed), 1);
     }
 
     #[test]
     fn health_counters_record_cache_hit() {
-        CACHE_HITS_60S.store(0, Ordering::Relaxed);
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_perf_counters();
         record_cache_hit();
         assert_eq!(CACHE_HITS_60S.load(Ordering::Relaxed), 1);
     }
 
     #[test]
     fn health_counters_record_cache_miss() {
-        CACHE_MISSES_60S.store(0, Ordering::Relaxed);
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_perf_counters();
         record_cache_miss();
         assert_eq!(CACHE_MISSES_60S.load(Ordering::Relaxed), 1);
     }
 
     #[test]
     fn health_counters_set_fail_state() {
-        CURRENT_FAIL_STATE.store(0, Ordering::Relaxed);
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_perf_counters();
         set_fail_state(2);
         assert_eq!(CURRENT_FAIL_STATE.load(Ordering::Relaxed), 2);
         set_fail_state(0);
@@ -655,21 +658,25 @@ mod tests {
 
     #[test]
     fn health_counters_set_injected_pids() {
-        INJECTED_PIDS.store(0, Ordering::Relaxed);
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_perf_counters();
         set_injected_pids(5);
         assert_eq!(INJECTED_PIDS.load(Ordering::Relaxed), 5);
     }
 
     #[test]
     fn health_counters_set_patched_modules() {
-        PATCHED_MODULES.store(0, Ordering::Relaxed);
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_perf_counters();
         set_patched_modules(12);
         assert_eq!(PATCHED_MODULES.load(Ordering::Relaxed), 12);
     }
 
     #[test]
     fn emit_health_snapshot_resets_counters() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         // Set up known counter state.
+        reset_perf_counters();
         PIPE_ROUND_TRIPS.store(10, Ordering::Relaxed);
         CACHE_HITS_60S.store(8, Ordering::Relaxed);
         CACHE_MISSES_60S.store(2, Ordering::Relaxed);
@@ -695,9 +702,8 @@ mod tests {
 
     #[test]
     fn emit_health_snapshot_zero_total_hit_rate_is_zero() {
-        PIPE_ROUND_TRIPS.store(0, Ordering::Relaxed);
-        CACHE_HITS_60S.store(0, Ordering::Relaxed);
-        CACHE_MISSES_60S.store(0, Ordering::Relaxed);
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_perf_counters();
 
         let snapshot = emit_health_snapshot();
         assert_eq!(snapshot.cache_hit_rate_60s, 0.0);
@@ -705,7 +711,8 @@ mod tests {
 
     #[test]
     fn health_emit_counter_increments() {
-        HEALTH_EMIT_COUNTER.store(0, Ordering::Relaxed);
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_perf_counters();
         let count = HEALTH_EMIT_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
         assert_eq!(count, 1);
         assert_eq!(HEALTH_EMIT_COUNTER.load(Ordering::Relaxed), 1);
@@ -715,10 +722,9 @@ mod tests {
 
     #[test]
     fn test_health_counters_increment() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         // Reset counters to known state.
-        CACHE_HITS_60S.store(0, Ordering::Relaxed);
-        CACHE_MISSES_60S.store(0, Ordering::Relaxed);
-        PIPE_ROUND_TRIPS.store(0, Ordering::Relaxed);
+        reset_perf_counters();
 
         // Record 5 cache hits and 3 cache misses.
         for _ in 0..5 {
@@ -737,7 +743,9 @@ mod tests {
 
     #[test]
     fn test_health_snapshot_fields() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         // Set all health counter fields to known values.
+        reset_perf_counters();
         PIPE_ROUND_TRIPS.store(7, Ordering::Relaxed);
         CACHE_HITS_60S.store(9, Ordering::Relaxed);
         CACHE_MISSES_60S.store(1, Ordering::Relaxed);
@@ -757,11 +765,10 @@ mod tests {
     }
 
     #[test]
-    #[ignore = "requires --test-threads=1 to avoid parallel counter interference; run with: cargo test -p dlp-hook-dll --lib -- perf_telemetry::tests::test_health_snapshot_resets_counters -- --ignored --test-threads=1 --nocapture"]
     fn test_health_snapshot_resets_counters() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
         // Reset counters to known state.
-        CACHE_HITS_60S.store(0, Ordering::Relaxed);
-        CACHE_MISSES_60S.store(0, Ordering::Relaxed);
+        reset_perf_counters();
 
         // Record one cache hit, then emit.
         record_cache_hit();
@@ -778,6 +785,9 @@ mod tests {
 
     #[test]
     fn test_health_snapshot_timestamp() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        reset_perf_counters();
+
         let before = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap_or_default()
