@@ -136,7 +136,11 @@ impl Drop for ControlThread {
 ///
 /// Idempotent: if the thread is already running or starting, this is a no-op.
 /// Must be called from outside `DllMain`.
-pub fn start_control_thread() {
+///
+/// Returns `true` if the thread is running or was successfully started, and
+/// `false` if thread creation failed (e.g. the shutdown event could not be
+/// created).
+pub fn start_control_thread() -> bool {
     let mut guard = match CONTROL_THREAD_STATE.lock() {
         Ok(g) => g,
         Err(e) => {
@@ -153,7 +157,7 @@ pub fn start_control_thread() {
             *guard = ControlThreadState::Starting;
         }
         ControlThreadState::Starting | ControlThreadState::Running(_) => {
-            return;
+            return true;
         }
     }
 
@@ -162,7 +166,7 @@ pub fn start_control_thread() {
             Ok(h) => h,
             Err(_) => {
                 *guard = ControlThreadState::NotStarted;
-                return;
+                return false;
             }
         }
     };
@@ -179,6 +183,7 @@ pub fn start_control_thread() {
     };
 
     *guard = ControlThreadState::Running(ct);
+    true
 }
 
 /// Signal the control/watchdog thread to stop and wait for it to exit.

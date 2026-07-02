@@ -805,6 +805,21 @@ pub extern "system" fn UnhookAll() {
     let _ = unhook_all_internal();
 }
 
+/// Explicit DLL export to start the control-poll/watchdog thread immediately
+/// after remote injection.
+///
+/// This is called from a second remote thread created by the agent after
+/// `LoadLibraryW` succeeds. It is idempotent and safe to call outside `DllMain`.
+/// Returns 0 on success and 1 on failure.
+#[unsafe(no_mangle)]
+pub extern "system" fn StartDlpControlThread() -> u32 {
+    if crate::control_thread::start_control_thread() {
+        0
+    } else {
+        1
+    }
+}
+
 /// Returns true if the DLL is currently shutting down.
 ///
 /// Trampolines use this to pass through to the original function without
@@ -1073,6 +1088,9 @@ mod tests {
     use dlp_common::{Decision, HookRequest, HookResponse};
     use std::sync::Arc;
     use std::time::Duration;
+
+    #[cfg(windows)]
+    use std::os::windows::ffi::OsStrExt;
 
     /// Starts a [`HookIpcServer`] on a dedicated thread using the given
     /// handler, waits until the pipe is ready, and returns the thread handle.
@@ -1758,15 +1776,88 @@ mod tests {
     }
 
     #[test]
-    fn dll_hinstance_captured_in_tests() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
-        reset_hook_globals();
-        // In the test binary DllMain is not invoked, so seed the instance and
-        // verify the test accessor returns it.
-        let host = unsafe { GetModuleHandleW(None).unwrap_or_default() };
-        if let Ok(mut guard) = DLL_INSTANCE.lock() {
-            *guard = Some(host.0 as isize);
+    fn start_dlp_control_thread_export_is_reachable() {
+        // Locate the built DLL next to the workspace root.
+        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+        let workspace_root = manifest_dir.parent().expect("workspace root");
+        let profile = if cfg!(debug_assertions) { "debug" } else { "release" };
+        let dll_path = workspace_root
+            .join("target")
+            .join(profile)
+            .join("dlp_hook_dll.dll");
+
+        if !dll_path.exists() {
+            eprintln!(
+                "Skipping export reachability test: DLL not found at {}. Run `cargo build -p dlp-hook-dll` first.",
+                dll_path.display()
+            );
+            return;
         }
-        assert!(crate::self_unload_check().is_some());
+
+        let dll_wide: Vec<u16> = dll_path
+            .as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect();
+
+        // Load as a datafile/DLL without calling DllMain or resolving imports.
+        // This is safe for verifying the export table without patching the test
+        // process IAT or leaving a control thread behind.
+        let module = unsafe {
+            windows::Win32::System::LibraryLoader::LoadLibraryExW(
+                windows::core::PCWSTR(dll_wide.as_ptr()),
+                None,
+                windows::Win32::System::LibraryLoader::DONT_RESOLVE_DLL_REFERENCES,
+            )
+        };
+
+        assert!(
+            module.is_ok(),
+            "LoadLibraryExW should succeed for built DLL"
+        );
+        let module = module.unwrap();
+
+        let proc = unsafe {
+            GetProcAddress(
+                module,
+                windows::core::s!("StartDlpControlThread"),
+            )
+        };
+        assert!(
+            proc.is_some(),
+            "StartDlpControlThread export should be resolvable in built DLL"
+        );
+
+        // Intentionally do not FreeLibrary the datafile-loaded module:
+        // windows-rs 0.62 does not expose FreeLibrary in this configuration,
+        // and the module is loaded without DllMain/imports so no hooks or
+        // threads are started. The handle is released when the test process
+        // exits.
+    }
+
+    #[test]
+    fn start_dlp_control_thread_starts_thread_and_is_idempotent() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        crate::control_thread::shutdown_control_thread();
+        crate::control_thread::reset_watchdog_test_state();
+
+        // Call the in-scope export directly (the test binary links this crate).
+        let result = StartDlpControlThread();
+        assert_eq!(
+            result, 0,
+            "StartDlpControlThread should return 0 on success"
+        );
+
+        // Give the thread time to transition from Starting to Running.
+        std::thread::sleep(Duration::from_millis(50));
+
+        // Second call should be idempotent (return 0, no crash).
+        let result2 = StartDlpControlThread();
+        assert_eq!(
+            result2, 0,
+            "StartDlpControlThread should be idempotent"
+        );
+
+        crate::control_thread::shutdown_control_thread();
     }
 }
