@@ -434,7 +434,7 @@ fn persist_watchdog_evidence(pid: u32, creation_time: u64) {
     };
 
     let dir = watchdog_evidence_dir();
-    if let Err(e) = std::fs::create_dir_all(dir) {
+    if let Err(e) = std::fs::create_dir_all(&dir) {
         let msg = format!("[dlp-hook] watchdog evidence dir create failed: {}\0", e);
         crate::debug_log(&msg);
         return;
@@ -643,5 +643,14 @@ mod tests {
     #[test]
     fn process_creation_time_returns_some() {
         assert!(process_creation_time().is_some());
+    }
+
+    #[test]
+    fn watchdog_fires_after_max_failures_and_grace_window() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+        let failures = vec![Err(crate::pipe_client::PipeError::ConnectionRefused); 3];
+        let (iters, triggered) = run_control_loop_for_test(failures, 100, 10);
+        assert!(triggered, "watchdog should have fired");
+        assert!(iters > 0);
     }
 }
