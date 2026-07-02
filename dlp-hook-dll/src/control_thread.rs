@@ -595,7 +595,7 @@ mod tests {
 
     #[test]
     fn control_thread_start_is_idempotent() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         start_control_thread();
         start_control_thread();
         shutdown_control_thread();
@@ -603,7 +603,7 @@ mod tests {
 
     #[test]
     fn shutdown_control_thread_when_not_started() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         shutdown_control_thread();
     }
 

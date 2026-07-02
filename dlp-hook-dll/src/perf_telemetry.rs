@@ -624,7 +624,7 @@ mod tests {
 
     #[test]
     fn health_counters_record_pipe_round_trip() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_perf_counters();
         record_pipe_round_trip();
         assert_eq!(PIPE_ROUND_TRIPS.load(Ordering::Relaxed), 1);
@@ -632,7 +632,7 @@ mod tests {
 
     #[test]
     fn health_counters_record_cache_hit() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_perf_counters();
         record_cache_hit();
         assert_eq!(CACHE_HITS_60S.load(Ordering::Relaxed), 1);
@@ -640,7 +640,7 @@ mod tests {
 
     #[test]
     fn health_counters_record_cache_miss() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_perf_counters();
         record_cache_miss();
         assert_eq!(CACHE_MISSES_60S.load(Ordering::Relaxed), 1);
@@ -648,7 +648,7 @@ mod tests {
 
     #[test]
     fn health_counters_set_fail_state() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_perf_counters();
         set_fail_state(2);
         assert_eq!(CURRENT_FAIL_STATE.load(Ordering::Relaxed), 2);
@@ -658,7 +658,7 @@ mod tests {
 
     #[test]
     fn health_counters_set_injected_pids() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_perf_counters();
         set_injected_pids(5);
         assert_eq!(INJECTED_PIDS.load(Ordering::Relaxed), 5);
@@ -666,7 +666,7 @@ mod tests {
 
     #[test]
     fn health_counters_set_patched_modules() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_perf_counters();
         set_patched_modules(12);
         assert_eq!(PATCHED_MODULES.load(Ordering::Relaxed), 12);
@@ -674,7 +674,7 @@ mod tests {
 
     #[test]
     fn emit_health_snapshot_resets_counters() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         // Set up known counter state.
         reset_perf_counters();
         PIPE_ROUND_TRIPS.store(10, Ordering::Relaxed);
@@ -702,7 +702,7 @@ mod tests {
 
     #[test]
     fn emit_health_snapshot_zero_total_hit_rate_is_zero() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_perf_counters();
 
         let snapshot = emit_health_snapshot();
@@ -711,7 +711,7 @@ mod tests {
 
     #[test]
     fn health_emit_counter_increments() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_perf_counters();
         let count = HEALTH_EMIT_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
         assert_eq!(count, 1);
@@ -722,7 +722,7 @@ mod tests {
 
     #[test]
     fn test_health_counters_increment() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         // Reset counters to known state.
         reset_perf_counters();
 
@@ -743,7 +743,7 @@ mod tests {
 
     #[test]
     fn test_health_snapshot_fields() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         // Set all health counter fields to known values.
         reset_perf_counters();
         PIPE_ROUND_TRIPS.store(7, Ordering::Relaxed);
@@ -766,7 +766,7 @@ mod tests {
 
     #[test]
     fn test_health_snapshot_resets_counters() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         // Reset counters to known state.
         reset_perf_counters();
 
@@ -785,7 +785,7 @@ mod tests {
 
     #[test]
     fn test_health_snapshot_timestamp() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_perf_counters();
 
         let before = std::time::SystemTime::now()

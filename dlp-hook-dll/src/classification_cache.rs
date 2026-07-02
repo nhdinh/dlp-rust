@@ -691,7 +691,7 @@ mod tests {
 
     #[test]
     fn lazy_init_returns_none_when_no_mapping() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         // When no shared-memory mapping exists, get() returns None.
         let result = CacheLookup::get();
         assert!(result.is_none());
@@ -784,7 +784,7 @@ mod tests {
 
     #[test]
     fn prefix_lookup_requires_real_mapping() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         // Prefix lookup requires a real shared-memory mapping.
         // Without one, CacheLookup::get() returns None.
         assert!(CacheLookup::get().is_none());
@@ -1048,7 +1048,7 @@ mod tests {
 
     #[test]
     fn unmap_cache_clears_global_state() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         // Without a real mapping, get() returns None and unmap_cache should be
         // idempotent and reset thread-local validation state.
         assert!(CacheLookup::get().is_none());
@@ -1115,7 +1115,7 @@ mod tests {
 
         #[test]
         fn test_unmap_cache_releases_handle_and_view() {
-            let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+            let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
             let name_wide: Vec<u16> = TEST_CACHE_NAME
                 .encode_utf16()
                 .chain(std::iter::once(0))
@@ -1160,7 +1160,7 @@ mod tests {
 
         #[test]
         fn test_concurrent_read_and_unmap_no_deadlock() {
-            let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+            let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
             let name_wide: Vec<u16> = TEST_CACHE_NAME
                 .encode_utf16()
                 .chain(std::iter::once(0))

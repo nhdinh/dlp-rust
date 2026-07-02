@@ -565,7 +565,7 @@ mod tests {
 
     #[test]
     fn test_mock_poll_control_queue() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_pipe_client_mocks();
 
         let expected = ControlResponse {
@@ -585,7 +585,7 @@ mod tests {
 
     #[test]
     fn test_mock_unhook_ack_sink() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_pipe_client_mocks();
 
         let ack = UnhookAck {

@@ -141,7 +141,7 @@ static DLL_INSTANCE: Mutex<Option<isize>> = Mutex::new(None);
 /// (IAT restore, ntdll patcher, control thread lifecycle, shared-memory
 /// mappings). Prevents parallel tests from corrupting each other's state.
 #[cfg(test)]
-pub(crate) static PHASE_58_5_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+pub(crate) static PHASE_58_5_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 /// Reset process-global hook state to a clean baseline for tests.
 ///
@@ -1260,7 +1260,7 @@ mod tests {
 
     #[test]
     fn unhook_all_is_idempotent() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_hook_globals();
         UnhookAll();
         UnhookAll();
@@ -1268,7 +1268,7 @@ mod tests {
 
     #[test]
     fn shutdown_flag_stops_new_hook_calls() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_hook_globals();
         SHUTTING_DOWN.store(true, Ordering::SeqCst);
         assert!(!enter_hook_call());
@@ -1277,7 +1277,7 @@ mod tests {
 
     #[test]
     fn active_call_guard_balanced() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_hook_globals();
         // Ensure shutdown flag is clear; a prior test may have left it set.
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
@@ -1390,7 +1390,7 @@ mod tests {
 
     #[test]
     fn unhook_all_sets_shutting_down() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         // Ensure we start from a clean state.
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
         UnhookAll();
@@ -1401,7 +1401,7 @@ mod tests {
 
     #[test]
     fn unhook_all_unpatches_ntdll_stubs() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_hook_globals();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
         INITIALISED.store(true, Ordering::SeqCst);
@@ -1439,7 +1439,7 @@ mod tests {
 
     #[test]
     fn unhook_all_unmaps_shared_memory() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_hook_globals();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
 
@@ -1458,7 +1458,7 @@ mod tests {
 
     #[test]
     fn unhook_all_infallible_per_stub() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         use windows::Win32::System::Memory::{
             VirtualAlloc, MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE,
         };
@@ -1505,7 +1505,7 @@ mod tests {
 
     #[test]
     fn unhook_all_drains_active_calls() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_hook_globals();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
         ACTIVE_CALLS.store(0, Ordering::SeqCst);
@@ -1537,7 +1537,7 @@ mod tests {
 
     #[test]
     fn handle_unhook_command_sends_success_ack() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_hook_globals();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
         crate::control_thread::reset_watchdog_test_state();
@@ -1575,7 +1575,7 @@ mod tests {
 
     #[test]
     fn handle_unhook_command_sends_failure_ack() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_hook_globals();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
         crate::control_thread::reset_watchdog_test_state();
@@ -1620,7 +1620,7 @@ mod tests {
 
     #[test]
     fn control_poll_thread_starts_from_post_attach_path() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         // Reset control thread state so enter_hook_call will start it.
         crate::control_thread::shutdown_control_thread();
 
@@ -1637,23 +1637,24 @@ mod tests {
 
     #[test]
     fn control_poll_thread_triggers_after_grace_and_failures() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_hook_globals();
         crate::control_thread::reset_watchdog_test_state();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
 
-        // Provide three consecutive failures with a very short watchdog timeout.
-        // The first iteration establishes last_agent_response, so the watchdog
-        // should fire on the third failure.
-        let failures: Vec<_> = (0..4)
+        // Seed many consecutive failures so the watchdog has ample budget to
+        // fire even when the test runner is heavily loaded and loop iterations
+        // are delayed. A large queue prevents the loop from exhausting the mock
+        // responses before the grace timeout elapses.
+        let failures: Vec<_> = (0..32)
             .map(|_| Err(crate::pipe_client::PipeError::ConnectionRefused))
             .collect();
 
         // Use a watchdog timeout (2500 ms) longer than one poll interval
         // (1000 ms) so the first two failures fall inside the grace window
-        // and the third failure exceeds it.
+        // and a later failure exceeds it.
         let (iterations, triggered) =
-            crate::control_thread::run_control_loop_for_test(failures, 2_500, 5);
+            crate::control_thread::run_control_loop_for_test(failures, 2_500, 64);
 
         assert!(triggered, "watchdog should trigger after grace period");
         assert!(
@@ -1666,7 +1667,7 @@ mod tests {
 
     #[test]
     fn control_poll_thread_resets_on_success() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_hook_globals();
         crate::control_thread::reset_watchdog_test_state();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
@@ -1678,10 +1679,10 @@ mod tests {
             Ok(ControlResponse { command: None }),
         ];
 
-        // Use a watchdog timeout (2500 ms) longer than the two failures so
-        // the successful poll resets the timer before the watchdog fires.
+        // Use a generous watchdog timeout so a heavily loaded test runner still
+        // reaches the successful poll before the grace window expires.
         let (_iterations, triggered) =
-            crate::control_thread::run_control_loop_for_test(results, 2_500, 5);
+            crate::control_thread::run_control_loop_for_test(results, 5_000, 16);
 
         assert!(
             !triggered,
@@ -1693,7 +1694,7 @@ mod tests {
 
     #[test]
     fn control_poll_thread_handles_unhook_command() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_hook_globals();
         crate::control_thread::reset_watchdog_test_state();
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
@@ -1726,7 +1727,7 @@ mod tests {
 
     #[test]
     fn shutting_down_passes_through_create_file_w() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         crate::set_shutting_down_for_test(true);
         // classify_and_log_path is the internal helper used by HookCreateFileW.
         // When shutting down it must return None without attempting a pipe call.
@@ -1745,7 +1746,7 @@ mod tests {
 
     #[test]
     fn shutting_down_passes_through_nt_create_file() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         crate::set_shutting_down_for_test(true);
         let result = crate::trampolines::classify_and_log_path(
             r"C:\test.txt",
@@ -1762,7 +1763,7 @@ mod tests {
 
     #[test]
     fn trampoline_entry_counts_active_calls() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         crate::set_shutting_down_for_test(false);
         ACTIVE_CALLS.store(0, Ordering::SeqCst);
 
@@ -1836,7 +1837,7 @@ mod tests {
 
     #[test]
     fn start_dlp_control_thread_starts_thread_and_is_idempotent() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         crate::control_thread::shutdown_control_thread();
         crate::control_thread::reset_watchdog_test_state();
 

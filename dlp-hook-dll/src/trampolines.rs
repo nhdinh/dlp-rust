@@ -2700,7 +2700,7 @@ mod tests {
 
     #[test]
     fn test_diagnostic_snapshot_on_deny_path() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         crate::reset_hook_globals();
         crate::perf_telemetry::reset_perf_counters();
         crate::pipe_client::reset_pipe_client_mocks();
@@ -2755,7 +2755,7 @@ mod tests {
 
     #[test]
     fn test_diagnostic_snapshot_on_deny_handle() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         crate::reset_hook_globals();
         crate::perf_telemetry::reset_perf_counters();
         crate::pipe_client::reset_pipe_client_mocks();
@@ -2791,7 +2791,7 @@ mod tests {
 
     #[test]
     fn test_classify_and_log_path_resolves_volume_class() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         crate::reset_hook_globals();
         crate::perf_telemetry::reset_perf_counters();
         crate::pipe_client::reset_pipe_client_mocks();
@@ -2818,7 +2818,7 @@ mod tests {
 
     #[test]
     fn test_classify_and_log_path_uses_pre_resolved_volume_class() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         crate::reset_hook_globals();
         crate::perf_telemetry::reset_perf_counters();
         crate::pipe_client::reset_pipe_client_mocks();
@@ -2840,7 +2840,7 @@ mod tests {
 
     #[test]
     fn shutdown_pass_through_skips_classification() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         crate::reset_hook_globals();
         crate::perf_telemetry::reset_perf_counters();
 
@@ -2858,7 +2858,7 @@ mod tests {
 
     #[test]
     fn active_call_counter_increments_and_decrements() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         crate::reset_hook_globals();
 
         // Ensure shutdown flag is clear; a prior test may have left it set.
@@ -2874,7 +2874,7 @@ mod tests {
 
     #[test]
     fn active_call_guard_skips_when_shutting_down() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         crate::reset_hook_globals();
 
         crate::set_shutting_down_for_test(true);

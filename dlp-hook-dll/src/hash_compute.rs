@@ -284,7 +284,7 @@ mod tests {
 
     #[test]
     fn test_hash_skipped_on_pool_saturation() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         reset_hash_queue_depth();
 
         // Force saturation by manually setting queue depth above threshold.
@@ -304,7 +304,7 @@ mod tests {
 
     #[test]
     fn test_queue_depth_guard_increments_and_decrements() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock().unwrap();
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
         // Reset to known state.
         reset_hash_queue_depth();
 
