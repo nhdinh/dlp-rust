@@ -281,7 +281,9 @@ impl ProcessRegistry {
     pub fn record_exited(&self, key: ProcessKey) {
         self.insert_with_eviction(key, ProcessState::Exited);
         if let Some(ref tx) = self.lifecycle_tx {
-            let _ = tx.try_send(key);
+            if let Err(e) = tx.try_send(key) {
+                tracing::warn!(error = %e, pid = key.pid, "process lifecycle notification dropped");
+            }
         }
     }
 
@@ -305,7 +307,9 @@ impl ProcessRegistry {
         }
         if transitioned {
             if let Some(ref tx) = self.lifecycle_tx {
-                let _ = tx.try_send(*key);
+                if let Err(e) = tx.try_send(*key) {
+                    tracing::warn!(error = %e, pid = key.pid, "process lifecycle notification dropped");
+                }
             }
         }
     }
