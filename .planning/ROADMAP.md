@@ -538,14 +538,14 @@ Plans:
 
 Plans:
 
-- [ ] `58.6-01-PLAN.md` — Config, mode enum, and ProcessRegistry state extensions for targeted injection.
-- [ ] `58.6-02-PLAN.md` — PE import scanner with file-IO scoring and TTL cache.
-- [ ] `58.6-03-PLAN.md` — Remote PEB command-line reader and basename/command-line heuristic classifier.
-- [ ] `58.6-04-PLAN.md` — Hybrid ProcessClassifier combining allowlist/PPL, PE score, basename, and command-line signals.
-- [ ] `58.6-05-PLAN.md` — LazyInjector that consumes ETW Kernel-File T3/T4 events to backstop low-confidence processes.
-- [ ] `58.6-06-PLAN.md` — Integrate classifier and lazy injector into UniversalInjector and service.rs.
-- [ ] `58.6-07-PLAN.md` — Targeted injection telemetry counters and SIEM audit events.
-- [ ] `58.6-08-PLAN.md` — Integration tests, telemetry audit verification, and workspace quality gates.
+- [ ] `58.6-01-PLAN.md` — Config, mode enum, ProcessRegistry state extensions, and InjectProcess trait seam for targeted injection.
+- [ ] `58.6-02-PLAN.md` — PE import scanner with file-IO scoring, ScoreUnavailable semantics, and TTL cache.
+- [ ] `58.6-03-PLAN.md` — Remote PEB command-line reader with WoW64 guard and basename/command-line heuristic classifier.
+- [ ] `58.6-04-PLAN.md` — Hybrid ProcessClassifier combining allowlist/PPL, PE score, basename, and command-line signals with allowlist-version-aware cache.
+- [ ] `58.6-05-PLAN.md` — LazyInjector with TierResolver seam and honest first-event-missed coverage metrics.
+- [ ] `58.6-06-PLAN.md` — Integrate classifier and lazy injector into UniversalInjector and service.rs; decouple enablement, fix retry semantics, ETW fanout.
+- [ ] `58.6-07-PLAN.md` — Targeted injection telemetry counters, path-hashed SIEM audit events, and details schema.
+- [ ] `58.6-08-PLAN.md` — Integration tests using InjectProcess/TierResolver seams, telemetry audit verification, and workspace quality gates.
 
 ### Phase 58.4: Close gap: DIFF-02/03/04 — wire differentiators into hook DLL deny paths (INSERTED)
 
