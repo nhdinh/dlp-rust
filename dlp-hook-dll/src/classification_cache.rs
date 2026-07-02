@@ -425,9 +425,7 @@ impl CacheLookup {
     /// Must be called from a context where Windows loader lock is NOT held
     /// (i.e., NOT from `DllMain`).
     unsafe fn try_init() -> Option<CacheLookup> {
-        use windows::Win32::System::Memory::{
-            MapViewOfFile, OpenFileMappingW, FILE_MAP_READ,
-        };
+        use windows::Win32::System::Memory::{MapViewOfFile, OpenFileMappingW, FILE_MAP_READ};
 
         let name_wide: Vec<u16> = CACHE_NAME
             .encode_utf16()

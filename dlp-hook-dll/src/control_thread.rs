@@ -648,8 +648,10 @@ mod tests {
     #[test]
     fn watchdog_fires_after_max_failures_and_grace_window() {
         let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        let failures = vec![Err(crate::pipe_client::PipeError::ConnectionRefused); 3];
-        let (iters, triggered) = run_control_loop_for_test(failures, 100, 10);
+        // Seed a large mock queue so concurrent tests that touch the shared
+        // pipe-client mocks cannot starve this test before the watchdog fires.
+        let failures = vec![Err(crate::pipe_client::PipeError::ConnectionRefused); 100];
+        let (iters, triggered) = run_control_loop_for_test(failures, 500, 10);
         assert!(triggered, "watchdog should have fired");
         assert!(iters > 0);
     }
