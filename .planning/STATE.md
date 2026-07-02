@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
-current_phase: 59
-current_phase_name: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
-status: completed
-stopped_at: Completed 58.5-03-PLAN.md
-last_updated: "2026-06-30T07:36:20.074Z"
-last_activity: 2026-06-29
-last_activity_desc: Phase 58.4 complete, transitioned to Phase 59
+current_phase: 58.5
+current_phase_name: unhook-dlp-hook-dll-when-dlp-agent-is-killed-exited
+status: executing
+stopped_at: Completed 58.5-05-PLAN.md
+last_updated: "2026-07-02T04:55:10.845Z"
+last_activity: 2026-07-02
+last_activity_desc: Phase 58.5 execution started
 progress:
   total_phases: 47
   completed_phases: 37
-  total_plans: 197
-  completed_plans: 174
+  total_plans: 199
+  completed_plans: 176
   percent: 79
 ---
 
@@ -23,17 +23,17 @@ progress:
 
 **Project:** DLP-RUST — Enterprise DLP System (NTFS + Active Directory + ABAC)
 **Core Value:** Prevent data exfiltration via a layered enforcement stack (NTFS + ABAC + AD identity)
-**Current Focus:** Phase 58.4 — close-gap-diff-02-03-04-wire-differentiators-into-hook-dll-deny-paths
+**Current Focus:** Phase 58.5 — unhook-dlp-hook-dll-when-dlp-agent-is-killed-exited
 
 ---
 
 ## Current Position
 
-Phase: 59 — Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
-Plan: Not started
-Status: Plan 03 complete — DIFF-04 health snapshot emission and ingestion wired
+Phase: 58.5 (unhook-dlp-hook-dll-when-dlp-agent-is-killed-exited) — EXECUTING
+Plan: 6 of 6
+Status: Ready to execute
 Verification: 10/10 must-haves verified, 0 gaps
-Last activity: 2026-06-29 — Phase 58.4 complete, transitioned to Phase 59
+Last activity: 2026-07-02 — Phase 58.5 execution started
 
 Phase: 59 — Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 Status: All 4 plans complete and verified (01: journal writes, 02: bypass correlator routing, 03: VERIFICATION.md artifacts, 04: OPS-04 UAT handoff)
@@ -179,8 +179,8 @@ Phase 59 and later are complete and shipped as part of v0.11.0.
 
 ## Session Continuity
 
-Last session: 2026-06-30T07:36:20.061Z
-Stopped at: Completed 58.5-03-PLAN.md
+Last session: 2026-07-02T04:55:10.709Z
+Stopped at: Completed 58.5-05-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
@@ -224,6 +224,7 @@ Resume file: None
 | Phase 58.5 P01 | 18 min | 2 tasks | 2 files |
 | Phase 58.5 P02 | 47min | 3 tasks | 11 files |
 | Phase 58.5 P03 | 95min | 3 tasks | 7 files |
+| Phase 58.5 P05 | 8min | 3 tasks | 9 files |
 
 ## Quick Tasks Completed
 
@@ -258,3 +259,6 @@ Resume file: None
 - [Phase ?]: Used Vec snapshot from iter_injected to avoid holding DashMap across await points — DashMap guards are not Send/Sync across await boundaries; returning a Vec snapshot keeps the async shutdown code simple and correct.
 - [Phase ?]: Propagated per-thread audit capture token to mock server thread for multi-threaded test isolation — Audit events emitted on the mock server thread were not visible to the test thread's capture sink; a thread-local token propagated to the server thread makes cross-thread assertions deterministic.
 - [Phase ?]: Retained unmatched watchdog evidence files and emitted untracked WatchdogSelfUnload audit — Deleting unmatched evidence would lose the signal that a prior agent crash occurred; retaining the file for bounded retry and emitting an untracked audit preserves observability.
+- [Phase 58.5]: Rust OnceLock<Mutex<NtdllPatcher>> cannot be reset; reset helper disables NTDLL_PATCHING_ENABLED and unpatches any initialized stubs instead
+- [Phase 58.5]: Kept default parallel test runner and serialized only tests that mutate process-global state, rather than forcing --test-threads=1
+- [Phase 58.5]: Moved PHASE_58_5_TEST_LOCK from inline #[cfg(test)] mod tests to top-level #[cfg(test)] pub(crate) static so every module can import it directly
