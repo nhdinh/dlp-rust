@@ -197,6 +197,15 @@ impl ProcessRegistry {
             }
 
             if let Some(key) = victim_key {
+                if let Some(entry) = self.states.get(&key) {
+                    if matches!(entry.value().state, ProcessState::Injected { .. }) {
+                        if let Some(ref tx) = self.lifecycle_tx {
+                            if let Err(e) = tx.try_send(*entry.key()) {
+                                tracing::warn!(error = %e, pid = entry.key().pid, "process lifecycle notification dropped");
+                            }
+                        }
+                    }
+                }
                 self.states.remove(&key);
             } else {
                 // Defensive: no entries to evict (should not happen when len > 0).
