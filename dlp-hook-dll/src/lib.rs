@@ -932,12 +932,11 @@ pub unsafe fn self_unload() -> bool {
         .lock()
         .ok()
         .and_then(|g| *g)
-        .map(|raw| HINSTANCE(raw as *mut std::ffi::c_void))
-        .unwrap_or_else(|| {
-            // Fallback: use the host module handle. This is safe because the DLL
-            // is still loaded while this thread runs.
-            GetModuleHandleW(None).unwrap_or_default().into()
-        });
+        .map(|raw| HINSTANCE(raw as *mut std::ffi::c_void));
+    let Some(instance) = instance else {
+        crate::debug_log("[dlp-hook] self_unload: cannot determine DLL instance -- aborting\0");
+        return false;
+    };
     FreeLibraryAndExitThread(instance.into(), 0);
 }
 
