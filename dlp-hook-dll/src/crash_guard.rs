@@ -359,6 +359,8 @@ mod tests {
 
     #[test]
     fn reentrancy_guard_prevents_nesting() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+        crate::reset_hook_globals();
         let result = with_reentrancy_guard(
             || with_reentrancy_guard(|| "inner", || "fallback"),
             || "outer-fallback",
@@ -368,12 +370,16 @@ mod tests {
 
     #[test]
     fn reentrancy_guard_allows_single_entry() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+        crate::reset_hook_globals();
         let result = with_reentrancy_guard(|| "ok", || "fallback");
         assert_eq!(result, "ok");
     }
 
     #[test]
     fn reentrancy_guard_resets_after_return() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+        crate::reset_hook_globals();
         let r1 = with_reentrancy_guard(|| "first", || "fallback");
         assert_eq!(r1, "first");
         let r2 = with_reentrancy_guard(|| "second", || "fallback");

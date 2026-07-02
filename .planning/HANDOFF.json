@@ -1,29 +1,39 @@
 {
   "version": "1.0",
-  "timestamp": "2026-06-21T05:37:16.053Z",
-  "phase": "48",
-  "phase_name": "Hook DLL Surface Expansion + Crash Hardening + Build Harness",
-  "phase_dir": ".planning/phases/48-hook-dll-surface-expansion-crash-hardening-build-harness",
-  "plan": 0,
-  "task": 0,
-  "total_tasks": 0,
+  "timestamp": "2026-07-02T14:17:49.072Z",
+  "phase": "58.5",
+  "phase_name": "unhook-dlp-hook-dll-when-dlp-agent-is-killed-exited",
+  "phase_dir": ".planning/phases/58.5-unhook-dlp-hook-dll-when-dlp-agent-is-killed-exited",
+  "plan": null,
+  "task": 7,
+  "total_tasks": 7,
   "status": "paused",
   "completed_tasks": [
-    {"id": 1, "name": "Phase 18 verification", "status": "done", "commit": "9141934"},
-    {"id": 2, "name": "Phase 28 execution + human UAT", "status": "done", "commit": "d7f6c8f"},
-    {"id": 3, "name": "Phase 47 verification", "status": "done", "commit": "b7f5c44"}
+    {"id": 1, "name": "dlp-common unhook IPC and audit type tests", "status": "done"},
+    {"id": 2, "name": "dlp-hook-dll cooperative self-unhook tests", "status": "done"},
+    {"id": 3, "name": "dlp-agent unhook orchestration tests", "status": "done"},
+    {"id": 4, "name": "Workspace quality gates", "status": "done"},
+    {"id": 5, "name": "Coverage auto-passed — Plan 03 agent-side orchestration", "status": "done"},
+    {"id": 6, "name": "Coverage auto-passed — Plan 04 hook DLL and agent test coverage", "status": "done"}
   ],
   "remaining_tasks": [
-    {"id": 4, "name": "Phase 48 execution", "status": "not_started"},
-    {"id": 5, "name": "Phase 48 verification", "status": "not_started"}
+    {"id": 7, "name": "Live Windows DLL unload verification", "status": "blocked"}
   ],
-  "blockers": [],
+  "blockers": [
+    {"description": "Test 7 requires a live Windows endpoint/VM with dlp-agent service running to observe real DLL unload after service stop", "type": "human_action", "workaround": "Run the verification on a physical or VM Windows test endpoint; integration test idle_injected_process_sends_poll_control_with_creation_time provides automated protocol coverage in the meantime"}
+  ],
   "async_jobs": [],
-  "human_actions_pending": [],
-  "decisions": [
-    {"decision": "Completed Phases 18, 28, and 47 via /gsd-progress --next routing", "rationale": "Resume scan surfaced these phases as incomplete-execution; executing and verifying them closed the gaps.", "phase": "48"}
+  "human_actions_pending": [
+    {"action": "Complete Test 7 on a live Windows endpoint/VM", "context": "Phase 58.5 UAT final checkpoint cannot be verified from the dev environment without a real service stop/unload observation", "blocking": true}
   ],
-  "uncommitted_files": [],
-  "next_action": "Run /gsd-progress --next to auto-route to Phase 48 execution",
-  "context_notes": "Paused between phases. Phase 48 is the next active phase in STATE.md. The working tree is clean (modulo untracked HEALTHY, RESYNC, package files). No code changes are in flight."
+  "decisions": [
+    {"decision": "Fix crash_guard reentrancy test isolation bug instead of skipping workspace quality gate", "rationale": "The --test-threads=1 failure was caused by missing reset of process-global SHUTTING_DOWN/ACTIVE_CALLS state; fixing root cause preserves the gate and prevents regressions", "phase": "58.5"}
+  ],
+  "uncommitted_files": [
+    ".planning/phases/58.5-unhook-dlp-hook-dll-when-dlp-agent-is-killed-exited/58.5-UAT.md",
+    ".planning/phases/58.5-unhook-dlp-hook-dll-when-dlp-agent-is-killed-exited/.continue-here.md",
+    "dlp-hook-dll/src/crash_guard.rs"
+  ],
+  "next_action": "Resume /gsd-verify-work 58.5 on a machine with a live Windows endpoint/VM, complete Test 7, then commit/push",
+  "context_notes": "UAT restarted and 6/7 checkpoints passed. A test isolation fix was applied to dlp-hook-dll crash_guard reentrancy tests so the workspace quality gate passes. The final checkpoint is observational and requires a real Windows service environment."
 }
