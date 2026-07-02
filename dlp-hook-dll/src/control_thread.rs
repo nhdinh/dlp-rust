@@ -324,7 +324,14 @@ fn control_thread_loop(shutdown_event: HANDLE) {
                                 "[dlp-hook] watchdog: agent unresponsive, initiating self-unhook\0",
                             );
                             persist_watchdog_evidence(pid, creation_time);
-                            crate::UnhookAll();
+                            let unhook_ok = crate::unhook_all_internal();
+                            if !unhook_ok {
+                                crate::debug_log(
+                                    "[dlp-hook] watchdog: UnhookAll failed -- remaining loaded but unhooked\0",
+                                );
+                                break;
+                            }
+
                             #[cfg(test)]
                             {
                                 WATCHDOG_TRIGGERED.store(true, Ordering::SeqCst);
