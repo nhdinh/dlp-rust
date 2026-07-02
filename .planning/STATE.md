@@ -4,17 +4,17 @@ milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
 current_phase: 58.5
 current_phase_name: unhook-dlp-hook-dll-when-dlp-agent-is-killed-exited
-status: executing
+status: verifying
 stopped_at: Completed 58.5-05-PLAN.md
-last_updated: "2026-07-02T04:55:10.845Z"
+last_updated: "2026-07-02T07:26:58.797Z"
 last_activity: 2026-07-02
 last_activity_desc: Phase 58.5 execution started
 progress:
   total_phases: 47
-  completed_phases: 37
+  completed_phases: 38
   total_plans: 199
-  completed_plans: 176
-  percent: 79
+  completed_plans: 177
+  percent: 81
 ---
 
 # Project State
@@ -31,7 +31,7 @@ progress:
 
 Phase: 58.5 (unhook-dlp-hook-dll-when-dlp-agent-is-killed-exited) — EXECUTING
 Plan: 6 of 6
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Verification: 10/10 must-haves verified, 0 gaps
 Last activity: 2026-07-02 — Phase 58.5 execution started
 
@@ -179,7 +179,7 @@ Phase 59 and later are complete and shipped as part of v0.11.0.
 
 ## Session Continuity
 
-Last session: 2026-07-02T04:55:10.709Z
+Last session: 2026-07-02T07:25:47.211Z
 Stopped at: Completed 58.5-05-PLAN.md
 Resume file: None
 
@@ -225,6 +225,7 @@ Resume file: None
 | Phase 58.5 P02 | 47min | 3 tasks | 11 files |
 | Phase 58.5 P03 | 95min | 3 tasks | 7 files |
 | Phase 58.5 P05 | 8min | 3 tasks | 9 files |
+| Phase 58.5 P06 | 25min | 3 tasks | 6 files |
 
 ## Quick Tasks Completed
 
@@ -262,3 +263,7 @@ Resume file: None
 - [Phase 58.5]: Rust OnceLock<Mutex<NtdllPatcher>> cannot be reset; reset helper disables NTDLL_PATCHING_ENABLED and unpatches any initialized stubs instead
 - [Phase 58.5]: Kept default parallel test runner and serialized only tests that mutate process-global state, rather than forcing --test-threads=1
 - [Phase 58.5]: Moved PHASE_58_5_TEST_LOCK from inline #[cfg(test)] mod tests to top-level #[cfg(test)] pub(crate) static so every module can import it directly
+- [Phase ?]: [58.5-06] Kept StartDlpControlThread export idempotent and safe to call outside DllMain by delegating to the existing lazy-start control_thread::start_control_thread.
+- [Phase ?]: [58.5-06] Cached the export RVA in HookInjector::new so each injection only creates the remote thread, avoiding repeated LoadLibraryExW/GetProcAddress calls.
+- [Phase ?]: [58.5-06] Made get_process_creation_time pub so the integration test can query the child process creation time from outside the crate.
+- [Phase ?]: [58.5-06] Capped the cooperative unhook budget to min(configured_budget, SHUTDOWN_TIMEOUT - elapsed) so earlier shutdown steps cannot starve the SCM deadline.

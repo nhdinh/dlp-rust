@@ -75,7 +75,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 58.2: Fix double HookIpcServer and wire volume classes (INSERTED)** — eliminate duplicate hook IPC server initialization and complete volume-class attribute wiring through the ABAC enforcement path. (Plan 01 complete 2026-06-24; Plans 02-03 pending)
 - [ ] **Phase 58.3: Close gap: OPS-04 — execute physical Windows 11 UAT (INSERTED)** — execute the v0.10.0 UAT plan on physical Windows 11 hardware and record actual results in `.planning/milestones/v0.10.0-UAT.md`.
 - [x] **Phase 58.4: Close gap: DIFF-02/03/04 — wire differentiators into hook DLL deny paths (INSERTED)** — invoke diagnostic snapshot capture, content SHA-256 hashing, and health snapshot ingestion from the hook DLL deny paths. (completed 2026-06-29)
-- [ ] **Phase 58.5: Unhook dlp_hook_dll.dll when dlp-agent is killed/exited (INSERTED)** — TBD. (not started)
+- [x] **Phase 58.5: Unhook dlp_hook_dll.dll when dlp-agent is killed/exited (INSERTED)** — TBD. (not started) (completed 2026-07-02)
 
 ---
 
@@ -503,12 +503,12 @@ Plans:
   4. Shared-memory sections (`Global\\DlpClassificationCache`, per-process journal sections) are closed and released.
   5. Audit events are emitted for unhook lifecycle (`agent_shutdown_unhook`, `watchdog_self_unload`, `unhook_failure`).
 
-**Plans:** 5/6 plans executed
+**Plans:** 6/6 plans complete
 
 Plans:
 
 - [x] 58.5-05-PLAN.md
-- [ ] 58.5-06-PLAN.md
+- [x] 58.5-06-PLAN.md
 
 - [x] 58.5-01-PLAN.md
 - [x] 58.5-02-PLAN.md
