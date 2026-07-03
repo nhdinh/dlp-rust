@@ -904,6 +904,20 @@ pub fn set_shutting_down_for_test(shutting_down: bool) {
 
 /// Self-unload the DLL from inside the DLL itself.
 ///
+/// This is the only safe self-unload path. After draining active hook calls,
+/// the function atomically frees the module and terminates the calling thread
+/// with `FreeLibraryAndExitThread`. The thread never returns into DLL code, so
+/// there is no risk of executing from unmapped memory.
+///
+/// No `FreeLibrary` loop is used: decrementing the module reference count from
+/// inside the DLL and then continuing to execute would be unsafe because the
+/// module could be unmapped while the thread is still running its code. The
+/// agent-side `is_module_loaded` guard added in Task 1 prevents reference-count
+/// inflation for all new injections, so this DLL never needs to compensate for
+/// a double-load it did not create. Legacy elevated reference counts from agent
+/// versions before this fix are out of scope; they are prevented going forward
+/// and will age out as processes restart.
+///
 /// # Safety
 ///
 /// Must be called from a thread that is not needed after unload. If active
@@ -937,6 +951,9 @@ pub unsafe fn self_unload() -> bool {
         crate::debug_log("[dlp-hook] self_unload: cannot determine DLL instance -- aborting\0");
         return false;
     };
+    // Atomically decrement the reference count and terminate the calling
+    // thread. This is the only unload path; it guarantees the thread never
+    // executes another instruction from the DLL image after Windows unmaps it.
     FreeLibraryAndExitThread(instance.into(), 0);
 }
 
@@ -1499,6 +1516,66 @@ mod tests {
             );
         }
 
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+    }
+
+    // --- Task 3: self_unload safety tests ---
+
+    #[test]
+    fn self_unload_check_returns_captured_instance_or_none_in_tests() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+        reset_hook_globals();
+
+        // In the test binary DllMain is not invoked as a DLL entry point, so no
+        // instance is captured. If the function were executed inside a loaded
+        // DLL, the same accessor would return the HINSTANCE passed to DllMain.
+        let instance = crate::self_unload_check();
+        assert!(
+            instance.is_none(),
+            "self_unload_check should return None when DllMain has not captured an instance"
+        );
+    }
+
+    #[test]
+    fn self_unload_aborts_when_active_calls_remain() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+        reset_hook_globals();
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+        ACTIVE_CALLS.store(0, Ordering::SeqCst);
+
+        let guard = crate::ActiveCallGuard::new();
+        assert!(guard.is_active());
+
+        // SAFETY: self_unload returns early because ACTIVE_CALLS > 0, so it
+        // does not reach FreeLibraryAndExitThread.
+        let result = unsafe { crate::self_unload() };
+        assert!(
+            !result,
+            "self_unload should abort while active hook calls remain"
+        );
+
+        drop(guard);
+        assert_eq!(ACTIVE_CALLS.load(Ordering::SeqCst), 0);
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn self_unload_aborts_when_dll_instance_not_captured() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+        reset_hook_globals();
+        SHUTTING_DOWN.store(false, Ordering::SeqCst);
+        ACTIVE_CALLS.store(0, Ordering::SeqCst);
+
+        // Ensure no instance is captured in the test binary.
+        assert!(crate::self_unload_check().is_none());
+
+        // SAFETY: no active calls and no captured instance, so self_unload
+        // returns false before any unload attempt.
+        let result = unsafe { crate::self_unload() };
+        assert!(
+            !result,
+            "self_unload should abort when the DLL instance is unknown"
+        );
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
     }
 
