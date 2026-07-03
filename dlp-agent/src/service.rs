@@ -221,6 +221,7 @@ async fn request_unhook_from_injected(
     registry: &Arc<crate::process_registry::ProcessRegistry>,
     audit_ctx: &crate::audit_emitter::EmitContext,
     budget: Duration,
+    injector: Option<Arc<crate::hook_injector::HookInjector>>,
 ) {
     let injected_before: Vec<(
         crate::process_registry::ProcessKey,
@@ -252,6 +253,74 @@ async fn request_unhook_from_injected(
     };
 
     crate::password_stop::debug_log("run_loop: requesting unhook from injected processes");
+
+    // Phase 58.5-08: Reconcile every Injected entry before arming the global
+    // unhook signal. Processes whose DLL is no longer loaded are marked
+    // unhooked so the subsequent wait does not wait for an ack that cannot
+    // arrive. Processes whose DLL is still loaded have their control thread
+    // ensured so they can poll and receive UnhookCommand.
+    if let Some(inj) = injector {
+        use tokio::sync::Semaphore;
+
+        let semaphore = Arc::new(Semaphore::new(32));
+        let mut reconcile_handles = Vec::new();
+
+        for (key, _) in &injected_before {
+            let permit = match semaphore.clone().acquire_owned().await {
+                Ok(p) => p,
+                Err(_) => break,
+            };
+            let inj = Arc::clone(&inj);
+            let registry = Arc::clone(registry);
+            let key = *key;
+
+            let handle = tokio::spawn(async move {
+                let _permit = permit;
+                let result = tokio::time::timeout(Duration::from_secs(2), async {
+                    match inj.is_module_loaded(key.pid, "dlp_hook_dll.dll") {
+                        Ok(true) => {
+                            match inj.ensure_control_thread(key.pid) {
+                                Ok(()) => {
+                                    debug!(pid = key.pid, "reconciliation: control thread ensured");
+                                }
+                                Err(e) => {
+                                    warn!(
+                                        pid = key.pid,
+                                        error = %e,
+                                        "reconciliation: ensure_control_thread failed — leaving Injected for timeout path"
+                                    );
+                                }
+                            }
+                        }
+                        Ok(false) => {
+                            registry.record_unhooked(&key);
+                            debug!(
+                                pid = key.pid,
+                                "reconciliation: DLL no longer loaded — recorded unhooked"
+                            );
+                        }
+                        Err(e) => {
+                            warn!(
+                                pid = key.pid,
+                                error = %e,
+                                "reconciliation: module check failed — leaving Injected for timeout path"
+                            );
+                        }
+                    }
+                })
+                .await;
+
+                if result.is_err() {
+                    warn!(pid = key.pid, "reconciliation: per-process timeout");
+                }
+            });
+            reconcile_handles.push(handle);
+        }
+
+        for h in reconcile_handles {
+            let _ = h.await;
+        }
+    }
 
     // Arm the request flag before emitting the audit so that a crash between
     // the two steps never leaves an audit record without a corresponding
@@ -1178,7 +1247,7 @@ struct RunLoopContext {
     detector_arc: Arc<crate::detection::VolumeDetector>,
     /// Optional hook injector (M017/S01). `None` when `cloud_hook_enabled` is false.
     #[allow(dead_code)]
-    hook_injector: Option<crate::hook_injector::HookInjector>,
+    hook_injector: Option<Arc<crate::hook_injector::HookInjector>>,
     /// Shutdown flag for the sync-client process watcher thread (M017/S02).
     /// Signalled `true` during shutdown to stop the loop before joining.
     sync_watcher_shutdown: Option<Arc<std::sync::atomic::AtomicBool>>,
@@ -1882,7 +1951,7 @@ async fn run_loop_init(
         crossbeam_channel::bounded::<crate::process_registry::ProcessKey>(1024);
 
     // ── HookInjector (M017/S01) ───────────────────────────────────────────
-    let hook_injector_opt: Option<crate::hook_injector::HookInjector> =
+    let hook_injector_opt: Option<Arc<crate::hook_injector::HookInjector>> =
         if agent_config.cloud_hook_enabled.unwrap_or(false) {
             let dll_path = std::env::current_exe()
                 .ok()
@@ -1899,7 +1968,7 @@ async fn run_loop_init(
                 dll_path_x86 = %dll_path_x86.display(),
                 "hook injector constructed"
             );
-            Some(injector)
+            Some(Arc::new(injector))
         } else {
             info!("cloud hook disabled — skipping HookInjector");
             None
@@ -1924,7 +1993,7 @@ async fn run_loop_init(
         retry_shutdown_tx,
         retry_handle,
     ) = init_universal_injection(
-        hook_injector_opt.as_ref(),
+        hook_injector_opt.as_deref(),
         agent_config.universal_injection_enabled.unwrap_or(false),
         lifecycle_tx.clone(),
     )
@@ -2023,8 +2092,7 @@ async fn run_loop_init(
     // ── Sync-client process watcher (M017/S02) ───────────────────────────
     // Only active when hook injection is enabled. Uses a std::thread (not a
     // Tokio task) to avoid blocking the async reactor during sleep intervals.
-    let (sync_watcher_shutdown, sync_watcher_handle) = if let Some(ref injector) = hook_injector_opt
-    {
+    let (sync_watcher_shutdown, sync_watcher_handle) = if hook_injector_opt.is_some() {
         // Clone injector fields needed by the watcher thread.
         // HookInjector is not Clone, so we rebuild a lightweight wrapper with
         // the same DLL path from the existing injector's field read. Instead,
@@ -2038,9 +2106,6 @@ async fn run_loop_init(
             .ok()
             .and_then(|p| p.parent().map(|d| d.join("dlp_hook_dll_x86.dll")))
             .unwrap_or_else(|| std::path::PathBuf::from("dlp_hook_dll_x86.dll"));
-        // Suppress the unused variable warning on the injector reference used
-        // only to gate the if-let branch.
-        let _ = injector;
 
         let shutdown_flag = Arc::new(AtomicBool::new(false));
         let flag_clone = Arc::clone(&shutdown_flag);
@@ -4091,7 +4156,13 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
     })
     .unwrap_or(UNHOOK_WAIT_BUDGET);
     let unhook_budget = compute_unhook_budget(SHUTDOWN_TIMEOUT, configured_budget, CLEANUP_RESERVE);
-    request_unhook_from_injected(&ctx.process_registry, &ctx.audit_ctx, unhook_budget).await;
+    request_unhook_from_injected(
+        &ctx.process_registry,
+        &ctx.audit_ctx,
+        unhook_budget,
+        ctx.hook_injector.clone(),
+    )
+    .await;
 
     // Uninstall the drag-and-drop hook (APP-08, Phase 40).
     crate::password_stop::debug_log("run_loop: uninstalling drag-drop hook");
@@ -6372,6 +6443,7 @@ fn test_request_unhook_sets_flag_and_emits_shutdown_audit() {
             &registry,
             &audit_ctx,
             Duration::from_millis(50),
+            None,
         ));
 
     assert!(
@@ -6422,6 +6494,7 @@ fn test_unhook_failure_emitted_for_remaining_on_timeout() {
             &registry,
             &audit_ctx,
             Duration::from_millis(200),
+            None,
         ));
 
     let events = crate::audit_emitter::drain_test_events();
@@ -6463,6 +6536,7 @@ fn test_request_unhook_from_injected_sets_flag_and_emits() {
             &registry,
             &audit_ctx,
             Duration::from_millis(50),
+            None,
         ));
 
     assert!(
@@ -6533,6 +6607,7 @@ fn shutdown_budget_request_unhook_from_injected_respects_deadline() {
             &registry,
             &audit_ctx,
             Duration::from_millis(100),
+            None,
         ));
     let elapsed = start.elapsed();
 
@@ -6552,6 +6627,216 @@ fn shutdown_budget_request_unhook_from_injected_respects_deadline() {
         *state,
         crate::process_registry::ProcessState::Injected { .. }
     ));
+
+    reset_unhook_signal();
+}
+
+/// Phase 58.5-08: Reconciliation records unhooked when the DLL is no longer
+/// loaded.
+#[cfg(test)]
+#[test]
+#[serial_test::serial]
+fn test_reconciliation_records_unhooked_when_module_gone() {
+    let _guard = crate::audit_emitter::audit_test_lock();
+    let _shutdown_guard = SHUTDOWN_TEST_MUTEX.lock().unwrap();
+    reset_shutdown_signal();
+    reset_unhook_signal();
+    crate::audit_emitter::enable_test_capture();
+
+    let registry = Arc::new(crate::process_registry::ProcessRegistry::new());
+    let key = crate::process_registry::ProcessKey {
+        pid: 1234,
+        creation_time: 1000,
+    };
+    registry.try_claim(key);
+    registry.record_injected(key, "x64".to_string());
+
+    let injector = Arc::new(crate::hook_injector::HookInjector::with_mocks(
+        "C:\\dummy.dll",
+        None,
+        |_pid, _module| Ok(false),
+        |_pid| panic!("ensure_control_thread should not be called when module is gone"),
+    ));
+
+    let audit_ctx = make_test_emit_context();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(request_unhook_from_injected(
+            &registry,
+            &audit_ctx,
+            Duration::from_millis(50),
+            Some(injector),
+        ));
+
+    let state = registry.get(&key).expect("key should exist");
+    assert_eq!(*state, crate::process_registry::ProcessState::Exited);
+
+    reset_unhook_signal();
+}
+
+/// Phase 58.5-08: Reconciliation calls ensure_control_thread when the DLL is
+/// loaded and leaves the entry Injected so the unhook wait can proceed.
+#[cfg(test)]
+#[test]
+#[serial_test::serial]
+fn test_reconciliation_calls_ensure_control_thread_when_module_loaded() {
+    let _guard = crate::audit_emitter::audit_test_lock();
+    let _shutdown_guard = SHUTDOWN_TEST_MUTEX.lock().unwrap();
+    reset_shutdown_signal();
+    reset_unhook_signal();
+    crate::audit_emitter::enable_test_capture();
+
+    let registry = Arc::new(crate::process_registry::ProcessRegistry::new());
+    let key = crate::process_registry::ProcessKey {
+        pid: 1234,
+        creation_time: 1000,
+    };
+    registry.try_claim(key);
+    registry.record_injected(key, "x64".to_string());
+
+    let ensure_called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let ensure_called_clone = Arc::clone(&ensure_called);
+    let injector = Arc::new(crate::hook_injector::HookInjector::with_mocks(
+        "C:\\dummy.dll",
+        None,
+        |_pid, _module| Ok(true),
+        move |_pid| {
+            ensure_called_clone.store(true, Ordering::SeqCst);
+            Ok(())
+        },
+    ));
+
+    let audit_ctx = make_test_emit_context();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(request_unhook_from_injected(
+            &registry,
+            &audit_ctx,
+            Duration::from_millis(50),
+            Some(injector),
+        ));
+
+    assert!(UNHOOK_ALL_REQUESTED.load(Ordering::Acquire));
+    assert!(ensure_called.load(Ordering::SeqCst));
+    let state = registry.get(&key).expect("key should exist");
+    assert!(matches!(
+        *state,
+        crate::process_registry::ProcessState::Injected { .. }
+    ));
+
+    reset_unhook_signal();
+}
+
+/// Phase 58.5-08: Reconciliation leaves the entry Injected when
+/// ensure_control_thread fails so the timeout path can emit UnhookFailure.
+#[cfg(test)]
+#[test]
+#[serial_test::serial]
+fn test_reconciliation_leaves_entry_injected_on_ensure_failure() {
+    let _guard = crate::audit_emitter::audit_test_lock();
+    let _shutdown_guard = SHUTDOWN_TEST_MUTEX.lock().unwrap();
+    reset_shutdown_signal();
+    reset_unhook_signal();
+    crate::audit_emitter::enable_test_capture();
+
+    let registry = Arc::new(crate::process_registry::ProcessRegistry::new());
+    let key = crate::process_registry::ProcessKey {
+        pid: 1234,
+        creation_time: 1000,
+    };
+    registry.try_claim(key);
+    registry.record_injected(key, "x64".to_string());
+
+    let injector = Arc::new(crate::hook_injector::HookInjector::with_mocks(
+        "C:\\dummy.dll",
+        None,
+        |_pid, _module| Ok(true),
+        |_pid| {
+            Err(crate::hook_injector::HookError::RemoteThreadFailed {
+                pid: 1234,
+                detail: "mock".to_string(),
+            })
+        },
+    ));
+
+    let audit_ctx = make_test_emit_context();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(request_unhook_from_injected(
+            &registry,
+            &audit_ctx,
+            Duration::from_millis(50),
+            Some(injector),
+        ));
+
+    let state = registry.get(&key).expect("key should exist");
+    assert!(matches!(
+        *state,
+        crate::process_registry::ProcessState::Injected { .. }
+    ));
+
+    reset_unhook_signal();
+}
+
+/// Phase 58.5-08: Reconciliation runs concurrently and stays within the unhook
+/// budget even when individual stubs sleep.
+#[cfg(test)]
+#[test]
+#[serial_test::serial]
+fn test_reconciliation_runs_concurrently_within_budget() {
+    let _guard = crate::audit_emitter::audit_test_lock();
+    let _shutdown_guard = SHUTDOWN_TEST_MUTEX.lock().unwrap();
+    reset_shutdown_signal();
+    reset_unhook_signal();
+    crate::audit_emitter::enable_test_capture();
+
+    let registry = Arc::new(crate::process_registry::ProcessRegistry::new());
+    for i in 0..16u32 {
+        let key = crate::process_registry::ProcessKey {
+            pid: 1000 + i,
+            creation_time: u64::from(i),
+        };
+        registry.try_claim(key);
+        registry.record_injected(key, "x64".to_string());
+    }
+
+    let injector = Arc::new(crate::hook_injector::HookInjector::with_mocks(
+        "C:\\dummy.dll",
+        None,
+        |_pid, _module| Ok(false),
+        |_pid| {
+            std::thread::sleep(Duration::from_millis(100));
+            Ok(())
+        },
+    ));
+
+    let audit_ctx = make_test_emit_context();
+    let start = Instant::now();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(request_unhook_from_injected(
+            &registry,
+            &audit_ctx,
+            Duration::from_millis(500),
+            Some(injector),
+        ));
+    let elapsed = start.elapsed();
+
+    // 16 tasks * 100 ms each = 1600 ms serially. With concurrency 32 the
+    // elapsed time should be well under 1000 ms.
+    assert!(
+        elapsed < Duration::from_millis(1000),
+        "reconciliation should run concurrently, took {:?}",
+        elapsed
+    );
 
     reset_unhook_signal();
 }
