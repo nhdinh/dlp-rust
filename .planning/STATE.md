@@ -207,6 +207,7 @@ Resume file: None
 - Phase 58.4 inserted after Phase 58.3: Close gap: DIFF-02/03/04 — wire differentiators into hook DLL deny paths (URGENT)
 - Phase 58.5 inserted after Phase 58.4: Unhook dlp_hook_dll.dll when dlp-agent is killed/exited (URGENT)
 - Phase 58.6 inserted after Phase 58.5: Targeted hook injection: only processes that perform file operations (URGENT)
+- Phase 71 added: Implement admin allowlist API handlers in dlp-admin-cli and dlp-server
 
 ## Performance Metrics
 

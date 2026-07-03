@@ -875,6 +875,17 @@ Plans:
 - TUI screen follows the BypassAlertList pattern (list + detail popup + filter + pagination)
 - SystemMenu item count updated from 14 to 15 with test coverage
 
+### Phase 71: Implement admin allowlist API handlers in dlp-admin-cli and dlp-server
+
+**Goal:** [To be planned]
+**Requirements**: TBD
+**Depends on:** Phase 65
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run /gsd-plan-phase 71 to break down)
+
 ---
 
 ## Backlog
