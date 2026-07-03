@@ -2062,10 +2062,7 @@ async fn run_loop_init(
 
                     let pids = crate::cloud_enforcer::enumerate_sync_client_pids();
                     for (pid, exe) in pids {
-                        match crate::hook_injector::HookInjector::is_module_loaded(
-                            pid,
-                            "dlp_hook_dll.dll",
-                        ) {
+                        match watcher_injector.is_module_loaded(pid, "dlp_hook_dll.dll") {
                             Ok(false) => {
                                 // DLL not yet present — attempt injection.
                                 match watcher_injector.inject(pid) {
@@ -3397,6 +3394,33 @@ async fn startup_sweep(
                     _ => {}
                 }
 
+                // Phase 58.5-08: avoid re-LoadLibraryW if the DLL is already
+                // loaded. Record the process as injected with the architecture
+                // returned by the injector.
+                match injector.is_module_loaded(pid, "dlp_hook_dll.dll") {
+                    Ok(true) => {
+                        let arch = crate::hook_injector::HookInjector::target_architecture(pid)
+                            .unwrap_or("x64");
+                        registry.record_injected(key, arch.into());
+                        tracing::info!(
+                            pid,
+                            "startup sweep: hook already loaded — recorded injected"
+                        );
+                        return;
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        tracing::warn!(pid, error = %e, "startup sweep: module check failed");
+                        registry.record_skipped(
+                            key,
+                            crate::process_registry::SkipReason::Failed(
+                                crate::process_registry::InjectionFailure::AccessDenied,
+                            ),
+                        );
+                        return;
+                    }
+                }
+
                 // Attempt injection with 5-second timeout.
                 let _ = timeout(Duration::from_secs(5), async {
                     match injector.inject(pid) {
@@ -3502,6 +3526,29 @@ async fn backstop_sweep(
                         return (false, true);
                     }
                     _ => {}
+                }
+
+                // Phase 58.5-08: avoid re-LoadLibraryW if the DLL is already
+                // loaded. Record the process as injected with the architecture
+                // returned by the injector.
+                match injector.is_module_loaded(pid, "dlp_hook_dll.dll") {
+                    Ok(true) => {
+                        let arch = crate::hook_injector::HookInjector::target_architecture(pid)
+                            .unwrap_or("x64");
+                        registry.record_injected(key, arch.into());
+                        return (true, false);
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        tracing::warn!(pid, error = %e, "backstop sweep: module check failed");
+                        registry.record_skipped(
+                            key,
+                            crate::process_registry::SkipReason::Failed(
+                                crate::process_registry::InjectionFailure::AccessDenied,
+                            ),
+                        );
+                        return (false, true);
+                    }
                 }
 
                 let result = timeout(Duration::from_secs(5), async {
