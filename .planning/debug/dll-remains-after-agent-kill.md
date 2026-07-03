@@ -2,17 +2,17 @@
 status: investigating
 trigger: "After dlp-agent service is killed, dlp_hook_dll.dll remains loaded in 97 processes instead of unloading via the cooperative unhook protocol."
 created: 2026-07-03T00:00:00Z
-updated: 2026-07-03T00:00:00Z
+updated: 2026-07-03T02:45:00Z
 related_sessions:
   - dlp-agent-stop-hook-kill
 ---
 
 ## Current Focus
 
-hypothesis: Injected processes never receive UnhookCommand because either (a) the control thread is not running in those 97 processes, (b) the agent shutdown path does not keep the hook IPC server alive long enough for polls to arrive, or (c) PollControl validation fails due to registry/creation_time mismatch.
-test: Review control-thread start coverage, shutdown ordering, and registry correlation; inspect live process state if possible.
-expecting: Identify why the cooperative unhook path is not reached in the majority of injected processes.
-next_action: Enumerate candidate causes and read relevant code paths
+hypothesis: The agent shutdown path hits SHUTDOWN_TIMEOUT before request_unhook_from_injected can do meaningful work. The hook IPC server is terminated by the tokio timeout, blocking threads remain alive, and the process eventually aborts, leaving DLLs loaded in all 97 injected processes.
+test: Verify ordering by moving request_unhook_from_injected earlier in run_loop_shutdown and/or making the cooperative unhook path independent of the tokio SHUTDOWN_TIMEOUT.
+expecting: Either (a) injected processes receive UnhookCommand and self-unload, or (b) the root cause is confirmed as the timeout consuming the unhook budget.
+next_action: Plan and implement fix: move unhook request to the start of shutdown and protect it from earlier subsystem timeouts.
 
 ## Symptoms
 
@@ -54,11 +54,27 @@ started: Reported during Phase 58.5 UAT Test 7.
     On agent startup, a startup sweep enumerates all processes and injects new ones. It does not appear to re-inject already-loaded processes to start their control threads. The registry records injected processes, but the DLL in those processes may not have a control thread if injection happened before 58.5-06.
   implication: Legacy injected processes are known to the agent but cannot participate in cooperative unhook.
 
+- timestamp: 2026-07-03T02:40:00Z
+  checked: live agent log from stop attempt
+  found: >
+    Password verified at 02:35:30.434. "shutting down enforcement subsystems" logged. File monitor stopped ~0.5s later. Health monitor kept broadcasting HEALTH_PING every ~5s throughout shutdown (02:35:33, 02:35:38, 02:35:43, 02:35:48, 02:35:53, 02:35:58, 02:36:03). At 02:36:05.439, "graceful shutdown exceeded timeout -- force-terminating timeout_secs=35" was logged. After the tokio timeout, "shutting down subsystems" and thread joins happened. IPC pipe join blocked until 02:38:32 when the shutdown watchdog (145s) aborted the process. No log lines for "Hook IPC: poll control received", "unhook ack received", or "requesting unhook from injected processes" appeared in the tail output, indicating request_unhook_from_injected either never ran or produced no observable activity before the timeout.
+  implication: The tokio graceful shutdown timed out at 35 seconds before the unhook orchestration could complete (or possibly before it even started). The agent process then aborted without ever successfully dispatching UnhookCommand to the injected processes.
+
+- timestamp: 2026-07-03T02:40:00Z
+  checked: dlp-agent/src/service.rs SHUTDOWN_TIMEOUT and run_loop
+  found: >
+    SHUTDOWN_TIMEOUT is 35 seconds. run_loop calls tokio::time::timeout(SHUTDOWN_TIMEOUT, run_loop_shutdown(ctx)). If run_loop_shutdown does not return within 35 seconds, the tokio runtime is dropped and the service proceeds to threads.shutdown_and_join(). request_unhook_from_injected is near the end of run_loop_shutdown, so it has only whatever remains of the 35-second budget after all earlier shutdown steps. The log shows 35 seconds elapsed before timeout, meaning the unhook request had little or no budget left.
+  implication: The cooperative unhook path is scheduled too late in shutdown and is not protected from the overall SHUTDOWN_TIMEOUT. Even if all injected processes have control threads, they never get a chance to poll and receive UnhookCommand before the timeout aborts the agent.
+
 ## Eliminated
 
 - hypothesis: Hook DLL crashes during self-unload and kills host processes
   evidence: The previous debug session (dlp-agent-stop-hook-kill.md) fixed a crash caused by unloading while the background thread was running. That fix is in place. The current symptom is DLL remaining loaded, not processes being killed.
   timestamp: 2026-07-03T00:00:00Z
+
+- hypothesis: Control thread not running in most processes
+  evidence: Cannot be ruled out entirely, but the log shows the agent never even reached the unhook request phase before the 35s timeout. Therefore the absence/presence of control threads is not the dominant cause in this observed failure. The primary failure mode is the timeout aborting shutdown before request_unhook_from_injected can run effectively.
+  timestamp: 2026-07-03T02:40:00Z
 
 ## Resolution
 
