@@ -6,14 +6,14 @@ current_phase: 59
 current_phase_name: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 status: executing
 stopped_at: Completed 58.5-05-PLAN.md
-last_updated: "2026-07-02T23:25:38.451Z"
+last_updated: "2026-07-03T05:08:45.571Z"
 last_activity: 2026-07-02
 last_activity_desc: Phase 58.5 complete, transitioned to Phase 59
 progress:
   total_phases: 48
   completed_phases: 38
-  total_plans: 199
-  completed_plans: 177
+  total_plans: 209
+  completed_plans: 178
   percent: 79
 ---
 
@@ -179,7 +179,7 @@ Phase 59 and later are complete and shipped as part of v0.11.0.
 
 ## Session Continuity
 
-Last session: 2026-07-02T07:25:47.211Z
+Last session: 2026-07-03T05:08:45.559Z
 Stopped at: Completed 58.5-05-PLAN.md
 Resume file: None
 
@@ -227,6 +227,7 @@ Resume file: None
 | Phase 58.5 P03 | 95min | 3 tasks | 7 files |
 | Phase 58.5 P05 | 8min | 3 tasks | 9 files |
 | Phase 58.5 P06 | 25min | 3 tasks | 6 files |
+| Phase 58.5 P07 | 55 | 3 tasks | 2 files |
 
 ## Quick Tasks Completed
 
@@ -268,3 +269,6 @@ Resume file: None
 - [Phase ?]: [58.5-06] Cached the export RVA in HookInjector::new so each injection only creates the remote thread, avoiding repeated LoadLibraryExW/GetProcAddress calls.
 - [Phase ?]: [58.5-06] Made get_process_creation_time pub so the integration test can query the child process creation time from outside the crate.
 - [Phase ?]: [58.5-06] Capped the cooperative unhook budget to min(configured_budget, SHUTDOWN_TIMEOUT - elapsed) so earlier shutdown steps cannot starve the SCM deadline.
+- [Phase ?]: Fixed 5-second CLEANUP_RESERVE guarantees remaining teardown steps cannot push service past SHUTDOWN_TIMEOUT.
+- [Phase ?]: Reset UNHOOK_ALL_REQUESTED before hook IPC server stop so accept_loop observes normal shutdown and exits cleanly.
+- [Phase ?]: Tests asserting on audit events from async code use current-thread tokio runtime to preserve thread-local capture tokens.

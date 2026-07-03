@@ -504,9 +504,11 @@ Plans:
   4. Shared-memory sections (`Global\\DlpClassificationCache`, per-process journal sections) are closed and released.
   5. Audit events are emitted for unhook lifecycle (`agent_shutdown_unhook`, `watchdog_self_unload`, `unhook_failure`).
 
-**Plans:** 6/6 plans complete
+**Plans:** 7/7 plans complete
 
 Plans:
+
+- [x] 58.5-07-PLAN.md
 
 - [x] 58.5-05-PLAN.md
 - [x] 58.5-06-PLAN.md
