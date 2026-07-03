@@ -1,18 +1,18 @@
 ---
-status: investigating
+status: resolved_pending_verification
 trigger: "After dlp-agent service is killed, dlp_hook_dll.dll remains loaded in a test process instead of unloading via the cooperative unhook protocol."
 created: 2026-07-03T00:00:00Z
-updated: 2026-07-03T06:15:00Z
+updated: 2026-07-03T10:00:00Z
 related_sessions:
   - dlp-agent-stop-hook-kill
 ---
 
 ## Current Focus
 
-hypothesis: The 58.5-07 fix eliminated the timeout-starvation root cause, but the cooperative-unhook protocol still fails for processes that do not have a running hook-DLL control-poll thread. Without that thread, the process never sends PollControl, never receives UnhookCommand, and the watchdog self-unload path never runs, so dlp_hook_dll.dll stays loaded after the agent stops.
-test: Verify whether the failing test process has a control thread by checking agent logs for "poll control received" / "unhook ack received" and hook DLL debug output for "received UnhookCommand" during a live stop. Also verify whether the agent re-injected already-loaded processes, leaving a DLL reference count > 1 that prevents FreeLibraryAndExitThread from fully unloading.
-expecting: If no PollControl/UnhookAck events are seen for the test PID, the control thread was not running. If the events are seen but the module remains loaded, the self-unload path (FreeLibraryAndExitThread / active-call drain / background-thread timeout) is the culprit.
-next_action: Capture live agent + hook DLL debug logs during a service stop and inspect the failing test process's module reference count and thread list before and after stop.
+hypothesis: The 58.5-08 fix addresses the root cause by (1) making control-thread start a hard success criterion for injection, (2) adding an idempotent ensure_control_thread reconciliation pass before shutdown, (3) preventing DLL reference-count inflation via the is_module_loaded double-load guard, and (4) keeping self_unload atomic via FreeLibraryAndExitThread. Live verification is pending.
+test: Re-run UAT Test 7 on a Windows host with the current codebase: stop the dlp-agent service, wait for the watchdog timeout, and confirm dlp_hook_dll.dll is no longer loaded in previously injected test processes.
+expecting: The DLL unloads from all test processes within the watchdog timeout.
+next_action: Run live UAT Test 7 and update 58.5-UAT.md with the result.
 
 ## Symptoms
 

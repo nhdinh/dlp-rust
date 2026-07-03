@@ -504,9 +504,11 @@ Plans:
   4. Shared-memory sections (`Global\\DlpClassificationCache`, per-process journal sections) are closed and released.
   5. Audit events are emitted for unhook lifecycle (`agent_shutdown_unhook`, `watchdog_self_unload`, `unhook_failure`).
 
-**Plans:** 7/8 plans complete
+**Plans:** 8/8 plans complete
 
 Plans:
+
+- [x] 58.5-08-PLAN.md
 
 - [x] 58.5-07-PLAN.md
 - [ ] `58.5-08-PLAN.md` — Close UAT Test 7 gap: harden control-thread start, add shutdown reconciliation, prevent double-load, and harden self-unload.
