@@ -94,6 +94,13 @@ const DISK_ENUM_CANCEL_TIMEOUT: Duration = Duration::from_secs(5);
 const UNHOOK_WAIT_BUDGET: Duration = Duration::from_secs(30);
 /// Phase 58.5: Polling interval while waiting for injected processes to ack unhook.
 const UNHOOK_POLL_INTERVAL: Duration = Duration::from_millis(100);
+/// Phase 58.5: Fixed reserve kept aside from [`SHUTDOWN_TIMEOUT`] for cleanup
+/// steps that run after the cooperative unhook wait.
+///
+/// This guarantees that even if the unhook dispatch consumes its entire budget,
+/// the remaining teardown steps still have time to run before the SCM kills the
+/// service process.
+const CLEANUP_RESERVE: Duration = Duration::from_secs(5);
 
 /// Global SCM status handle — set once after `register()` returns.
 ///
@@ -139,6 +146,33 @@ pub fn reset_shutdown_signal() {
 /// immediately request unhook from newly injected processes.
 pub fn reset_unhook_signal() {
     UNHOOK_ALL_REQUESTED.store(false, Ordering::Release);
+}
+
+/// Returns true if a cooperative unhook has been requested during shutdown.
+pub fn unhook_requested() -> bool {
+    UNHOOK_ALL_REQUESTED.load(Ordering::Acquire)
+}
+
+/// Phase 58.5: Compute the protected cooperative-unhook budget.
+///
+/// Returns the smaller of the configured unhook budget and the remaining
+/// shutdown window after reserving [`CLEANUP_RESERVE`] for post-unhook cleanup.
+/// The result is clamped to a positive minimum so an impossibly tight deadline
+/// still allows at least one poll cycle.
+///
+/// # Arguments
+///
+/// * `shutdown_timeout` — Total graceful-shutdown budget from the SCM.
+/// * `configured` — Agent-configured unhook wait budget.
+/// * `cleanup_reserve` — Time to reserve for remaining teardown steps.
+fn compute_unhook_budget(
+    shutdown_timeout: Duration,
+    configured: Duration,
+    cleanup_reserve: Duration,
+) -> Duration {
+    configured
+        .min(shutdown_timeout.saturating_sub(cleanup_reserve))
+        .max(Duration::from_millis(100))
 }
 
 /// Phase 58.5: Wait (bounded) for injected processes to poll and ack unhook.
@@ -3972,22 +4006,45 @@ fn spawn_event_loop(
 
 /// Performs graceful shutdown of all subsystems.
 ///
-/// Extracted from [`run_loop`] to reduce cognitive complexity.  Each subsystem
-/// is stopped in reverse order of initialisation.
+/// Extracted from [`run_loop`] to reduce cognitive complexity. Each subsystem
+/// is stopped in reverse order of initialisation, with one critical exception:
+/// the Phase 58.5 cooperative-unhook dispatch runs FIRST, immediately after the
+/// shutdown start timestamp is recorded and before any other teardown step.
+///
+/// # Invariant
+///
+/// `request_unhook_from_injected` must precede `.stop()`, `.send(true)`,
+/// `drop(..._handle)`, `.join()`, and `.unregister()` calls on other subsystems.
+/// Scheduling unhook after file-monitor stop, heartbeat teardown, DACL/WFP
+/// cleanup, etc., starves injected processes of the shutdown budget they need
+/// to poll the hook IPC server, receive `UnhookCommand`, and self-unload. This
+/// ordering was added to close the UAT Test 7 failure where `dlp_hook_dll.dll`
+/// remained loaded after the agent service stopped.
 async fn run_loop_shutdown(ctx: RunLoopContext) {
     // Reference approval_cache to keep the field alive until Plan 04 consumes it.
     let _ = &ctx.approval_cache;
-
-    // Phase 58.5: Track the overall shutdown deadline so the cooperative unhook
-    // wait cannot consume the entire SHUTDOWN_TIMEOUT budget and force the SCM
-    // to terminate the service.
-    let shutdown_start = Instant::now();
 
     crate::password_stop::debug_log("run_loop: starting graceful shutdown");
     info!(
         service_name = SERVICE_NAME,
         "shutting down enforcement subsystems"
     );
+
+    // Phase 58.5: Request cooperative unhook FIRST, before any other subsystem
+    // teardown begins. If unhook is scheduled after file monitor stop, heartbeat
+    // shutdown, DACL/WFP teardown, etc., those earlier steps can consume enough
+    // of the SCM's 35-second budget that the cooperative unhook wait times out
+    // before injected processes have a chance to poll and self-unload.
+    //
+    // The hook IPC server is intentionally still running here: `accept_loop`
+    // continues serving `PollControl` frames while `UNHOOK_ALL_REQUESTED` is set,
+    // even if `shutdown_requested()` is already true.
+    let configured_budget = with_config(|cfg| {
+        Duration::from_millis(cfg.unhook_wait_budget_ms.unwrap_or(30_000).max(1_000))
+    })
+    .unwrap_or(UNHOOK_WAIT_BUDGET);
+    let unhook_budget = compute_unhook_budget(SHUTDOWN_TIMEOUT, configured_budget, CLEANUP_RESERVE);
+    request_unhook_from_injected(&ctx.process_registry, &ctx.audit_ctx, unhook_budget).await;
 
     // Uninstall the drag-and-drop hook (APP-08, Phase 40).
     crate::password_stop::debug_log("run_loop: uninstalling drag-drop hook");
@@ -4168,27 +4225,6 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
     crate::ui_spawner::kill_all();
     crate::password_stop::debug_log("run_loop: UI processes killed");
 
-    // Phase 58.5: Request cooperative unhook from all injected processes.
-    // This must happen while the hook IPC server is still running so that
-    // PollControl frames receive UnhookCommand replies, and before the audit
-    // flush task stops so the resulting events are flushed.
-    //
-    // Cap the unhook wait budget to the remaining SHUTDOWN_TIMEOUT so earlier
-    // shutdown steps cannot starve the service's overall deadline.
-    let configured_budget = with_config(|cfg| {
-        Duration::from_millis(cfg.unhook_wait_budget_ms.unwrap_or(30_000).max(1_000))
-    })
-    .unwrap_or(UNHOOK_WAIT_BUDGET);
-    let elapsed = shutdown_start.elapsed();
-    let remaining_shutdown = SHUTDOWN_TIMEOUT.saturating_sub(elapsed);
-    let unhook_budget = configured_budget.min(remaining_shutdown);
-    request_unhook_from_injected(
-        &ctx.process_registry,
-        &ctx.audit_ctx,
-        unhook_budget.max(Duration::from_millis(100)),
-    )
-    .await;
-
     // Stop the audit buffer flush task (final flush runs inside).
     let _ = ctx.audit_shutdown_tx.send(true);
     if let Some(h) = ctx.audit_flush_handle {
@@ -4214,6 +4250,11 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
         consumer.stop();
     }
     crate::password_stop::debug_log("run_loop: bypass correlator stopped");
+
+    // Phase 58.5: Clear the unhook request before stopping the hook IPC server.
+    // Once the flag is false, `accept_loop` will observe the normal shutdown
+    // signal on its next iteration and exit cleanly after the current connection.
+    reset_unhook_signal();
 
     // Phase 58: Stop hook IPC server thread.
     // The HookIpcServer::run() loop exits when the pipe handle is closed.
@@ -5687,9 +5728,11 @@ fn shutdown_test_hook_ipc_server(
 /// Test that `spawn_hook_ipc_server` spawns a named thread and returns a
 /// handle that can be joined after shutdown is requested.
 #[test]
+#[serial_test::serial]
 fn test_spawn_hook_ipc_server_starts_named_thread() {
     let _guard = SHUTDOWN_TEST_MUTEX.lock().unwrap();
     reset_shutdown_signal();
+    reset_unhook_signal();
 
     let config = test_hook_ipc_config(crate::hook_ipc::DEFAULT_PIPE_NAME);
 
@@ -6227,6 +6270,124 @@ fn test_reconcile_watchdog_evidence_untracked_emits_and_retains() {
     // Cleanup is handled by the tempfile directory automatically.
 }
 
+/// Phase 58.5-07: `compute_unhook_budget` returns the configured budget when it
+/// fits comfortably inside `SHUTDOWN_TIMEOUT - CLEANUP_RESERVE`.
+#[cfg(test)]
+#[test]
+fn test_compute_unhook_budget_normal() {
+    let budget = compute_unhook_budget(
+        Duration::from_secs(35),
+        Duration::from_secs(30),
+        Duration::from_secs(5),
+    );
+    assert_eq!(budget, Duration::from_secs(30));
+}
+
+/// Phase 58.5-07: `compute_unhook_budget` is capped and clamped to a positive
+/// minimum when the overall shutdown timeout is too small for the configured
+/// budget.
+#[cfg(test)]
+#[test]
+fn test_compute_unhook_budget_starved() {
+    let budget = compute_unhook_budget(
+        Duration::from_secs(2),
+        Duration::from_secs(30),
+        Duration::from_secs(5),
+    );
+    assert_eq!(budget, Duration::from_millis(100));
+}
+
+/// Phase 58.5-07: `request_unhook_from_injected` sets `UNHOOK_ALL_REQUESTED` and
+/// emits exactly one `AgentShutdownUnhook` audit event for the injected process.
+#[cfg(test)]
+#[test]
+#[serial_test::serial]
+fn test_request_unhook_sets_flag_and_emits_shutdown_audit() {
+    let _guard = crate::audit_emitter::audit_test_lock();
+    reset_shutdown_signal();
+    reset_unhook_signal();
+    crate::audit_emitter::enable_test_capture();
+
+    let registry = Arc::new(crate::process_registry::ProcessRegistry::new());
+    let key = crate::process_registry::ProcessKey {
+        pid: 1234,
+        creation_time: 1000,
+    };
+    registry.try_claim(key);
+    registry.record_injected(key, "x64".to_string());
+
+    let audit_ctx = make_test_emit_context();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(request_unhook_from_injected(
+            &registry,
+            &audit_ctx,
+            Duration::from_millis(50),
+        ));
+
+    assert!(
+        UNHOOK_ALL_REQUESTED.load(Ordering::Acquire),
+        "UNHOOK_ALL_REQUESTED should be set"
+    );
+
+    let events = crate::audit_emitter::drain_test_events();
+    let shutdown_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == dlp_common::EventType::AgentShutdownUnhook)
+        .collect();
+    assert_eq!(shutdown_events.len(), 1);
+    assert_eq!(shutdown_events[0].decision, dlp_common::Decision::ALLOW);
+    assert_eq!(
+        shutdown_events[0].resource_path,
+        format!("agent://{}/unhook_request", std::process::id())
+    );
+
+    reset_unhook_signal();
+}
+
+/// Phase 58.5-07: `request_unhook_from_injected` emits `UnhookFailure` for any
+/// process that is still `Injected` after the unhook budget expires.
+#[cfg(test)]
+#[test]
+#[serial_test::serial]
+fn test_unhook_failure_emitted_for_remaining_on_timeout() {
+    let _guard = crate::audit_emitter::audit_test_lock();
+    reset_shutdown_signal();
+    reset_unhook_signal();
+    crate::audit_emitter::enable_test_capture();
+
+    let registry = Arc::new(crate::process_registry::ProcessRegistry::new());
+    let key = crate::process_registry::ProcessKey {
+        pid: 1234,
+        creation_time: 1000,
+    };
+    registry.try_claim(key);
+    registry.record_injected(key, "x64".to_string());
+
+    let audit_ctx = make_test_emit_context();
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .unwrap()
+        .block_on(request_unhook_from_injected(
+            &registry,
+            &audit_ctx,
+            Duration::from_millis(200),
+        ));
+
+    let events = crate::audit_emitter::drain_test_events();
+    let failure_events: Vec<_> = events
+        .iter()
+        .filter(|e| e.event_type == dlp_common::EventType::UnhookFailure)
+        .collect();
+    assert_eq!(failure_events.len(), 1);
+    assert_eq!(failure_events[0].resource_path, "pid=1234");
+
+    reset_unhook_signal();
+}
+
 /// Test that `request_unhook_from_injected` sets `UNHOOK_ALL_REQUESTED` and emits
 /// `AgentShutdownUnhook` when the registry contains injected processes.
 #[cfg(test)]
@@ -6247,7 +6408,9 @@ fn test_request_unhook_from_injected_sets_flag_and_emits() {
     registry.record_injected(key, "x64".to_string());
 
     let audit_ctx = make_test_emit_context();
-    tokio::runtime::Runtime::new()
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
         .unwrap()
         .block_on(request_unhook_from_injected(
             &registry,
@@ -6315,7 +6478,9 @@ fn shutdown_budget_request_unhook_from_injected_respects_deadline() {
 
     let audit_ctx = make_test_emit_context();
     let start = Instant::now();
-    tokio::runtime::Runtime::new()
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
         .unwrap()
         .block_on(request_unhook_from_injected(
             &registry,

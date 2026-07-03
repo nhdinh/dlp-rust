@@ -431,9 +431,14 @@ fn accept_loop(
 ) -> Result<()> {
     let mut pipe = first_pipe;
     loop {
-        if crate::service::shutdown_requested() {
+        // During graceful shutdown the accept loop must keep serving clients
+        // while the cooperative unhook window is active. Injected processes poll
+        // the pipe to receive `UnhookCommand`; if we exited as soon as
+        // `shutdown_requested()` became true, those processes would never get the
+        // command and `dlp_hook_dll.dll` would remain loaded.
+        if crate::service::shutdown_requested() && !crate::service::unhook_requested() {
             let _ = unsafe { CloseHandle(pipe) };
-            info!(pipe = %pipe_name, "shutdown requested — exiting Hook IPC accept loop");
+            info!(pipe = %pipe_name, "shutdown requested and unhook window closed — exiting Hook IPC accept loop");
             return Ok(());
         }
 
@@ -2302,5 +2307,94 @@ mod tests {
         close_pipe(client);
 
         crate::service::reset_unhook_signal();
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn hook_ipc_serves_poll_control_during_unhook() {
+        let _guard = crate::audit_emitter::audit_test_lock();
+
+        // Simulate graceful shutdown: shutdown is requested but the unhook window
+        // is still open. The accept loop must keep serving PollControl frames.
+        crate::service::reset_shutdown_signal();
+        crate::service::reset_unhook_signal();
+        crate::service::request_shutdown();
+        crate::service::UNHOOK_ALL_REQUESTED.store(true, std::sync::atomic::Ordering::Release);
+
+        // Guard ensures global signals are restored even if the test panics,
+        // so subsequent serial tests do not inherit a shutdown/unhook state.
+        struct SignalGuard;
+        impl Drop for SignalGuard {
+            fn drop(&mut self) {
+                crate::service::reset_unhook_signal();
+                crate::service::reset_shutdown_signal();
+            }
+        }
+        let _signal_guard = SignalGuard;
+
+        let pid = std::process::id();
+        let creation_time = 0u64;
+        let registry = registry_with_injected(pid, creation_time);
+        let registry_for_server = Arc::clone(&registry);
+
+        let handler: HookHandler = Arc::new(|_req: HookRequest| HookResponse {
+            decision: Decision::ALLOW,
+            reason: "ok".to_string(),
+            cache_hint: None,
+            cache_version: 0,
+            approval_override: None,
+        });
+
+        let server =
+            HookIpcServer::new(r"\\.\pipe\DlpHookPipeTestPollControlDuringUnhook", handler)
+                .with_registry(registry_for_server);
+
+        let (tx, rx) = std::sync::mpsc::channel::<()>();
+        let server_handle = std::thread::spawn(move || {
+            server.run_with_ready(|| {
+                let _ = tx.send(());
+            })
+        });
+        rx.recv_timeout(Duration::from_secs(5))
+            .expect("server should become ready");
+        std::thread::sleep(Duration::from_millis(50));
+
+        let client = connect_client(r"\\.\pipe\DlpHookPipeTestPollControlDuringUnhook")
+            .expect("client connect");
+
+        let poll = dlp_common::hook_ipc::PollControl { pid, creation_time };
+        let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+            payload: dlp_common::hook_ipc::IpcPayloadV1::PollControl(poll),
+        });
+        let poll_bytes = bincode::serialize(&envelope).unwrap();
+        let response_bytes = send_raw(client, &poll_bytes).expect("send poll control");
+        let response_envelope: dlp_common::hook_ipc::IpcEnvelope =
+            bincode::deserialize(&response_bytes).expect("deserialize response");
+
+        match response_envelope {
+            dlp_common::hook_ipc::IpcEnvelope::V1(msg) => match msg.payload {
+                dlp_common::hook_ipc::IpcPayloadV1::ControlResponse(resp) => {
+                    let command = resp
+                        .command
+                        .expect("expected UnhookCommand while unhook window is open");
+                    assert_eq!(
+                        command.reason,
+                        dlp_common::hook_ipc::UnhookReason::AgentShutdown
+                    );
+                    assert!(command.timestamp_secs > 0);
+                }
+                _ => panic!("expected ControlResponse payload"),
+            },
+        }
+
+        // Close the unhook window. The accept loop should observe the normal
+        // shutdown signal on its next iteration and exit cleanly.
+        crate::service::reset_unhook_signal();
+        close_pipe(client);
+
+        server_handle
+            .join()
+            .expect("server thread should join after unhook window closes")
+            .expect("server should exit cleanly");
     }
 }
