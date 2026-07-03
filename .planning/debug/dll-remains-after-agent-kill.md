@@ -1,26 +1,36 @@
 ---
 status: investigating
-trigger: "After dlp-agent service is killed, dlp_hook_dll.dll remains loaded in 97 processes instead of unloading via the cooperative unhook protocol."
+trigger: "After dlp-agent service is killed, dlp_hook_dll.dll remains loaded in a test process instead of unloading via the cooperative unhook protocol."
 created: 2026-07-03T00:00:00Z
-updated: 2026-07-03T02:45:00Z
+updated: 2026-07-03T06:15:00Z
 related_sessions:
   - dlp-agent-stop-hook-kill
 ---
 
 ## Current Focus
 
-hypothesis: The agent shutdown path hits SHUTDOWN_TIMEOUT before request_unhook_from_injected can do meaningful work. The hook IPC server is terminated by the tokio timeout, blocking threads remain alive, and the process eventually aborts, leaving DLLs loaded in all 97 injected processes.
-test: Verify ordering by moving request_unhook_from_injected earlier in run_loop_shutdown and/or making the cooperative unhook path independent of the tokio SHUTDOWN_TIMEOUT.
-expecting: Either (a) injected processes receive UnhookCommand and self-unload, or (b) the root cause is confirmed as the timeout consuming the unhook budget.
-next_action: Plan and implement fix: move unhook request to the start of shutdown and protect it from earlier subsystem timeouts.
+hypothesis: The 58.5-07 fix eliminated the timeout-starvation root cause, but the cooperative-unhook protocol still fails for processes that do not have a running hook-DLL control-poll thread. Without that thread, the process never sends PollControl, never receives UnhookCommand, and the watchdog self-unload path never runs, so dlp_hook_dll.dll stays loaded after the agent stops.
+test: Verify whether the failing test process has a control thread by checking agent logs for "poll control received" / "unhook ack received" and hook DLL debug output for "received UnhookCommand" during a live stop. Also verify whether the agent re-injected already-loaded processes, leaving a DLL reference count > 1 that prevents FreeLibraryAndExitThread from fully unloading.
+expecting: If no PollControl/UnhookAck events are seen for the test PID, the control thread was not running. If the events are seen but the module remains loaded, the self-unload path (FreeLibraryAndExitThread / active-call drain / background-thread timeout) is the culprit.
+next_action: Capture live agent + hook DLL debug logs during a service stop and inspect the failing test process's module reference count and thread list before and after stop.
 
 ## Symptoms
 
 expected: After stopping dlp-agent, all injected processes unload dlp_hook_dll.dll within the watchdog timeout.
-actual: 5 seconds after dlp-agent is killed, 97 processes still have dlp_hook_dll.dll loaded.
+actual: After the 58.5-07 fix, a previously injected test process still has dlp_hook_dll.dll loaded after the agent service is stopped; user reported "no".
 errors: No visible crash or error; DLL simply stays mapped.
-reproduction: Kill dlp-agent service, wait 5 seconds, run `(get-Process | Where-Object { $_.Modules.ModuleName -contains "dlp_hook_dll.dll" }).Count`.
-started: Reported during Phase 58.5 UAT Test 7.
+reproduction: Stop the dlp-agent service, wait for the watchdog timeout, and check whether dlp_hook_dll.dll is still loaded in the target test process.
+started: Reported during Phase 58.5 UAT Test 7 verification after 58.5-07 was deployed.
+
+## Eliminated
+
+- hypothesis: Hook DLL crashes during self-unload and kills host processes
+  evidence: The previous debug session (dlp-agent-stop-hook-kill.md) fixed a crash caused by unloading while the background thread was running. That fix is in place. The current symptom is DLL remaining loaded, not processes being killed.
+  timestamp: 2026-07-03T00:00:00Z
+
+- hypothesis: Agent shutdown timeout starves the cooperative unhook dispatch
+  evidence: 58.5-07 moved request_unhook_from_injected to the very start of run_loop_shutdown, added compute_unhook_budget with a 5-second cleanup reserve, and kept the hook IPC accept_loop serving during the unhook window. Automated tests pass and the previous live log pattern (35s timeout before unhook ran) is no longer expected.
+  timestamp: 2026-07-03T06:00:00Z
 
 ## Evidence
 
@@ -66,35 +76,59 @@ started: Reported during Phase 58.5 UAT Test 7.
     SHUTDOWN_TIMEOUT is 35 seconds. run_loop calls tokio::time::timeout(SHUTDOWN_TIMEOUT, run_loop_shutdown(ctx)). If run_loop_shutdown does not return within 35 seconds, the tokio runtime is dropped and the service proceeds to threads.shutdown_and_join(). request_unhook_from_injected is near the end of run_loop_shutdown, so it has only whatever remains of the 35-second budget after all earlier shutdown steps. The log shows 35 seconds elapsed before timeout, meaning the unhook request had little or no budget left.
   implication: The cooperative unhook path is scheduled too late in shutdown and is not protected from the overall SHUTDOWN_TIMEOUT. Even if all injected processes have control threads, they never get a chance to poll and receive UnhookCommand before the timeout aborts the agent.
 
-## Eliminated
+- timestamp: 2026-07-03T06:00:00Z
+  checked: dlp-agent/src/service.rs run_loop_shutdown after 58.5-07 fix
+  found: >
+    request_unhook_from_injected is now the first substantive operation in run_loop_shutdown (lines 4042-4047). compute_unhook_budget returns min(configured, SHUTDOWN_TIMEOUT - CLEANUP_RESERVE) clamped to 100ms, giving a 30-second unhook budget for the default config. The hook IPC accept_loop condition (line 439) continues serving while unhook_requested() is true even if shutdown_requested() is true, and reset_unhook_signal() is called immediately before the server stop block (line 4257).
+  implication: The previous timeout-starvation root cause is addressed in code and by automated tests. The remaining live failure is caused by something other than shutdown ordering.
 
-- hypothesis: Hook DLL crashes during self-unload and kills host processes
-  evidence: The previous debug session (dlp-agent-stop-hook-kill.md) fixed a crash caused by unloading while the background thread was running. That fix is in place. The current symptom is DLL remaining loaded, not processes being killed.
-  timestamp: 2026-07-03T00:00:00Z
+- timestamp: 2026-07-03T06:05:00Z
+  checked: dlp-agent/src/hook_injector.rs inject_into_process and start_remote_control_thread
+  found: >
+    inject_into_process returns Ok(()) even when start_remote_control_thread fails or is skipped (lines 429-438). start_remote_control_thread logs a warning and returns on any CreateRemoteThread / WaitForSingleObject / exit-code failure (lines 460-519). The comment explicitly states: "overall injection is considered successful because the DLL is already loaded and will lazily start the control thread on the first hooked API call."
+  implication: A target process can have dlp_hook_dll.dll loaded without a running control-poll thread. If that process is idle (no hooked API call), the control thread never starts, so it can never receive UnhookCommand.
 
-- hypothesis: Control thread not running in most processes
-  evidence: Cannot be ruled out entirely, but the log shows the agent never even reached the unhook request phase before the 35s timeout. Therefore the absence/presence of control threads is not the dominant cause in this observed failure. The primary failure mode is the timeout aborting shutdown before request_unhook_from_injected can run effectively.
-  timestamp: 2026-07-03T02:40:00Z
+- timestamp: 2026-07-03T06:08:00Z
+  checked: dlp-hook-dll/src/lib.rs enter_hook_call and DllMain
+  found: >
+    enter_hook_call lazily calls crate::control_thread::start_control_thread() (line 838), but only when a hooked API is invoked. DllMain does not start the control thread (loader-lock safety). The only other way to start it is the StartDlpControlThread export called by the agent after LoadLibraryW.
+  implication: Idle injected processes that missed the immediate StartDlpControlThread remote thread have no path to start polling.
+
+- timestamp: 2026-07-03T06:10:00Z
+  checked: dlp-hook-dll/src/control_thread.rs handle_unhook_command and watchdog self-unhook
+  found: >
+    Both the agent-issued UnhookCommand path and the watchdog timeout path rely on a running control_thread_loop to send PollControl / UnhookAck and to count consecutive pipe failures. The watchdog requires MAX_FAILURES (3) consecutive errors plus a 30-second grace window before self-unload fires.
+  implication: No control thread means no fast cooperative unhook AND no watchdog self-unhook. The DLL remains loaded indefinitely.
+
+- timestamp: 2026-07-03T06:12:00Z
+  checked: dlp-hook-dll/src/lib.rs self_unload and dlp-agent/src/service.rs startup_sweep/backstop_sweep
+  found: >
+    self_unload calls FreeLibraryAndExitThread exactly once on the DLL instance captured in DllMain. The agent's startup_sweep and backstop_sweep call injector.inject(pid) for every process without first checking is_module_loaded, unlike the sync-client watcher (service.rs lines 2065-2094). If a process already had dlp_hook_dll.dll loaded, LoadLibraryW increments the module reference count, and a single FreeLibraryAndExitThread will decrement but not unload the module.
+  implication: Even when the cooperative path runs and the hook DLL receives UnhookCommand, the module can remain mapped if the agent loaded it more than once. The current code has no reconciliation to call FreeLibrary the correct number of times.
 
 ## Resolution
 
-root cause: "request_unhook_from_injected was scheduled near the end of run_loop_shutdown; the 35-second SHUTDOWN_TIMEOUT expired before the cooperative unhook orchestration could complete, dropping the tokio runtime and aborting the agent before injected processes received UnhookCommand."
-fix: "Phase 58.5-07: move request_unhook_from_injected to the start of run_loop_shutdown; protect the unhook budget with compute_unhook_budget(SHUTDOWN_TIMEOUT - CLEANUP_RESERVE); keep hook_ipc accept_loop serving PollControl while UNHOOK_ALL_REQUESTED is true; reset the flag before stopping the IPC server."
-verification: "cargo test -p dlp-agent --lib passes (928 tests); cargo clippy -p dlp-agent --all-targets -- -D warnings clean; cargo fmt --check -p dlp-agent clean; cargo build -p dlp-agent --all-targets succeeds. Live UAT Test 7 verification pending agent redeploy."
+root cause: "The cooperative unhook path is client-driven: it requires a running hook-DLL control-poll thread in every target process. The agent's HookInjector only attempts to start this thread as a best-effort second remote thread after LoadLibraryW, and inject_into_process still reports success when that remote thread fails or is skipped. Idle injected processes that never trigger a hooked API call therefore never start a control thread, never send PollControl, and never receive UnhookCommand. The 58.5-07 reordering/budget fix only moved the server-side dispatch earlier; it did not make control-thread start reliable, nor did it reconcile already-loaded processes that lack a control thread. A secondary failure mode is that startup/backstop sweeps may LoadLibraryW into processes that already have the DLL, leaving a reference count > 1 so FreeLibraryAndExitThread does not fully unload the module."
+fix: "(Pending plan-phase design) Make control-thread start a hard requirement for a successful injection and add a reconciliation pass that ensures every Injected registry entry has a running control thread before shutdown. Also avoid re-LoadLibraryW into processes that already have dlp_hook_dll.dll loaded (use is_module_loaded, as the sync-client watcher already does), and/or make the hook DLL self-unload decrement the module reference count until the module actually disappears."
+verification: "Pending live UAT re-run with captured agent logs and hook DLL debug output."
 files_changed:
   - dlp-agent/src/service.rs
   - dlp-agent/src/hook_ipc.rs
-  - .planning/phases/58.5-unhook-dlp-hook-dll-when-dlp-agent-is-killed-exited/58.5-07-PLAN.md
-  - .planning/phases/58.5-unhook-dlp-hook-dll-when-dlp-agent-is-killed-exited/58.5-07-SUMMARY.md
+  - dlp-agent/src/hook_injector.rs
+  - dlp-hook-dll/src/control_thread.rs
+  - dlp-hook-dll/src/lib.rs
 
 ## Gaps
 
 - truth: "After stopping the dlp-agent service, any previously injected dlp-hook-dll.dll module unloads from a test process within the watchdog timeout."
   status: in_progress
-  reason: "Fix implemented in 58.5-07; live verification pending after agent redeploy."
+  reason: "58.5-07 timeout-starvation root cause fixed, but cooperative unhook still depends on a control thread that may not exist in the target process; reference-count re-injection is also possible."
   severity: blocker
   test: 7
-  root_cause: ""
+  root_cause: "Best-effort immediate control-thread start and unconditional re-injection leave some injected processes without a polling client or with a DLL reference count > 1."
   artifacts: []
-  missing: []
-  debug_session: ""
+  missing:
+    - "Live agent log showing PollControl / UnhookAck events for the failing PID"
+    - "Hook DLL debug log from the target process during service stop"
+    - "Target process module reference count before and after stop"
+  debug_session: ".planning/debug/dll-remains-after-agent-kill.md"
