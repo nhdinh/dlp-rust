@@ -78,16 +78,20 @@ started: Reported during Phase 58.5 UAT Test 7.
 
 ## Resolution
 
-root cause: ""
-fix: ""
-verification: ""
-files_changed: []
+root cause: "request_unhook_from_injected was scheduled near the end of run_loop_shutdown; the 35-second SHUTDOWN_TIMEOUT expired before the cooperative unhook orchestration could complete, dropping the tokio runtime and aborting the agent before injected processes received UnhookCommand."
+fix: "Phase 58.5-07: move request_unhook_from_injected to the start of run_loop_shutdown; protect the unhook budget with compute_unhook_budget(SHUTDOWN_TIMEOUT - CLEANUP_RESERVE); keep hook_ipc accept_loop serving PollControl while UNHOOK_ALL_REQUESTED is true; reset the flag before stopping the IPC server."
+verification: "cargo test -p dlp-agent --lib passes (928 tests); cargo clippy -p dlp-agent --all-targets -- -D warnings clean; cargo fmt --check -p dlp-agent clean; cargo build -p dlp-agent --all-targets succeeds. Live UAT Test 7 verification pending agent redeploy."
+files_changed:
+  - dlp-agent/src/service.rs
+  - dlp-agent/src/hook_ipc.rs
+  - .planning/phases/58.5-unhook-dlp-hook-dll-when-dlp-agent-is-killed-exited/58.5-07-PLAN.md
+  - .planning/phases/58.5-unhook-dlp-hook-dll-when-dlp-agent-is-killed-exited/58.5-07-SUMMARY.md
 
 ## Gaps
 
 - truth: "After stopping the dlp-agent service, any previously injected dlp-hook-dll.dll module unloads from a test process within the watchdog timeout."
-  status: failed
-  reason: "User reported: After 5 sec from dlp-agent is killed, the dlp_hook_dll.dll still not unhook from processes. Command `(get-Process | Where-Object { $_.Modules.ModuleName -contains 'dlp_hook_dll.dll' }).Count` return 97"
+  status: in_progress
+  reason: "Fix implemented in 58.5-07; live verification pending after agent redeploy."
   severity: blocker
   test: 7
   root_cause: ""
