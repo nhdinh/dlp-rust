@@ -534,7 +534,7 @@ Plans:
   4. The change is backward-compatible with the existing allowlist and does not reintroduce bypass paths closed by Phases 48–58.5.
   5. New or updated tests cover the targeting heuristic and fallback to universal injection when targeting data is insufficient.
 
-**Plans:** 8/8 plans planned
+**Plans:** 9/9 plans planned
 
 Plans:
 
@@ -544,8 +544,9 @@ Plans:
 - [ ] `58.6-04-PLAN.md` — Hybrid ProcessClassifier combining allowlist/PPL, PE score, basename, and command-line signals with allowlist-version-aware cache.
 - [ ] `58.6-05-PLAN.md` — LazyInjector with TierResolver seam and honest first-event-missed coverage metrics.
 - [ ] `58.6-06-PLAN.md` — Integrate classifier and lazy injector into UniversalInjector and service.rs; decouple enablement, fix retry semantics, ETW fanout.
-- [ ] `58.6-07-PLAN.md` — Targeted injection telemetry counters, path-hashed SIEM audit events, and details schema.
-- [ ] `58.6-08-PLAN.md` — Integration tests using InjectProcess/TierResolver seams, telemetry audit verification, and workspace quality gates.
+- [ ] `58.6-07-PLAN.md` — Targeted injection telemetry counters, path-hashed SIEM audit events, and agent-side details emission.
+- [ ] `58.6-08-PLAN.md` — Server-side persistence of AuditEvent.details in SQLite, queries, SIEM relay, and alert router.
+- [ ] `58.6-09-PLAN.md` — Integration tests using InjectProcess/TierResolver seams, telemetry audit verification, and workspace quality gates.
 
 ### Phase 58.4: Close gap: DIFF-02/03/04 — wire differentiators into hook DLL deny paths (INSERTED)
 
