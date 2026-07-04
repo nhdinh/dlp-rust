@@ -300,7 +300,7 @@ fn setupdi_description_by_vid_pid_serial(device_path: &str) -> String {
             // that has a real serial number.
             let serial_match = match (parsed.serial.as_str(), candidate.serial.as_str()) {
                 ("(none)", "(none)") => true, // both have no serial
-                ("(none)", _) => true,        // target has no serial; accept any candidate
+                ("(none)", _) => false,       // target has no serial; do not accept a real serial
                 (_, "(none)") => false, // target has real serial; candidate has none → no match
                 (t, c) => t == c,       // both have real serials; must match exactly
             };
@@ -769,7 +769,7 @@ pub fn find_instance_id_by_vid_pid_serial(
             // a candidate with serial "(none)" does not match a target with a real serial.
             let serial_match = match (serial, candidate.serial.as_str()) {
                 ("(none)", "(none)") => true,
-                ("(none)", _) => true,
+                ("(none)", _) => false, // target has no serial; do not accept a real serial
                 (_, "(none)") => false,
                 (t, c) => t == c,
             };
