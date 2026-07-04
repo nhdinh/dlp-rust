@@ -988,12 +988,21 @@ pub(crate) fn classify_path(
     source_volume_class: Option<VolumeClass>,
     destination_volume_class: Option<VolumeClass>,
 ) -> Result<dlp_common::HookResponse, pipe_client::PipeError> {
+    let op = if action.eq_ignore_ascii_case("WRITE")
+        || action.eq_ignore_ascii_case("CREATE")
+        || action.eq_ignore_ascii_case("NT_WRITE")
+    {
+        dlp_common::hook_ipc::HookOp::Write
+    } else {
+        dlp_common::hook_ipc::HookOp::Read
+    };
     let req = HookRequest {
         path: path.to_string(),
         action: action.to_string(),
         source_volume_class,
         destination_volume_class,
         pid: std::process::id(),
+        op,
         ..Default::default()
     };
     pipe_client::send_request(
