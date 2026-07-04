@@ -46,7 +46,7 @@ use windows::Win32::System::LibraryLoader::{
 #[allow(unused_imports)]
 use windows::Win32::System::Memory::{VirtualProtect, PAGE_EXECUTE_READWRITE};
 
-use dlp_common::hook_ipc::HandleHookRequest;
+use dlp_common::hook_ipc::{IpcEnvelope, IpcMessageV1, IpcPayloadV1};
 use dlp_common::{Decision, HookRequest, VolumeClass};
 
 mod allowlist;
@@ -1015,21 +1015,32 @@ pub(crate) fn classify_handle(
     action: &str,
     pipe_name: &str,
 ) -> Result<dlp_common::HookResponse, pipe_client::PipeError> {
-    let req = HandleHookRequest {
-        handle_value,
-        action: action.to_string(),
-        pid: std::process::id(),
-    };
-    let payload = match bincode::serialize(&req) {
+    // Wrap the handle classification in the versioned envelope the agent
+    // understands. The agent resolves handle-based requests by their
+    // `handle://<value>` path until a full handle tracker is implemented.
+    let envelope = IpcEnvelope::V1(IpcMessageV1 {
+        payload: IpcPayloadV1::Request(HookRequest {
+            path: format!("handle://{handle_value}"),
+            action: action.to_string(),
+            pid: std::process::id(),
+            ..Default::default()
+        }),
+    });
+    let payload = match bincode::serialize(&envelope) {
         Ok(p) => p,
         Err(_) => return Err(pipe_client::PipeError::Malformed),
     };
     let response_bytes = pipe_client::send_raw_request(pipe_name, &payload, 50)?;
-    let resp: dlp_common::HookResponse = match bincode::deserialize(&response_bytes) {
-        Ok(r) => r,
+    let envelope: IpcEnvelope = match bincode::deserialize(&response_bytes) {
+        Ok(e) => e,
         Err(_) => return Err(pipe_client::PipeError::Malformed),
     };
-    Ok(resp)
+    match envelope {
+        IpcEnvelope::V1(msg) => match msg.payload {
+            IpcPayloadV1::Response(resp) => Ok(resp),
+            _ => Err(pipe_client::PipeError::Malformed),
+        },
+    }
 }
 
 // ---------------------------------------------------------------------------
