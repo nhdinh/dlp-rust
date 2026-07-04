@@ -5,6 +5,7 @@
 //! All errors are mapped to [`PipeError`] so the caller can fail-closed.
 
 use std::cell::RefCell;
+use std::time::{Duration, Instant};
 use windows::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE, WAIT_OBJECT_0};
 use windows::Win32::Storage::FileSystem::{
     CreateFileW, FlushFileBuffers, ReadFile, WriteFile, FILE_FLAGS_AND_ATTRIBUTES,
@@ -475,10 +476,19 @@ fn read_exact_with_timeout(pipe: HANDLE, buf: &mut [u8], timeout_ms: u32) -> Res
         }
     };
 
+    let deadline = Instant::now() + Duration::from_millis(timeout_ms as u64);
     let mut remaining = buf.len();
     while remaining > 0 {
         let offset = buf.len() - remaining;
         let slice_len = remaining.min(65536);
+
+        let slice_timeout = deadline.saturating_duration_since(Instant::now()).as_millis() as u32;
+        if slice_timeout == 0 {
+            unsafe {
+                let _ = CloseHandle(event);
+            }
+            return Err(PipeError::Timeout);
+        }
 
         let mut overlapped = OVERLAPPED {
             hEvent: event,
@@ -515,7 +525,7 @@ fn read_exact_with_timeout(pipe: HANDLE, buf: &mut [u8], timeout_ms: u32) -> Res
         };
 
         if pending {
-            let wait = unsafe { WaitForSingleObject(event, timeout_ms) };
+            let wait = unsafe { WaitForSingleObject(event, slice_timeout) };
             if wait != WAIT_OBJECT_0 {
                 unsafe {
                     let _ = CancelIoEx(pipe, Some(std::ptr::addr_of!(overlapped)));
