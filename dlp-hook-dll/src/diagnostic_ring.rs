@@ -79,19 +79,23 @@ pub fn drain_snapshots(limit: usize) -> Vec<DiagnosticSnapshot> {
 
     // Get current QPC and frequency for correct expiry calculation.
     let now_qpc = unsafe { query_performance_counter() };
-    let one_hour_ticks =
-        unsafe { query_performance_frequency() }.saturating_mul(ENTRY_EXPIRY_SECONDS);
+    let freq = unsafe { query_performance_frequency() };
+    let one_hour_ticks = freq.saturating_mul(ENTRY_EXPIRY_SECONDS);
+    let qpc_ok = now_qpc > 0 && freq > 0;
 
     while result.len() < limit {
         let Some(snapshot) = ring.pop() else {
             break;
         };
 
-        // Skip expired entries (lazy eviction).
-        // If now_qpc is 0 (QPC failed), skip expiry check to avoid evicting everything.
-        // Also skip if timestamp_qpc is 0 (uninitialized).
-        let age = now_qpc.wrapping_sub(snapshot.timestamp_qpc);
-        if now_qpc > 0 && snapshot.timestamp_qpc > 0 && age > one_hour_ticks {
+        // Skip expired entries (lazy eviction) only when QPC is usable.
+        // If QPC failed (now_qpc == 0 or freq == 0), we cannot compute a
+        // meaningful age, so we retain the snapshot rather than evicting
+        // everything or retaining stale data indefinitely.
+        if qpc_ok
+            && snapshot.timestamp_qpc > 0
+            && now_qpc.wrapping_sub(snapshot.timestamp_qpc) > one_hour_ticks
+        {
             continue;
         }
 
