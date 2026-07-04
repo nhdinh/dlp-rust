@@ -109,7 +109,9 @@ fn record_pipe_round_trip_and_maybe_emit() {
         + 1;
     if health_count.is_multiple_of(crate::perf_telemetry::HEALTH_EMIT_INTERVAL) {
         let snapshot = crate::perf_telemetry::emit_health_snapshot();
-        let _ = crate::pipe_client::send_health_snapshot(crate::DEFAULT_PIPE_NAME, &snapshot);
+        if let Err(e) = crate::pipe_client::send_health_snapshot(crate::DEFAULT_PIPE_NAME, &snapshot) {
+            crate::debug_log(&format!("[dlp-hook] health snapshot send failed: {}\0", e));
+        }
     }
 }
 
