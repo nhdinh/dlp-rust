@@ -1032,6 +1032,7 @@ pub(crate) fn classify_handle(
             path: format!("handle://{handle_value}"),
             action: action.to_string(),
             pid: std::process::id(),
+            handle_value,
             ..Default::default()
         }),
     });

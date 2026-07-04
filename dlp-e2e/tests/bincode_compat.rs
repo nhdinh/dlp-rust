@@ -57,6 +57,7 @@ fn new_request_roundtrips() {
         source_volume_class: None,
         destination_volume_class: None,
         pid: 0,
+    handle_value: 0,
     };
 
     let bytes = bincode::serialize(&req).unwrap();
@@ -145,6 +146,7 @@ fn envelope_v1_roundtrip() {
         source_volume_class: None,
         destination_volume_class: None,
         pid: 0,
+    handle_value: 0,
     };
 
     let envelope = IpcEnvelope::V1(IpcMessageV1 {
@@ -167,10 +169,11 @@ fn envelope_v1_roundtrip() {
 fn golden_fixture_stability() {
     // Golden fixture: HookRequest { path="C:\\fixture.txt", action="READ",
     // cache_version=0, protocol_version=1, op=HookOp::Read,
-    // source_volume_class=None, destination_volume_class=None, pid=0 }
+    // source_volume_class=None, destination_volume_class=None, pid=0,
+    // handle_value=0 }
     //
     // Generated with: bincode::serialize(&req).unwrap()
-    // Total: 53 bytes
+    // Total: 61 bytes
     const GOLDEN_REQUEST: &[u8] = &[
         14, 0, 0, 0, 0, 0, 0, 0, // path: len=14 (u64 little-endian)
         67, 58, 92, 102, 105, 120, 116, 117, 114, 101, 46, 116, 120, 116, // "C:\fixture.txt"
@@ -181,6 +184,7 @@ fn golden_fixture_stability() {
         0, // source_volume_class: None (Option u8 discriminant=0)
         0, // destination_volume_class: None (Option u8 discriminant=0)
         0, 0, 0, 0, // pid: 0 (u32 little-endian)
+        0, 0, 0, 0, 0, 0, 0, 0, // handle_value: 0 (u64 little-endian)
     ];
 
     let deserialized: HookRequest = bincode::deserialize(GOLDEN_REQUEST).unwrap();
@@ -192,6 +196,7 @@ fn golden_fixture_stability() {
     assert_eq!(deserialized.source_volume_class, None);
     assert_eq!(deserialized.destination_volume_class, None);
     assert_eq!(deserialized.pid, 0);
+    assert_eq!(deserialized.handle_value, 0);
 
     // Re-serialize and verify byte-for-byte stability
     let re_serialized = bincode::serialize(&deserialized).unwrap();

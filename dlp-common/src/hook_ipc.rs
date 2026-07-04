@@ -193,6 +193,13 @@ pub struct HookRequest {
     /// for ABAC evaluation. A value of `0` means the PID was not provided.
     #[serde(default)]
     pub pid: u32,
+    /// The raw HANDLE value cast to u64 for cross-architecture safety.
+    ///
+    /// Populated by handle-based hooks (WriteFile, NtWriteFile, etc.) so the
+    /// agent can correlate blocked-write audit events with hash evidence.
+    /// A value of `0` means the request is path-based.
+    #[serde(default)]
+    pub handle_value: u64,
 }
 
 fn default_protocol_version() -> u8 {
@@ -654,6 +661,7 @@ mod tests {
             source_volume_class: None,
             destination_volume_class: None,
             pid: 0,
+            handle_value: 0,
         };
         let envelope = IpcEnvelope::V1(IpcMessageV1 {
             payload: IpcPayloadV1::Request(req),
@@ -689,6 +697,7 @@ mod tests {
             source_volume_class: None,
             destination_volume_class: None,
             pid: 0,
+            handle_value: 0,
         };
         let bytes = bincode::serialize(&req).unwrap();
         let round_trip: HookRequest = bincode::deserialize(&bytes).unwrap();
@@ -708,6 +717,7 @@ mod tests {
             source_volume_class: Some(VolumeClass::USBRemovable),
             destination_volume_class: Some(VolumeClass::Optical),
             pid: 0,
+            handle_value: 0,
         };
         let bytes = bincode::serialize(&req).unwrap();
         let round_trip: HookRequest = bincode::deserialize(&bytes).unwrap();
@@ -1407,6 +1417,7 @@ mod tests {
             source_volume_class: None,
             destination_volume_class: None,
             pid: 0,
+            handle_value: 0,
         };
         let req_envelope = IpcEnvelope::V1(IpcMessageV1 {
             payload: IpcPayloadV1::Request(req),

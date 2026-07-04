@@ -1650,14 +1650,14 @@ fn spawn_hook_ipc_server(config: HookIpcServerConfig) -> Option<std::thread::Joi
             // DIFF-03: If this is a blocked write, look up the hash from the cache
             // and emit an audit event with the hash attached.
             if response.decision.is_denied() && is_write_action(&req.action) {
-                let hash = crate::hash_cache::lookup_hash(&hash_cache_for_closure, req.pid, 0);
-                // Note: handle_value is not available in HookRequest; we use 0 as
-                // a fallback key. The hook DLL sends HashEvidence with the actual
-                // handle_value. In practice, the cache lookup by (pid, 0) works
-                // because the hook DLL's WriteFile trampoline uses the process's
-                // own handle_value which is unique per process. However, this is
-                // a known limitation — the handle_value should be forwarded in the
-                // HookRequest for precise correlation. See TODO(DIFF-03-handle).
+                let hash = crate::hash_cache::lookup_hash(
+                    &hash_cache_for_closure,
+                    req.pid,
+                    req.handle_value,
+                );
+                // Handle-based hooks (WriteFile, NtWriteFile, etc.) populate
+                // `handle_value` so the blocked-write audit can correlate with
+                // the HashEvidenceFrame keyed by (pid, handle_value).
                 let (hash_str, truncated, skipped) = match hash {
                     Some(evidence) => (
                         evidence.content_sha256,
@@ -5971,6 +5971,7 @@ fn test_hook_request_to_evaluate_request() {
         source_volume_class: Some(dlp_common::VolumeClass::LocalNTFS),
         destination_volume_class: Some(dlp_common::VolumeClass::USBRemovable),
         pid: 1234,
+    handle_value: 0,
     };
     let caller_sid = "S-1-5-21-1234567890-1234567890-1234567890-1001".to_string();
 
@@ -6006,6 +6007,7 @@ fn test_hook_request_to_evaluate_request_forwards_volume_classes() {
         source_volume_class: Some(dlp_common::VolumeClass::LocalNTFS),
         destination_volume_class: Some(dlp_common::VolumeClass::Optical),
         pid: 1234,
+    handle_value: 0,
     };
     let caller_sid = "S-1-5-21-123".to_string();
 
@@ -6036,6 +6038,7 @@ fn test_hook_request_to_evaluate_request_leaves_optional_fields_none() {
         source_volume_class: None,
         destination_volume_class: None,
         pid: 1234,
+    handle_value: 0,
     };
     let eval_req = hook_request_to_evaluate_request(&req, "S-1-5-21-test".to_string());
 
@@ -6154,6 +6157,7 @@ fn test_invalid_pid_returns_deny_identity_resolution_failed() {
         source_volume_class: None,
         destination_volume_class: None,
         pid: 0,
+    handle_value: 0,
     };
 
     let response_envelope = send_request_and_read_response(client, req);
@@ -6211,6 +6215,7 @@ fn test_copy_move_none_volume_class_logs_warning() {
         source_volume_class: None,
         destination_volume_class: None,
         pid: std::process::id(),
+    handle_value: 0,
     };
 
     let response_envelope = send_request_and_read_response(client, req);
