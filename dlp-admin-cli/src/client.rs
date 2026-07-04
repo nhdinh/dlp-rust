@@ -67,8 +67,8 @@ impl EngineClient {
         let key_path = std::env::var("DLP_ENGINE_KEY_PATH").ok();
 
         let tls_verify = std::env::var("DLP_ENGINE_TLS_VERIFY")
-            .map(|v| v == "false")
-            .unwrap_or(false);
+            .map(|v| v.to_ascii_lowercase() != "false")
+            .unwrap_or(true);
 
         let mut builder = Client::builder().timeout(Duration::from_secs(10));
 
@@ -79,7 +79,7 @@ impl EngineClient {
         }
 
         // Disable TLS verification in development when explicitly requested.
-        if tls_verify {
+        if !tls_verify {
             tracing::warn!("TLS verification disabled (DLP_ENGINE_TLS_VERIFY=false)");
             builder = builder.danger_accept_invalid_certs(true);
         }
