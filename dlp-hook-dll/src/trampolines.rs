@@ -2882,4 +2882,57 @@ mod tests {
         assert!(!guard.is_active());
         crate::set_shutting_down_for_test(false);
     }
+
+    // --- DIFF-01: Approval override allows denied operation ---
+    //
+    // Intentionally placed LAST in this module. The mock agent server is started
+    // on DEFAULT_PIPE_NAME and the existing helper does not shut down when its
+    // JoinHandle is dropped, so running this test after all other lib tests
+    // prevents a leaked server from causing later tests on DEFAULT_PIPE_NAME to
+    // hang. Integration tests run in separate processes and are unaffected.
+
+    #[test]
+    fn test_approval_override_allows_deny_path() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+        crate::reset_hook_globals();
+        crate::perf_telemetry::reset_perf_counters();
+        crate::pipe_client::reset_pipe_client_mocks();
+        crate::diagnostic_ring::drain_all_snapshots();
+
+        // classify_and_log_path hardcodes DEFAULT_PIPE_NAME, so the mock server
+        // must listen there. Holding PHASE_58_5_TEST_LOCK prevents parallel tests
+        // from colliding on the same pipe name.
+        let handler =
+            std::sync::Arc::new(|_req: dlp_common::HookRequest| dlp_common::HookResponse {
+                decision: dlp_common::Decision::DENY,
+                reason: "denied-but-overridden".to_string(),
+                cache_hint: None,
+                cache_version: 0,
+                approval_override: Some(true),
+            });
+        let _server = crate::tests::start_agent_mock_server(crate::DEFAULT_PIPE_NAME, handler);
+        std::thread::sleep(std::time::Duration::from_millis(50));
+
+        let result = classify_and_log_path(
+            r"C:\test\override.txt",
+            "CREATE",
+            "CreateFileW",
+            0,
+            1,
+            None,
+            None,
+        );
+
+        assert!(
+            result.is_none(),
+            "approval_override=true on DENY should allow the operation (return None)"
+        );
+
+        // An allowed operation must NOT leave a diagnostic snapshot in the ring.
+        let snapshots = crate::diagnostic_ring::drain_snapshots(10);
+        assert!(
+            snapshots.is_empty(),
+            "override allow should not produce a diagnostic snapshot"
+        );
+    }
 }
