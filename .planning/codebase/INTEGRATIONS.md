@@ -1,310 +1,116 @@
-# Integration Points
+# External Integrations
 
-## Project: Enterprise DLP System (NTFS + Active Directory + ABAC)
+**Analysis Date:** 2026-07-03
 
----
+## APIs & External Services
 
-## 1. External Services and APIs
+**Identity:**
+- **Active Directory / LDAP v3**
+  - SDK/Client: `ldap3` 0.11 (`dlp-common/src/ad_client.rs`).
+  - Auth: Machine-account Kerberos bind; optional TLS (`require_tls` flag stored in `ldap_config` table).
+  - Usage: User/group resolution, group membership lookup, AD site detection, device trust (`NetGetJoinInformation`), network location (`GetAdaptersAddresses` + VPN subnet matching).
 
-### 1.1 Active Directory / LDAP
+**Browser:**
+- **Chrome Enterprise Content Analysis SDK**
+  - Protocol: Named pipes + Protocol Buffers (proto2).
+  - Client: `prost` 0.14 (`dlp-agent/src/chrome/`, `dlp-agent/build.rs`, `dlp-agent/proto/`).
+  - Connectors: `FILE_DOWNLOADED`, `FILE_ATTACHED`, `BULK_DATA_ENTRY`, `PRINT`, `FILE_TRANSFER`.
 
-| Aspect | Detail |
-|--------|--------|
-| **Protocol** | LDAP v3 |
-| **Library** | `ldap3` 0.11 |
-| **Usage** | Identity resolution, group membership lookup, AD site detection |
-| **Configuration** | URL, base DN, TLS requirement, cache TTL, VPN subnets stored in SQLite |
-| **Security** | TLS optional (`require_tls` flag), credential redaction via `secrecy` crate |
+**SIEM / Alerting:**
+- **Splunk HEC** — HTTPS ingest to configurable base URL; token encrypted at rest (`dlp-server/src/siem_connector.rs`, admin API `/admin/siem-config`).
+- **Elasticsearch / ELK** — HTTPS with API-key auth; encrypted at rest (`dlp-server/src/siem_connector.rs`).
+- **Syslog (RFC 5424)** — TLS over TCP via `tokio-rustls`; native CA store; SQLite-backed queue with retry (`dlp-server/src/syslog_connector.rs`, admin API `/admin/syslog-config`).
+- **SMTP** — Email alerts via `lettre` 0.11 (STARTTLS/SMTPS); password encrypted at rest (`dlp-server/src/alert_router.rs`, admin API `/admin/alert-router-config`).
 
-### 1.2 Chrome Enterprise Content Analysis SDK
+**Windows Platform APIs:**
+- Extensive use of the `windows` crate (0.58/0.62) across Security, FileSystem, Registry, Services, Threading, Networking, WFP, ETW, Printing, Devices, UI, and WDK features.
 
-| Aspect | Detail |
-|--------|--------|
-| **Protocol** | Named pipes + Protocol Buffers (proto2) |
-| **Library** | `prost` 0.14 (codegen), custom proto definitions |
-| **Usage** | Browser integration for file download, attachment, print, clipboard monitoring |
-| **Message Types** | `ContentAnalysisRequest`, `ContentAnalysisResponse` |
-| **Connectors** | FILE_DOWNLOADED, FILE_ATTACHED, BULK_DATA_ENTRY, PRINT, FILE_TRANSFER |
+## Data Storage
 
-### 1.3 Splunk (SIEM)
+**Databases:**
+- **SQLite** (primary server store)
+  - Connection: `dlp-server/src/db/mod.rs` via `r2d2` pool; path configurable via `DLP_DATABASE_PATH` or default file.
+  - Client/ORM: `rusqlite` 0.39; raw SQL encapsulated in repository modules under `dlp-server/src/db/repositories/`.
+  - WAL mode enabled; `secure_delete` PRAGMA enabled.
 
-| Aspect | Detail |
-|--------|--------|
-| **Protocol** | HTTPS + Splunk HEC (HTTP Event Collector) |
-| **Endpoint** | Configurable base URL (e.g., `https://splunk:8088`) |
-| **Authentication** | Splunk HEC token (encrypted at rest) |
-| **Library** | `reqwest` 0.12 |
-| **Configuration** | Admin API: `GET/PUT /admin/siem-config` |
+**Agent Local Storage:**
+- DPAPI-encrypted SQLite offline audit queue (`dlp-agent/src/offline_audit_queue.rs`).
+- Append-only JSONL local audit log (`dlp-agent/src/audit_emitter.rs`).
+- TOML agent configuration (`dlp-agent/src/config.rs`).
+- Windows Registry for service/Chrome settings.
 
-### 1.4 Elasticsearch / ELK
+**File Storage:**
+- Local filesystem only; no external object store.
+- Protected paths enforced via policy, not NTFS ACL modification.
 
-| Aspect | Detail |
-|--------|--------|
-| **Protocol** | HTTPS |
-| **Endpoint** | Configurable base URL (e.g., `https://elastic:9200`) |
-| **Authentication** | API key (encrypted at rest) |
-| **Library** | `reqwest` 0.12 |
-| **Configuration** | Admin API: `GET/PUT /admin/siem-config` |
+**Caching:**
+- In-memory caches: `dlp-server::policy_store`, `dlp-server::label_service`, `dlp-agent::cache`, `dlp-agent::classification_cache`, `dlp-agent::approval_cache`, `dlp-agent::hash_cache`, `dlp-hook-dll::classification_cache`.
 
-### 1.5 Syslog (RFC 5424)
+## Authentication & Identity
 
-| Aspect | Detail |
-|--------|--------|
-| **Protocol** | TLS over TCP (RFC 5424) |
-| **Library** | `tokio-rustls` 0.26 |
-| **Certificate Store** | Native system CA (`rustls-native-certs` 0.8) |
-| **Configuration** | Admin API: `GET/PUT /admin/syslog-config`, test endpoint |
-| **Queue** | SQLite-backed persistent queue with retry logic |
+**Auth Provider:**
+- **Active Directory** — Source of identity truth for Windows users and groups (`dlp-common/src/ad_client.rs`).
+- **Local DLP Admin** — JWT (HMAC-SHA256) with bcrypt password storage (`dlp-server/src/admin_auth.rs`, `admin_users` table).
+- **Approval Workflow Tokens** — Ed25519 signed JWTs (`dlp-server/src/approval_token.rs`).
+- **Windows Security Context** — SID resolution, token impersonation (`CreateProcessAsUserW`), DPAPI for machine-bound secrets.
 
-### 1.6 SMTP (Email Alerts)
+## Monitoring & Observability
 
-| Aspect | Detail |
-|--------|--------|
-| **Protocol** | SMTP over TLS (STARTTLS or SMTPS) |
-| **Library** | `lettre` 0.11 (`tokio1-rustls-tls`, `smtp-transport`, `builder`) |
-| **Usage** | Alert router for policy violation notifications |
-| **Security** | Password encrypted at rest via `secrecy` |
+**Error Tracking:**
+- Structured logging via `tracing`; no external error-tracking service detected.
+- Audit events stored in SQLite and forwarded to SIEM/syslog/email.
 
----
+**Logs:**
+- `tracing-subscriber` with `EnvFilter`; JSON output for production.
+- File-based logging via `tracing-appender` (rolling file appender).
+- Local JSONL audit logs on agent.
 
-## 2. Third-Party Libraries and SDKs
+**Health Monitoring:**
+- `GET /health` on `dlp-server`.
+- Agent-to-server heartbeat (`POST /agents/{id}/heartbeat`).
+- Agent<->UI mutual health ping-pong (`dlp-agent/src/health_monitor.rs`).
 
-### 2.1 Windows Platform SDK (via `windows` crate)
+## CI/CD & Deployment
 
-Extensive use across all crates. Key API areas:
+**Hosting:**
+- On-premise / self-managed Windows endpoints; central `dlp-server` can run on Windows or Linux.
 
-| API Area | Features Used | Purpose |
-|----------|---------------|---------|
-| **Security** | `Win32_Security`, `Win32_Security_Authorization`, `Win32_Security_Cryptography`, `Win32_Security_WinTrust` | ACLs, SIDs, DPAPI, code signing verification |
-| **File System** | `Win32_Storage_FileSystem` | NTFS operations, file monitoring |
-| **Registry** | `Win32_System_Registry` | Configuration storage, Chrome registry hooks |
-| **Services** | `Win32_System_Services`, `Win32_System_Threading` | Windows Service lifecycle, process management |
-| **Networking** | `Win32_NetworkManagement_WNet`, `Win32_Networking_ActiveDirectory`, `Win32_NetworkManagement_WindowsFilteringPlatform` | Network shares, AD site lookup, WFP egress filtering |
-| **UI** | `Win32_UI_WindowsAndMessaging`, `Win32_UI_Shell`, `Win32_Graphics_Gdi` | Window hooks, drag-and-drop, tray icon |
-| **Diagnostics** | `Win32_System_Diagnostics_Etw`, `Win32_System_Diagnostics_ToolHelp` | ETW process watching, process enumeration |
-| **Devices** | `Win32_Devices_DeviceAndDriverInstallation`, `Win32_Devices_Properties` | USB device enumeration, PnP properties |
-| **Printing** | `Win32_Graphics_Printing` | Print spooler monitoring, XPS parsing |
-| **OLE** | `Win32_System_Ole` | Drag-and-drop interception |
-| **AppX** | `Win32_Storage_Packaging_Appx` | UWP application identity resolution |
-| **WDK** | `Wdk_System_SystemInformation`, `Wdk_System_Threading` | Kernel-level hooks (hook DLL) |
+**CI Pipeline:**
+- GitHub Actions:
+  - `.github/workflows/build.yml` — Build, clippy, fmt check, tests, SonarQube scan.
+  - `.github/workflows/nightly.yml` — Release build, smoke tests, health checks.
+  - `.github/workflows/release.yml` — Release build, Authenticode signing, artifact upload.
 
-### 2.2 WMI
+**Deployment Artifacts:**
+- MSI installer (`installer/DLPAgent.wxs`, `installer/build.ps1`).
+- Authenticode signing via `signtool` in release workflow.
 
-| Aspect | Detail |
-|--------|--------|
-| **Library** | `wmi` 0.18 |
-| **Namespace** | `ROOT\CIMV2\Security\MicrosoftVolumeEncryption` |
-| **Usage** | BitLocker status queries, encryption detection |
-| **Features** | `chrono` support for WMI datetime types |
+## Environment Configuration
 
-### 2.3 ETW (Event Tracing for Windows)
+**Required env vars (examples):**
+- `DLP_SERVER_URL` — Agent/CLI server discovery.
+- `DLP_DATABASE_PATH` — SQLite database path.
+- `JWT_SECRET` — Development fallback JWT signing secret.
+- `SONAR_TOKEN` — SonarQube scanner authentication.
 
-| Aspect | Detail |
-|--------|--------|
-| **Library** | `ferrisetw` 1.2.0 |
-| **Usage** | Real-time process creation/termination monitoring |
-| **Integration** | Universal injection allowlist, AppInit DLL management |
+**Secrets location:**
+- `.env` file (gitignored) for local development.
+- Encrypted SQLite rows for production secrets (SMTP passwords, SIEM tokens, webhook secrets, JWT secret, KEK) via `dlp-server::crypto::SecretCrypto`.
+- DPAPI for machine-bound agent-side secrets.
 
----
+## Webhooks & Callbacks
 
-## 3. Database and Storage Integrations
+**Incoming:**
+- Admin API webhooks for alert routing (`dlp-server/src/alert_router.rs`).
+- Agent registration and heartbeat endpoints (`dlp-server/src/agent_registry.rs`).
+- Audit event ingestion (`POST /audit/events`).
 
-### 3.1 SQLite (Primary Data Store)
-
-| Aspect | Detail |
-|--------|--------|
-| **Library** | `rusqlite` 0.39 (bundled, chrono support) |
-| **Connection Pooling** | `r2d2` 0.8 + `r2d2_sqlite` 0.33 |
-| **Schema** | Single-file database (`dlp-server.db` or configurable path) |
-| **WAL Mode** | Enabled for concurrent read/write |
-
-### 3.2 Database Schema (Server)
-
-| Table / Repository | Purpose |
-|--------------------|---------|
-| `policies` | ABAC policy storage |
-| `labels` | Data classification labels |
-| `protected_paths` | Path-based protection rules |
-| `allowlist` | Process/application allowlists |
-| `agents` | Registered endpoint agents |
-| `device_registry` | Known USB/removable devices |
-| `disk_registry` | Discovered disk/volume information |
-| `audit_events` | Audit log entries |
-| `admin_users` | Admin user accounts (bcrypt passwords) |
-| `siem_config` | Splunk/ELK connector configuration |
-| `syslog_config` | Syslog forwarder configuration |
-| `alert_router_config` | Email alert routing rules |
-| `ldap_config` | Active Directory connection settings |
-| `jwt_secret` | JWT signing secret |
-| `secret_kek` | Key Encryption Key for secrets at rest |
-| `system_kv` | Generic key-value storage |
-| `syslog_queue` | Pending syslog messages |
-| `bypass_alerts` | Bypass attempt alerts |
-| `approvals` | Approval workflow records |
-| `exceptions` | Policy exception grants |
-| `credentials` | Encrypted credential store |
-| `managed_origins` | Managed origin domains |
-
-### 3.3 Agent Local Storage
-
-| Storage | Purpose |
-|---------|---------|
-| SQLite (DPAPI-encrypted) | Offline audit queue |
-| TOML files | Agent configuration |
-| Named pipes | IPC between agent, UI, and hook DLL |
-| Windows Registry | Service configuration, Chrome extension settings |
-
-### 3.4 File System
-
-| Location | Purpose |
-|----------|---------|
-| `C:\ProgramData\DLP\` | Logs, config, runtime data |
-| NTFS ACLs | Coarse-grained access control baseline |
-| Protected paths | Policy-enforced file system restrictions |
+**Outgoing:**
+- SIEM relay HTTPS posts to Splunk HEC / Elasticsearch.
+- Syslog forwarder TLS messages.
+- SMTP alert emails.
+- Policy sync pushes to replica `dlp-server` instances (`dlp-server/src/policy_sync.rs`).
 
 ---
 
-## 4. Authentication and Identity Providers
-
-### 4.1 Active Directory (Primary Identity Source)
-
-| Aspect | Detail |
-|--------|--------|
-| **Role** | Source of identity truth |
-| **Integration** | LDAP bind + search for user/group resolution |
-| **Caching** | In-memory cache with configurable TTL |
-| **VPN Detection** | Subnet-based VPN presence detection |
-
-### 4.2 Local Authentication (DLP Admin)
-
-| Aspect | Detail |
-|--------|--------|
-| **Mechanism** | JWT (JSON Web Tokens) |
-| **Signing** | HMAC-SHA256 (server-side secret) / Ed25519 (approval tokens) |
-| **Library** | `jsonwebtoken` 9 |
-| **Password Hashing** | `bcrypt` 0.16 |
-| **Storage** | SQLite (`admin_users` table) |
-
-### 4.3 Approval Workflow Tokens
-
-| Aspect | Detail |
-|--------|--------|
-| **Algorithm** | Ed25519 |
-| **Library** | `ed25519-dalek` 2 |
-| **Usage** | Cryptographically signed approval tokens for policy exceptions |
-
-### 4.4 Windows Security Context
-
-| Aspect | Detail |
-|--------|--------|
-| **SID Resolution** | `ConvertSidToStringSidW`, `ConvertStringSidToSidW` |
-| **Token Impersonation** | `CreateProcessAsUserW` (UI spawning) |
-| **DPAPI** | `CryptProtectData` / `CryptUnprotectData` for local secret encryption |
-
----
-
-## 5. Monitoring and Observability Tools
-
-### 5.1 Structured Logging
-
-| Aspect | Detail |
-|--------|--------|
-| **Framework** | `tracing` + `tracing-subscriber` |
-| **Output Formats** | Plain text (dev), JSON (production) |
-| **Filtering** | `EnvFilter` for level-based filtering |
-| **Appenders** | `tracing-appender` for file-based logging |
-| **Levels** | trace, debug, info, warn, error |
-
-### 5.2 Audit Logging
-
-| Aspect | Detail |
-|--------|--------|
-| **Storage** | SQLite (`audit_events` table) |
-| **Forwarding** | SIEM (Splunk/ELK), Syslog, Email alerts |
-| **Content** | Policy evaluations, admin actions, agent events, bypass attempts |
-| **Encryption** | Secrets encrypted at rest (AES-GCM + PBKDF2) |
-
-### 5.3 Health Monitoring
-
-| Aspect | Detail |
-|--------|--------|
-| **Endpoint** | `GET /health` (dlp-server) |
-| **Agent Health** | Periodic heartbeat to server |
-| **Nightly CI** | Smoke tests against release binaries |
-
-### 5.4 Alert Routing
-
-| Channel | Technology | Configuration |
-|---------|-----------|---------------|
-| SIEM | Splunk HEC, Elasticsearch | Admin API `/admin/siem-config` |
-| Syslog | RFC 5424 over TLS | Admin API `/admin/syslog-config` |
-| Email | SMTP | Admin API `/admin/alert-router-config` |
-
-### 5.5 Static Analysis & Quality Gates
-
-| Tool | Integration | Metrics |
-|------|-------------|---------|
-| SonarQube / SonarCloud | GitHub Actions | Bugs, vulnerabilities, code smells, coverage |
-| `cargo clippy` | CI | Lint violations |
-| `cargo fmt --check` | CI | Format compliance |
-| `cargo test` | CI | Test pass/fail |
-
----
-
-## 6. Inter-Process Communication (IPC)
-
-### 6.1 Named Pipes
-
-| Pipe | Direction | Purpose |
-|------|-----------|---------|
-| Pipe 1 | Agent -> UI | Stop password, override requests |
-| Pipe 2 | UI -> Agent | User responses, dialog results |
-| Pipe 3 | Agent -> Hook DLL | Classification cache, policy updates |
-
-### 6.2 Protocol
-
-| Aspect | Detail |
-|--------|--------|
-| **Framing** | Length-prefixed messages |
-| **Serialization** | `bincode` (binary) + `serde` |
-| **Security** | Pipe DACL restrictions (Windows ACLs on named pipes) |
-
----
-
-## 7. Hook / Injection Architecture
-
-### 7.1 API Hook DLL
-
-| Aspect | Detail |
-|--------|--------|
-| **Crate** | `dlp-hook-dll` |
-| **Type** | `cdylib` + `rlib` |
-| **Targets** | Cloud sync clients (OneDrive, Dropbox, etc.) |
-| **Technique** | `retour` for ntdll syscall-stub trampolines |
-| **Architecture** | x64 + x86 (both targets built in CI) |
-
-### 7.2 Injection Methods
-
-| Method | Usage |
-|--------|-------|
-| **AppInit_DLLs** | Legacy application hooking |
-| **Universal Injection** | ETW-based process watcher with allowlist |
-| **WFP (Windows Filtering Platform)** | Network egress filtering |
-
----
-
-## 8. Summary Matrix
-
-| Integration Category | Technologies |
-|---------------------|--------------|
-| **Identity** | Active Directory (LDAP), Windows SIDs, JWT, Ed25519 |
-| **Database** | SQLite (rusqlite), r2d2 connection pooling |
-| **Web/API** | axum, tower, reqwest, JSON REST |
-| **Browser** | Chrome Content Analysis SDK (protobuf over named pipes) |
-| **SIEM** | Splunk HEC, Elasticsearch, Syslog (RFC 5424 over TLS) |
-| **Email** | SMTP (lettre) |
-| **Windows Platform** | windows crate (Security, FileSystem, Networking, UI, ETW, WFP, WMI) |
-| **Crypto** | AES-GCM, PBKDF2, HMAC, SHA-256, Ed25519, bcrypt, DPAPI |
-| **IPC** | Named pipes with bincode serialization |
-| **Hooking** | retour trampolines, AppInit_DLLs, ETW process watching |
-| **Observability** | tracing (structured logging), SonarQube, GitHub Actions CI |
+*Integration audit: 2026-07-03*
