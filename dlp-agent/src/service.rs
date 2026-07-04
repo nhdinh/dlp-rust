@@ -1788,9 +1788,11 @@ async fn run_loop_init(
         .inspect_err(|e| warn!(error = %e, "Policy Engine client init failed — will run offline"))
         .unwrap_or_else(|_| {
             // Best-effort fallback — OfflineManager will handle unreachable engine.
+            // Keep TLS verification enabled even in the fallback client; the
+            // original failure was reachability, not certificate validation.
             crate::engine_client::EngineClient::new(
                 crate::engine_client::DEFAULT_ENGINE_URL,
-                false, // skip TLS verification if env is misconfigured
+                true,
             )
             .expect("engine client must be constructable")
         });
@@ -5746,7 +5748,7 @@ impl crate::hook_ipc::CacheAccessor for MockCache {
 #[cfg(test)]
 fn test_offline_manager() -> Arc<crate::offline::OfflineManager> {
     let engine_client =
-        crate::engine_client::EngineClient::new(crate::engine_client::DEFAULT_ENGINE_URL, false)
+        crate::engine_client::EngineClient::new(crate::engine_client::DEFAULT_ENGINE_URL, true)
             .expect("engine client must be constructable");
     let cache = Arc::new(crate::cache::Cache::new());
     Arc::new(crate::offline::OfflineManager::new(

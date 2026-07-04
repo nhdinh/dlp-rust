@@ -63,9 +63,10 @@ impl EngineClient {
     ///
     /// TLS verification is enabled by default.  Set `tls_verify = false`
     /// only for local development with self-signed certificates.
-    pub fn new(base_url: impl Into<String>, _tls_verify: bool) -> Result<Self> {
+    pub fn new(base_url: impl Into<String>, tls_verify: bool) -> Result<Self> {
         let client = Client::builder()
             .timeout(Duration::from_secs(10))
+            .danger_accept_invalid_certs(!tls_verify)
             .build()
             .context("failed to build reqwest HTTPS client")?;
 
