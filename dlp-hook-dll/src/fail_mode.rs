@@ -465,9 +465,12 @@ pub fn decide_degraded(classification: Option<Classification>, op: HookOp) -> Op
 #[must_use]
 #[allow(dead_code)]
 pub fn decide_resync(classification: Option<Classification>, op: HookOp) -> Option<DenyReturn> {
-    // Same logic as Healthy: use cache if available, otherwise pipe.
-    // In practice, RESYNC means we have fresh cache data.
-    decide_isolated(classification, op)
+    // Same logic as Healthy: authoritative decision from cache when available;
+    // when unknown, defer to the pipe (caller will attempt pipe round-trip).
+    match classification {
+        Some(cls) => decide_isolated(Some(cls), op),
+        None => None, // caller proceeds to pipe
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -855,6 +858,8 @@ mod tests {
             Some(DenyReturn::BoolFalse)
         );
         assert_eq!(decide_resync(Some(Classification::T1), HookOp::Write), None);
+        // Unknown writes during RESYNC must defer to the pipe, not fail-closed.
+        assert_eq!(decide_resync(None, HookOp::Write), None);
     }
 
     // --- Task 3: Staleness budgets ---
