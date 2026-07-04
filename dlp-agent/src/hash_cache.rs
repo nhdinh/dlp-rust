@@ -55,9 +55,14 @@ pub fn spawn_hash_cache_cleanup_task(cache: HashCache, ttl: Option<Duration>) {
 /// The caller should check `hash_skipped` to distinguish "no hash because
 /// the pool was saturated" from "no hash because the frame hasn't arrived yet".
 pub fn lookup_hash(cache: &HashCache, pid: u32, handle_value: u64) -> Option<HashEvidenceFrame> {
-    cache
-        .get(&(pid, handle_value))
-        .map(|entry| entry.value().0.clone())
+    cache.get(&(pid, handle_value)).and_then(|entry| {
+        let (frame, inserted) = entry.value();
+        if Instant::now().duration_since(*inserted) < Duration::from_secs(60) {
+            Some(frame.clone())
+        } else {
+            None
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -99,6 +104,26 @@ mod tests {
     fn test_lookup_missing_returns_none() {
         let cache = create_hash_cache();
         let found = lookup_hash(&cache, 9999, 0xFFFF);
+        assert!(found.is_none());
+    }
+
+    #[test]
+    fn test_lookup_expired_returns_none() {
+        let cache = create_hash_cache();
+        let frame = HashEvidenceFrame {
+            pid: 1234,
+            handle_value: 0xABCD,
+            content_sha256: Some("deadbeef".to_string()),
+            hash_truncated: false,
+            hash_skipped: false,
+            timestamp_secs: 1_700_000_000,
+        };
+        cache.insert(
+            (1234, 0xABCD),
+            (frame.clone(), Instant::now() - Duration::from_secs(120)),
+        );
+
+        let found = lookup_hash(&cache, 1234, 0xABCD);
         assert!(found.is_none());
     }
 
