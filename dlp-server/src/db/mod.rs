@@ -13,6 +13,7 @@ use anyhow::Context;
 use r2d2::Pool as R2d2Pool;
 use r2d2_sqlite::SqliteConnectionManager;
 use rusqlite::Connection as SqliteConn;
+use rusqlite::OptionalExtension;
 
 /// Pool type alias — wraps `SqliteConnectionManager`.
 pub type Pool = R2d2Pool<SqliteConnectionManager>;
@@ -529,7 +530,7 @@ fn init_tables(conn: &SqliteConn) -> anyhow::Result<()> {
                 severity            TEXT NOT NULL CHECK(severity IN ('info', 'warn', 'crit')),
                 ack_by              TEXT NULL REFERENCES admin_users(username),
                 ack_at              TEXT NULL,
-                correlation_reason  TEXT NOT NULL CHECK(correlation_reason IN ('no_hook_journal', 'op_mismatch', 'hook_overwritten')),
+                correlation_reason  TEXT NOT NULL CHECK(correlation_reason IN ('no_hook_journal', 'op_mismatch', 'hook_overwritten', 'PatchRaced', 'EdrDetected')),
                 batch_id            TEXT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_bypass_alerts_agent ON bypass_alerts(agent_id);
@@ -846,6 +847,11 @@ pub fn run_migrations(conn: &SqliteConn) -> anyhow::Result<()> {
         "audit_events",
     )?;
 
+    // Phase 58.4: Expand bypass_alerts correlation_reason CHECK constraint
+    // to include all BypassReason variants.
+    migrate_bypass_alerts_correlation_reason(conn)
+        .context("migrate bypass_alerts correlation_reason constraint")?;
+
     Ok(())
 }
 
@@ -861,6 +867,68 @@ fn run_alter(conn: &SqliteConn, sql: &str, column: &str, table: &str) -> anyhow:
         }
         Err(e) => Err(e).context(format!("running migration: add {column} column to {table}")),
     }
+}
+
+/// Expands the `bypass_alerts.correlation_reason` CHECK constraint to include
+/// all `BypassReason` variants.
+///
+/// SQLite does not support `ALTER TABLE DROP CONSTRAINT`, so the table is
+/// recreated when the existing schema does not already include `PatchRaced`
+/// and `EdrDetected`. The operation is idempotent: if the constraint is
+/// already up to date, nothing is changed.
+fn migrate_bypass_alerts_correlation_reason(conn: &SqliteConn) -> anyhow::Result<()> {
+    let sql: Option<String> = conn
+        .query_row(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name='bypass_alerts'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()
+        .context("query bypass_alerts schema")?;
+
+    let Some(sql) = sql else {
+        return Ok(());
+    };
+
+    if sql.contains("'PatchRaced'") && sql.contains("'EdrDetected'") {
+        return Ok(());
+    }
+
+    conn.execute_batch(
+        "ALTER TABLE bypass_alerts RENAME TO bypass_alerts_old;
+
+         CREATE TABLE bypass_alerts (
+             id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+             agent_id            TEXT NOT NULL,
+             pid                 INTEGER NOT NULL,
+             image_path          TEXT NOT NULL,
+             image_sha256        TEXT NULL,
+             file_path           TEXT NOT NULL,
+             operation           TEXT NOT NULL,
+             file_object         INTEGER NOT NULL DEFAULT 0,
+             qpc_timestamp       INTEGER NOT NULL,
+             created_at          TEXT NOT NULL,
+             severity            TEXT NOT NULL CHECK(severity IN ('info', 'warn', 'crit')),
+             ack_by              TEXT NULL REFERENCES admin_users(username),
+             ack_at              TEXT NULL,
+             correlation_reason  TEXT NOT NULL CHECK(correlation_reason IN ('no_hook_journal', 'op_mismatch', 'hook_overwritten', 'PatchRaced', 'EdrDetected')),
+             batch_id            TEXT NULL
+         );
+
+         INSERT INTO bypass_alerts SELECT * FROM bypass_alerts_old;
+
+         DROP TABLE bypass_alerts_old;
+
+         CREATE INDEX idx_bypass_alerts_agent ON bypass_alerts(agent_id);
+         CREATE INDEX idx_bypass_alerts_severity ON bypass_alerts(severity);
+         CREATE INDEX idx_bypass_alerts_created_at ON bypass_alerts(created_at);
+         CREATE INDEX idx_bypass_alerts_ack ON bypass_alerts(ack_by, ack_at);
+         CREATE INDEX idx_bypass_alerts_pid ON bypass_alerts(pid);
+         CREATE UNIQUE INDEX idx_bypass_alerts_dedup ON bypass_alerts(agent_id, pid, qpc_timestamp, file_path);"
+    )
+    .context("recreate bypass_alerts with expanded CHECK constraint")?;
+
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1973,6 +2041,112 @@ mod tests {
             err_msg.contains("CHECK constraint failed"),
             "error must mention CHECK constraint; got: {err_msg}"
         );
+    }
+
+    #[test]
+    fn test_bypass_alerts_correlation_reason_allows_all_bypass_reasons() {
+        let pool = new_pool(":memory:").expect("create pool");
+        let conn = pool.get().expect("acquire connection");
+
+        for reason in [
+            "no_hook_journal",
+            "op_mismatch",
+            "hook_overwritten",
+            "PatchRaced",
+            "EdrDetected",
+        ] {
+            conn.execute(
+                "INSERT INTO bypass_alerts \
+                 (agent_id, pid, image_path, file_path, operation, qpc_timestamp, created_at, severity, correlation_reason) \
+                 VALUES (?1, ?2, 'C:\\app.exe', 'C:\\file.txt', 'Create', ?3, '2026-01-01T00:00:00Z', 'crit', ?4)",
+                rusqlite::params![format!("agent-{reason}"), 1234i64, 1000i64, reason],
+            )
+            .unwrap_or_else(|e| panic!("insert with reason '{reason}' must succeed: {e}"));
+        }
+    }
+
+    #[test]
+    fn test_migrate_bypass_alerts_correlation_reason_expands_constraint() {
+        let conn = SqliteConn::open_in_memory().expect("open in-memory connection");
+
+        // Create the minimal prerequisite table.
+        conn.execute(
+            "CREATE TABLE admin_users (
+                username TEXT PRIMARY KEY,
+                password_hash TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            )",
+            [],
+        )
+        .expect("create admin_users");
+
+        // Simulate the pre-fix bypass_alerts schema.
+        conn.execute_batch(
+            "CREATE TABLE bypass_alerts (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id            TEXT NOT NULL,
+                pid                 INTEGER NOT NULL,
+                image_path          TEXT NOT NULL,
+                image_sha256        TEXT NULL,
+                file_path           TEXT NOT NULL,
+                operation           TEXT NOT NULL,
+                file_object         INTEGER NOT NULL DEFAULT 0,
+                qpc_timestamp       INTEGER NOT NULL,
+                created_at          TEXT NOT NULL,
+                severity            TEXT NOT NULL CHECK(severity IN ('info', 'warn', 'crit')),
+                ack_by              TEXT NULL REFERENCES admin_users(username),
+                ack_at              TEXT NULL,
+                correlation_reason  TEXT NOT NULL CHECK(correlation_reason IN ('no_hook_journal', 'op_mismatch', 'hook_overwritten')),
+                batch_id            TEXT NULL
+            );
+            CREATE INDEX idx_bypass_alerts_agent ON bypass_alerts(agent_id);
+            CREATE INDEX idx_bypass_alerts_severity ON bypass_alerts(severity);
+            CREATE INDEX idx_bypass_alerts_created_at ON bypass_alerts(created_at);
+            CREATE INDEX idx_bypass_alerts_ack ON bypass_alerts(ack_by, ack_at);
+            CREATE INDEX idx_bypass_alerts_pid ON bypass_alerts(pid);
+            CREATE UNIQUE INDEX idx_bypass_alerts_dedup ON bypass_alerts(agent_id, pid, qpc_timestamp, file_path);"
+        )
+        .expect("create old bypass_alerts schema");
+
+        // Seed a row that must survive migration.
+        conn.execute(
+            "INSERT INTO bypass_alerts \
+             (agent_id, pid, image_path, file_path, operation, qpc_timestamp, created_at, severity, correlation_reason) \
+             VALUES ('agent-1', 1234, 'C:\\app.exe', 'C:\\file.txt', 'Create', 1000, '2026-01-01T00:00:00Z', 'crit', 'no_hook_journal')",
+            [],
+        )
+        .expect("seed legacy row");
+
+        // Expand the constraint.
+        migrate_bypass_alerts_correlation_reason(&conn)
+            .expect("migrate bypass_alerts correlation_reason");
+
+        // Existing data must be preserved.
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM bypass_alerts WHERE agent_id = 'agent-1'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("count migrated rows");
+        assert_eq!(count, 1, "migration must preserve existing rows");
+
+        // New variants must now be accepted.
+        conn.execute(
+            "INSERT INTO bypass_alerts \
+             (agent_id, pid, image_path, file_path, operation, qpc_timestamp, created_at, severity, correlation_reason) \
+             VALUES ('agent-2', 1234, 'C:\\app.exe', 'C:\\file.txt', 'Create', 1000, '2026-01-01T00:00:00Z', 'crit', 'PatchRaced')",
+            [],
+        )
+        .expect("PatchRaced insert must succeed after migration");
+
+        conn.execute(
+            "INSERT INTO bypass_alerts \
+             (agent_id, pid, image_path, file_path, operation, qpc_timestamp, created_at, severity, correlation_reason) \
+             VALUES ('agent-3', 1234, 'C:\\app.exe', 'C:\\file.txt', 'Create', 1000, '2026-01-01T00:00:00Z', 'crit', 'EdrDetected')",
+            [],
+        )
+        .expect("EdrDetected insert must succeed after migration");
     }
 
     #[test]

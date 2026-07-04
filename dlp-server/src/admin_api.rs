@@ -5258,8 +5258,8 @@ struct BypassAlertQuery {
 fn bypass_reason_to_string(reason: dlp_common::hook_ipc::BypassReason) -> String {
     match reason {
         dlp_common::hook_ipc::BypassReason::HookOverwritten => "hook_overwritten".to_string(),
-        dlp_common::hook_ipc::BypassReason::PatchRaced => "hook_overwritten".to_string(),
-        dlp_common::hook_ipc::BypassReason::EdrDetected => "hook_overwritten".to_string(),
+        dlp_common::hook_ipc::BypassReason::PatchRaced => "PatchRaced".to_string(),
+        dlp_common::hook_ipc::BypassReason::EdrDetected => "EdrDetected".to_string(),
         dlp_common::hook_ipc::BypassReason::NoHookJournal => "no_hook_journal".to_string(),
         dlp_common::hook_ipc::BypassReason::OpMismatch => "op_mismatch".to_string(),
     }
@@ -12715,5 +12715,29 @@ mod tests {
         let payload: DiagnosticListResponse = serde_json::from_slice(&body).expect("parse");
         assert_eq!(payload.total, 3); // indices 0, 2, 4
         assert!(payload.snapshots.iter().all(|s| s.user_sid == "S-1-5-21-A"));
+    }
+
+    #[test]
+    fn test_bypass_reason_to_string_maps_all_variants() {
+        assert_eq!(
+            bypass_reason_to_string(dlp_common::hook_ipc::BypassReason::HookOverwritten),
+            "hook_overwritten"
+        );
+        assert_eq!(
+            bypass_reason_to_string(dlp_common::hook_ipc::BypassReason::PatchRaced),
+            "PatchRaced"
+        );
+        assert_eq!(
+            bypass_reason_to_string(dlp_common::hook_ipc::BypassReason::EdrDetected),
+            "EdrDetected"
+        );
+        assert_eq!(
+            bypass_reason_to_string(dlp_common::hook_ipc::BypassReason::NoHookJournal),
+            "no_hook_journal"
+        );
+        assert_eq!(
+            bypass_reason_to_string(dlp_common::hook_ipc::BypassReason::OpMismatch),
+            "op_mismatch"
+        );
     }
 }
