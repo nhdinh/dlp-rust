@@ -217,18 +217,14 @@ pub fn run() -> iced::Result {
 
     let pipe1_connected = Arc::new(RwLock::new(false));
 
-    let result = iced::application("DLP Agent UI", DlpApp::update, DlpApp::view)
-        .subscription(DlpApp::subscription)
-        .window_size(iced::Size::new(480.0, 200.0))
-        .run_with(move || {
-            // Spawn IPC tasks here — inside `run_with` — because the iced
-            // tokio runtime is only available after the application starts.
-            // Calling `tokio::spawn` before this point panics with
-            // "there is no reactor running".
+    // Boot function for iced 0.14: returns the initial application state and any
+    // startup task(s). IPC/clipboard setup is done here because the iced tokio
+    // runtime is available once the application boots.
+    let boot = {
+        let pipe1_connected = Arc::clone(&pipe1_connected);
+        move || {
+            let pipe1_connected = Arc::clone(&pipe1_connected);
             spawn_ipc_tasks(session_id, pipe1_connected.clone());
-
-            // Start clipboard monitoring — watches for sensitive content
-            // pasted into the clipboard and alerts the agent via Pipe 3.
             let _clipboard_stop = crate::clipboard_monitor::start(session_id);
 
             let state = UiState {
@@ -237,7 +233,13 @@ pub fn run() -> iced::Result {
                 pipe1_ever_connected: false,
             };
             (DlpApp { state }, iced::Task::none())
-        });
+        }
+    };
+
+    let result = iced::application(boot, DlpApp::update, DlpApp::view)
+        .subscription(DlpApp::subscription)
+        .window_size(iced::Size::new(480.0, 200.0))
+        .run();
 
     info!(?result, "iced application exited");
     result

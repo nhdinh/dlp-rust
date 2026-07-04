@@ -204,7 +204,10 @@ pub fn extract_page_geometry(xml: &[u8]) -> Result<(f64, f64)> {
                         let attr = attr_result.context("invalid XML attribute")?;
                         let key = attr.key.as_ref();
                         let value = attr
-                            .decode_and_unescape_value(reader.decoder())
+                            .decoded_and_normalized_value(
+                                quick_xml::XmlVersion::Implicit1_0,
+                                reader.decoder(),
+                            )
                             .unwrap_or_default()
                             .into_owned();
 
@@ -476,7 +479,10 @@ pub fn find_font_uri_in_xps(xps_bytes: &[u8]) -> Result<Option<String>> {
                             let attr = attr_result.context("invalid XML attribute")?;
                             if attr.key.as_ref() == b"FontUri" {
                                 let value = attr
-                                    .decode_and_unescape_value(reader.decoder())
+                                    .decoded_and_normalized_value(
+                                        quick_xml::XmlVersion::Implicit1_0,
+                                        reader.decoder(),
+                                    )
                                     .unwrap_or_default()
                                     .into_owned();
                                 if !value.is_empty() {
@@ -594,6 +600,9 @@ pub fn inject_watermark_into_fpage(
             }
             Ok(Event::DocType(ref e)) => {
                 writer.write_event(Event::DocType(e.clone()))?;
+            }
+            Ok(Event::GeneralRef(ref e)) => {
+                writer.write_event(Event::GeneralRef(e.clone()))?;
             }
             Ok(Event::Eof) => break,
             Err(e) => {
@@ -1537,7 +1546,10 @@ mod tests {
                             let attr = attr_result.unwrap();
                             if attr.key.as_ref() == b"UnicodeString" {
                                 let value = attr
-                                    .decode_and_unescape_value(reader.decoder())
+                                    .decoded_and_normalized_value(
+                                        quick_xml::XmlVersion::Implicit1_0,
+                                        reader.decoder(),
+                                    )
                                     .unwrap_or_default()
                                     .into_owned();
                                 assert_eq!(value, "User & Device <test> \"quote\" 'apos'");

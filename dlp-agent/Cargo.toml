@@ -148,7 +148,8 @@ walkdir = "2.5"
 
 # Print spooler XPS parsing (M017/S04)
 zip = "2"
-quick-xml = "0.36"
+# Pinned to 0.41.0 to address RUSTSEC-2026-0194/0195 (quadratic namespace parsing).
+quick-xml = "0.41"
 
 [features]
 # Phase 34: real-Windows-only smoke tests against the live WMI namespace

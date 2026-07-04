@@ -13,7 +13,7 @@ dlp-common = { path = "../dlp-common" }
 # Use tiny-skia (software renderer) instead of wgpu to avoid GPU
 # initialization failures when spawned by a SYSTEM service into a
 # user session via CreateProcessAsUserW.
-iced = { version = "0.13", default-features = false, features = [
+iced = { version = "0.14", default-features = false, features = [
     "tiny-skia",
     "tokio",
 ] }

@@ -42,6 +42,24 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+      - name: Audit dependencies for known vulnerabilities
+        run: |
+          cargo install cargo-audit --version 0.21.2 --locked
+          # cargo-audit 0.21.2 does not parse CVSS:4.0 entries in the upstream
+          # advisory DB. Strip those lines so the DB loads, then run the audit.
+          cargo audit fetch
+          Get-ChildItem -Path ~/.cargo/advisory-db -Recurse -Filter *.md | ForEach-Object {
+            (Get-Content $_.FullName) -notmatch '^cvss\s*=\s*"CVSS:4\.0' | Set-Content -Path $_.FullName -NoNewline
+          }
+          cargo audit --json --no-fetch | Out-File -FilePath cargo-audit.json -Encoding utf8
+          $json = Get-Content cargo-audit.json | ConvertFrom-Json
+          if ($json.vulnerabilities.count -gt 0) {
+            Write-Error "cargo-audit found $($json.vulnerabilities.count) vulnerability(s)"
+            exit 1
+          }
+        shell: pwsh
+        continue-on-error: false
+
       - name: Build workspace (zero warnings)
         run: cargo build --workspace
         env:
