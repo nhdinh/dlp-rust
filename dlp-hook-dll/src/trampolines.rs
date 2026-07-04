@@ -1679,6 +1679,42 @@ pub unsafe extern "system" fn HookNtWriteFile(
                     if let Some(_deny) =
                         classify_and_log_handle(handle_value, "NT_WRITE", "NtWriteFile", 2, "")
                     {
+                        // DIFF-03: Compute content hash from buffer / length.
+                        let (hash, truncated, skipped) =
+                            if !buffer.is_null() && length > 0 {
+                                if (length as usize)
+                                    < crate::hash_compute::SMALL_BUFFER_THRESHOLD
+                                {
+                                    unsafe {
+                                        crate::hash_compute::compute_content_hash(buffer, length)
+                                    }
+                                } else {
+                                    unsafe {
+                                        crate::hash_compute::compute_content_hash_offloaded(
+                                            buffer, length,
+                                        )
+                                    }
+                                }
+                            } else {
+                                (None, false, false)
+                            };
+
+                        let evidence = dlp_common::hook_ipc::HashEvidenceFrame {
+                            pid: std::process::id(),
+                            handle_value,
+                            content_sha256: hash,
+                            hash_truncated: truncated,
+                            hash_skipped: skipped,
+                            timestamp_secs: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs(),
+                        };
+                        let _ = crate::pipe_client::send_hash_evidence(
+                            crate::DEFAULT_PIPE_NAME,
+                            &evidence,
+                        );
+
                         return crate::fail_closed!(StatusAccessDenied);
                     }
                     let original = crate::ORIGINAL_NT_WRITE_FILE.unwrap_or_else(|| {
@@ -2147,6 +2183,42 @@ pub unsafe extern "system" fn NtdllTrampolineNtWriteFile(
                     if let Some(_deny) =
                         classify_and_log_handle(handle_value, "NT_WRITE", "NtWriteFile", 2, "")
                     {
+                        // DIFF-03: Compute content hash from buffer / length.
+                        let (hash, truncated, skipped) =
+                            if !buffer.is_null() && length > 0 {
+                                if (length as usize)
+                                    < crate::hash_compute::SMALL_BUFFER_THRESHOLD
+                                {
+                                    unsafe {
+                                        crate::hash_compute::compute_content_hash(buffer, length)
+                                    }
+                                } else {
+                                    unsafe {
+                                        crate::hash_compute::compute_content_hash_offloaded(
+                                            buffer, length,
+                                        )
+                                    }
+                                }
+                            } else {
+                                (None, false, false)
+                            };
+
+                        let evidence = dlp_common::hook_ipc::HashEvidenceFrame {
+                            pid: std::process::id(),
+                            handle_value,
+                            content_sha256: hash,
+                            hash_truncated: truncated,
+                            hash_skipped: skipped,
+                            timestamp_secs: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .unwrap_or_default()
+                                .as_secs(),
+                        };
+                        let _ = crate::pipe_client::send_hash_evidence(
+                            crate::DEFAULT_PIPE_NAME,
+                            &evidence,
+                        );
+
                         return crate::fail_closed!(StatusAccessDenied);
                     }
                     let original_ptr = crate::ntdll_patcher::get_original_trampoline("NtWriteFile");
