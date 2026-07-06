@@ -31,9 +31,16 @@ current_phase_name: unhook-dlp-hook-dll-when-dlp-agent-is-killed-exited
 
 Phase: 58.5 — COMPLETE
 Plan: 1 of 8
-Status: Phase 58.5 complete
+Status: Phase 58.5 complete; quick plan `20260706-isolate-dlp-hook-tests` executed to stabilize the dlp-hook-dll test suite.
 Verification: 10/10 must-haves verified, 0 gaps
-Last activity: 2026-07-03 — Phase 58.5 marked complete
+Last activity: 2026-07-06 — Test isolation quick plan complete (329 lib tests passed, integration tests passed, run-isolated-tests.ps1 green)
+
+### Quick Plan: Isolate dlp-hook-dll Tests (2026-07-06)
+- Added unique named-pipe override, stoppable `MockAgentServer`, and `reset_for_test()` helper.
+- Replaced all `DEFAULT_PIPE_NAME` call sites with `current_pipe_name()`; production still inlines the constant.
+- Moved heavy integration tests to `dlp-hook-dll/tests/*.rs` and annotated stateful tests with `#[serial_test::serial]`.
+- Fixed `unhook_all_internal` original-pointer read bug and a detached-thread busy-loop in forced background-thread timeout.
+- Verification: `cargo fmt --check`, `cargo clippy -p dlp-hook-dll -- -D warnings`, `cargo build -p dlp-hook-dll`, `cargo test -p dlp-hook-dll --lib -- --test-threads=1`, all integration tests, and `run-isolated-tests.ps1` all pass.
 
 Phase: 59 — Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 Status: All 4 plans complete and verified (01: journal writes, 02: bypass correlator routing, 03: VERIFICATION.md artifacts, 04: OPS-04 UAT handoff)
@@ -179,13 +186,14 @@ Phase 59 and later are complete and shipped as part of v0.11.0.
 
 ## Session Continuity
 
-Last session: 2026-07-03T05:08:45.559Z
-Stopped at: Completed 58.5-05-PLAN.md
+Last session: 2026-07-06T05:37:11Z
+Stopped at: Completed quick plan 20260706-isolate-dlp-hook-tests
 Resume file: None
 
 ## Operator Next Steps
 
 - Phase 58.2: VERIFIED — no further action needed.
+- Phase 58.5 test-isolation quick plan: COMPLETE.
 - Phase 57: UAT execution on physical Windows 11 hardware remains the sole blocker for v0.10.0 ship.
 - Phase 64: COMPLETE — all 4 plans executed. Run verification (/gsd:verify-phase or /gsd:verify-work).
 - Milestone v0.11.0: All 6 phases (59-64) complete. Ready for milestone audit and transition to v0.12.0.
