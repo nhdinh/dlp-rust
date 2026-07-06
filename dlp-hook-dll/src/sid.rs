@@ -67,7 +67,9 @@ pub fn get_current_user_sid() -> String {
         let sid = (*token_user).User.Sid;
 
         if sid.0.is_null() {
-            crate::debug_log("[dlp-hook] get_current_user_sid: SID pointer is null, falling back to NULL SID\0");
+            crate::debug_log(
+                "[dlp-hook] get_current_user_sid: SID pointer is null, falling back to NULL SID\0",
+            );
             let _ = CloseHandle(token_handle);
             return FALLBACK_SID.to_string();
         }

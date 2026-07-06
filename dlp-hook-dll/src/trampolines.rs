@@ -760,9 +760,15 @@ fn classify_and_log_handle(
             } else {
                 let decision = crate::fail_mode::decide_degraded(None, op);
                 let msg = if decision.is_some() {
-                    format!("[dlp-hook] DENY(degraded) {} handle={}\0", fn_name, handle_value)
+                    format!(
+                        "[dlp-hook] DENY(degraded) {} handle={}\0",
+                        fn_name, handle_value
+                    )
                 } else {
-                    format!("[dlp-hook] ALLOW(degraded) {} handle={}\0", fn_name, handle_value)
+                    format!(
+                        "[dlp-hook] ALLOW(degraded) {} handle={}\0",
+                        fn_name, handle_value
+                    )
                 };
                 crate::debug_log(&msg);
                 decision
@@ -775,9 +781,15 @@ fn classify_and_log_handle(
             classification_source = ClassificationSource::CacheHit;
             let decision = crate::fail_mode::decide_isolated(None, op);
             let msg = if decision.is_some() {
-                format!("[dlp-hook] DENY(isolated) {} handle={}\0", fn_name, handle_value)
+                format!(
+                    "[dlp-hook] DENY(isolated) {} handle={}\0",
+                    fn_name, handle_value
+                )
             } else {
-                format!("[dlp-hook] ALLOW(isolated) {} handle={}\0", fn_name, handle_value)
+                format!(
+                    "[dlp-hook] ALLOW(isolated) {} handle={}\0",
+                    fn_name, handle_value
+                )
             };
             crate::debug_log(&msg);
             decision
@@ -795,11 +807,7 @@ fn classify_and_log_handle(
     let new_state = fail_state.current_state();
     if new_state != current_state {
         let reason = format!("state_changed_during_{}", fn_name);
-        crate::perf_telemetry::emit_state_transition_immediate(
-            current_state,
-            new_state,
-            &reason,
-        );
+        crate::perf_telemetry::emit_state_transition_immediate(current_state, new_state, &reason);
     }
 
     let latency = start.elapsed();

@@ -41,9 +41,7 @@ use windows::Win32::System::Diagnostics::Debug::OutputDebugStringW;
 use windows::Win32::System::LibraryLoader::{
     FreeLibraryAndExitThread, GetModuleHandleW, GetProcAddress,
 };
-use windows::Win32::System::Threading::{
-    CreateThread, WaitForSingleObject, THREAD_CREATION_FLAGS,
-};
+use windows::Win32::System::Threading::{CreateThread, WaitForSingleObject, THREAD_CREATION_FLAGS};
 // pe_utils.rs uses VirtualProtect and PAGE_EXECUTE_READWRITE; keep import
 // if any code in this file needs them, otherwise they are unused.
 #[allow(unused_imports)]
