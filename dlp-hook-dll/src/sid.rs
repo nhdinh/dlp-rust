@@ -6,10 +6,17 @@ use windows::Win32::Security::Authorization::ConvertSidToStringSidA;
 use windows::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
 use windows::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
+/// Sentinel SID returned when the current process token cannot be resolved.
+///
+/// "S-1-0-0" is the Windows NULL SID; it is never a real user and makes
+/// attribution failures explicit in diagnostic snapshots and audit events.
+const FALLBACK_SID: &str = "S-1-0-0";
+
 /// Retrieves the current process user's SID as a string.
 ///
 /// Returns a Windows SID string (e.g., "S-1-5-21-...") on success.
-/// On failure, returns "S-1-5-18" (SYSTEM) as a safe fallback.
+/// On failure, returns the NULL SID ("S-1-0-0") and logs the failure reason
+/// via OutputDebugStringW so operators can diagnose attribution problems.
 ///
 /// # Safety
 ///
@@ -22,7 +29,8 @@ pub fn get_current_user_sid() -> String {
         let mut token_handle: HANDLE = HANDLE(ptr::null_mut());
         let result = OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token_handle);
         if result.is_err() {
-            return "S-1-5-18".to_string();
+            crate::debug_log("[dlp-hook] get_current_user_sid: OpenProcessToken failed, falling back to NULL SID\0");
+            return FALLBACK_SID.to_string();
         }
 
         // 2. Determine the required buffer size for TOKEN_USER.
@@ -32,8 +40,9 @@ pub fn get_current_user_sid() -> String {
         // The first call is expected to fail with ERROR_INSUFFICIENT_BUFFER;
         // return_length now holds the required size.
         if return_length == 0 {
+            crate::debug_log("[dlp-hook] get_current_user_sid: GetTokenInformation returned zero buffer size, falling back to NULL SID\0");
             let _ = CloseHandle(token_handle);
-            return "S-1-5-18".to_string();
+            return FALLBACK_SID.to_string();
         }
 
         // 3. Allocate a buffer of the required size and call again.
@@ -47,8 +56,9 @@ pub fn get_current_user_sid() -> String {
         );
 
         if result.is_err() {
+            crate::debug_log("[dlp-hook] get_current_user_sid: GetTokenInformation failed, falling back to NULL SID\0");
             let _ = CloseHandle(token_handle);
-            return "S-1-5-18".to_string();
+            return FALLBACK_SID.to_string();
         }
 
         // 4. Cast the buffer to PTOKEN_USER and read the SID pointer.
@@ -57,8 +67,9 @@ pub fn get_current_user_sid() -> String {
         let sid = (*token_user).User.Sid;
 
         if sid.0.is_null() {
+            crate::debug_log("[dlp-hook] get_current_user_sid: SID pointer is null, falling back to NULL SID\0");
             let _ = CloseHandle(token_handle);
-            return "S-1-5-18".to_string();
+            return FALLBACK_SID.to_string();
         }
 
         // 5. Convert the SID to a string.
@@ -71,7 +82,8 @@ pub fn get_current_user_sid() -> String {
             let cstr = std::ffi::CStr::from_ptr(string_sid_ptr.0 as *const i8);
             cstr.to_string_lossy().into_owned()
         } else {
-            "S-1-5-18".to_string()
+            crate::debug_log("[dlp-hook] get_current_user_sid: ConvertSidToStringSidA failed, falling back to NULL SID\0");
+            FALLBACK_SID.to_string()
         };
 
         // 6. Free the allocated string and close the token handle.
@@ -103,8 +115,8 @@ mod tests {
 
     #[test]
     fn test_get_current_user_sid_fallback_format() {
-        // On non-Windows or if the API fails, the fallback is "S-1-5-18".
-        // We verify the format is valid by checking the prefix.
+        // On non-Windows or if the API fails, the fallback is the NULL SID
+        // "S-1-0-0". We verify the format is valid by checking the prefix.
         let sid = get_current_user_sid();
         // The SID must match the standard Windows SID format.
         assert!(
