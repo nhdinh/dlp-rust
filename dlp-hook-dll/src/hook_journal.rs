@@ -34,12 +34,22 @@ use windows::Win32::System::Memory::{
 // ---------------------------------------------------------------------------
 
 /// Total size of the shared-memory journal mapping (64 KiB).
+#[cfg(any(test, feature = "test-helpers"))]
+pub const JOURNAL_SIZE: usize = 64 * 1024;
+#[cfg(not(any(test, feature = "test-helpers")))]
 const JOURNAL_SIZE: usize = 64 * 1024;
 
 /// Size of each journal entry in bytes.
+#[cfg(any(test, feature = "test-helpers"))]
+pub const ENTRY_SIZE: usize = 56;
+#[cfg(not(any(test, feature = "test-helpers")))]
 const ENTRY_SIZE: usize = 56;
 
 /// Number of entries that fit in the ring buffer after the header.
+#[cfg(any(test, feature = "test-helpers"))]
+pub const ENTRY_CAPACITY: usize =
+    (JOURNAL_SIZE - std::mem::size_of::<JournalHeader>()) / ENTRY_SIZE;
+#[cfg(not(any(test, feature = "test-helpers")))]
 const ENTRY_CAPACITY: usize = (JOURNAL_SIZE - std::mem::size_of::<JournalHeader>()) / ENTRY_SIZE;
 
 // ---------------------------------------------------------------------------
@@ -191,6 +201,25 @@ impl HookJournal {
         };
         if let Some(ref mut journal) = *guard {
             journal.next_seq += 1;
+        }
+    }
+
+    /// Test-only constructor that builds a `HookJournal` from raw mapping pieces.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn new_for_test(
+        header: *mut JournalHeader,
+        entries: *mut JournalEntry,
+        capacity: usize,
+        next_seq: u64,
+        handle: windows::Win32::Foundation::HANDLE,
+        view: *mut std::ffi::c_void,
+    ) -> Self {
+        Self {
+            header,
+            entries,
+            capacity,
+            next_seq,
+            mapping: JournalMapping { handle, view },
         }
     }
 
@@ -353,6 +382,22 @@ impl JournalView {
             );
         }
     }
+
+    /// Test-only constructor that builds a `JournalView` from raw mapping pieces.
+    #[cfg(any(test, feature = "test-helpers"))]
+    pub fn new_for_test(
+        header: *mut JournalHeader,
+        entries: *mut JournalEntry,
+        capacity: usize,
+        next_seq: u64,
+    ) -> Self {
+        Self {
+            header,
+            entries,
+            capacity,
+            next_seq,
+        }
+    }
 }
 
 /// Unmap the hook journal and release the mapping handle.
@@ -370,15 +415,15 @@ pub fn unmap_journal() {
 }
 
 /// Test-only helper to install a pre-built `HookJournal` into the global slot.
-#[cfg(test)]
-pub(crate) fn set_journal_for_test(journal: HookJournal) {
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn set_journal_for_test(journal: HookJournal) {
     let mut guard = JOURNAL.lock().expect("JOURNAL lock");
     *guard = Some(journal);
 }
 
 /// Test-only helper to read whether the global journal slot is populated.
-#[cfg(test)]
-pub(crate) fn is_journal_mapped() -> bool {
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn is_journal_mapped() -> bool {
     JOURNAL.lock().map(|g| g.is_some()).unwrap_or(false)
 }
 
@@ -472,7 +517,7 @@ pub fn emit_journal_degraded_alert(file_object: u64, op: u8, error: &str) {
 
     match bincode::serialize(&envelope) {
         Ok(payload) => {
-            let _ = crate::pipe_client::send_raw_oneway(crate::DEFAULT_PIPE_NAME, &payload);
+            let _ = crate::pipe_client::send_raw_oneway(crate::current_pipe_name(), &payload);
         }
         Err(e) => {
             let msg = format!("[dlp-hook] JournalDegraded serialization failed: {:?}\0", e);
@@ -549,8 +594,6 @@ mod tests {
     #[cfg(windows)]
     mod windows_tests {
         use super::*;
-        use std::sync::Arc;
-        use std::time::Duration;
         use windows::Win32::Foundation::CloseHandle;
         use windows::Win32::System::Memory::{
             CreateFileMappingW, MapViewOfFile, OpenFileMappingW, UnmapViewOfFile,
@@ -1321,82 +1364,6 @@ mod tests {
                 assert!(is_journal_mapped());
 
                 unmap_journal();
-                assert!(!is_journal_mapped());
-            }
-        }
-
-        #[test]
-        fn test_concurrent_read_and_unmap_no_deadlock() {
-            let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-            cleanup_test_mapping();
-
-            let name_wide: Vec<u16> = TEST_JOURNAL_NAME
-                .encode_utf16()
-                .chain(std::iter::once(0))
-                .collect();
-            let name_pcwstr = windows::core::PCWSTR::from_raw(name_wide.as_ptr());
-
-            unsafe {
-                let handle = CreateFileMappingW(
-                    INVALID_HANDLE_VALUE,
-                    None,
-                    PAGE_READWRITE,
-                    0,
-                    JOURNAL_SIZE as u32,
-                    name_pcwstr,
-                )
-                .expect("CreateFileMappingW failed");
-
-                let view = MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, JOURNAL_SIZE);
-                let base_ptr = match view {
-                    MEMORY_MAPPED_VIEW_ADDRESS { Value: ptr } if !ptr.is_null() => ptr as *mut u8,
-                    _ => panic!("MapViewOfFile failed"),
-                };
-
-                let header_ptr = base_ptr as *mut JournalHeader;
-                let entries_ptr =
-                    base_ptr.add(std::mem::size_of::<JournalHeader>()) as *mut JournalEntry;
-
-                std::ptr::write_volatile(std::ptr::addr_of_mut!((*header_ptr).version), 1u32);
-                std::ptr::write_volatile(std::ptr::addr_of_mut!((*header_ptr).write_index), 0u32);
-
-                let journal = HookJournal {
-                    header: header_ptr,
-                    entries: entries_ptr,
-                    capacity: ENTRY_CAPACITY,
-                    next_seq: 1,
-                    mapping: JournalMapping {
-                        handle: windows::Win32::Foundation::HANDLE(handle.0),
-                        view: base_ptr as *mut std::ffi::c_void,
-                    },
-                };
-
-                set_journal_for_test(journal);
-
-                let view_for_thread = JournalView {
-                    header: header_ptr,
-                    entries: entries_ptr,
-                    capacity: ENTRY_CAPACITY,
-                    next_seq: 1,
-                };
-
-                let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
-                let stop_clone = Arc::clone(&stop);
-
-                let reader = std::thread::spawn(move || {
-                    while !stop_clone.load(std::sync::atomic::Ordering::Relaxed) {
-                        view_for_thread.write(0, 1, r"C:\test.txt", 0, 0);
-                    }
-                });
-
-                std::thread::sleep(Duration::from_millis(5));
-                // Signal the reader to stop before unmapping so it does not access freed memory.
-                stop.store(true, std::sync::atomic::Ordering::Relaxed);
-                reader.join().unwrap();
-                unmap_journal();
-                // The important invariant is that unmap_journal completed without
-                // deadlocking while reads were in flight. Writes after unmap may
-                // silently no-op because the mapping was dropped.
                 assert!(!is_journal_mapped());
             }
         }

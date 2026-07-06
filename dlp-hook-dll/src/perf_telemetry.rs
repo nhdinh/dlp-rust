@@ -118,8 +118,8 @@ pub fn set_patched_modules(count: u64) {
 /// Test-only helper to reset all health snapshot counters.
 ///
 /// Used by unit tests to ensure clean counter state between tests.
-#[cfg(test)]
-pub(crate) fn reset_perf_counters() {
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn reset_perf_counters() {
     PIPE_ROUND_TRIPS.store(0, Ordering::Relaxed);
     CACHE_HITS_60S.store(0, Ordering::Relaxed);
     CACHE_MISSES_60S.store(0, Ordering::Relaxed);
@@ -403,7 +403,7 @@ pub fn emit_state_transition_immediate(old_state: FailState, new_state: FailStat
 
     // DIFF-04: Emit health snapshot on every state transition.
     let snapshot = emit_health_snapshot();
-    let _ = crate::pipe_client::send_health_snapshot(crate::DEFAULT_PIPE_NAME, &snapshot);
+    let _ = crate::pipe_client::send_health_snapshot(crate::current_pipe_name(), &snapshot);
 }
 
 // ---------------------------------------------------------------------------

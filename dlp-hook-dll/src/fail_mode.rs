@@ -593,7 +593,7 @@ pub fn emit_state_transition(old: FailState, new: FailState, reason: &str) {
 
     // DIFF-04: Emit health snapshot on every state transition.
     let snapshot = crate::perf_telemetry::emit_health_snapshot();
-    let _ = crate::pipe_client::send_health_snapshot(crate::DEFAULT_PIPE_NAME, &snapshot);
+    let _ = crate::pipe_client::send_health_snapshot(crate::current_pipe_name(), &snapshot);
 
     // Note: SIEM pipe event is best-effort. If the pipe is unavailable
     // (which is likely during state transitions), the tracing log is the

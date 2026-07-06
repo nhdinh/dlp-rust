@@ -159,7 +159,7 @@ unsafe fn query_performance_frequency() -> u64 {
 /// This is used by unit tests to reset the global `DIAGNOSTIC_RING` state
 /// between test runs. Because `ArrayQueue` does not expose a `clear()`
 /// method, we drain it by repeatedly popping until empty.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-helpers"))]
 pub fn drain_all_snapshots() {
     let ring = get_ring();
     while ring.pop().is_some() {}

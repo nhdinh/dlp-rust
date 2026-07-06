@@ -15,6 +15,10 @@ Run-Test "cargo test -p dlp-hook-dll --lib -- --test-threads=1"
 
 # Integration tests: each is already a separate process, but still force
 # single-threaded execution inside each binary to keep global Windows state sane.
+Run-Test "cargo test -p dlp-hook-dll --test pipe_client_integration -- --test-threads=1"
+Run-Test "cargo test -p dlp-hook-dll --test unhook_protocol -- --test-threads=1"
+Run-Test "cargo test -p dlp-hook-dll --test self_unload_safety -- --test-threads=1"
+Run-Test "cargo test -p dlp-hook-dll --test control_thread_integration -- --test-threads=1"
 Run-Test "cargo test -p dlp-hook-dll --test isolated_resync_recovery -- --test-threads=1"
 Run-Test "cargo test -p dlp-hook-dll --test journal_integration -- --test-threads=1"
 Run-Test "cargo test -p dlp-hook-dll --test journal_degraded_test -- --test-threads=1"
@@ -31,6 +35,10 @@ if (Test-Path $journalChaos) {
 # Optional: process-level isolation via cargo nextest.
 if (Get-Command cargo-nextest -ErrorAction SilentlyContinue) {
     Run-Test "cargo nextest run -p dlp-hook-dll --lib"
+    Run-Test "cargo nextest run -p dlp-hook-dll --test pipe_client_integration"
+    Run-Test "cargo nextest run -p dlp-hook-dll --test unhook_protocol"
+    Run-Test "cargo nextest run -p dlp-hook-dll --test self_unload_safety"
+    Run-Test "cargo nextest run -p dlp-hook-dll --test control_thread_integration"
     Run-Test "cargo nextest run -p dlp-hook-dll --test isolated_resync_recovery"
     Run-Test "cargo nextest run -p dlp-hook-dll --test journal_integration"
     Run-Test "cargo nextest run -p dlp-hook-dll --test journal_degraded_test"

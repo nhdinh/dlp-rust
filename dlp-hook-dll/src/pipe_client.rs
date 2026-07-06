@@ -17,22 +17,22 @@ use windows::Win32::System::IO::{CancelIoEx, GetOverlappedResult, OVERLAPPED};
 
 use dlp_common::{HookRequest, HookResponse};
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-helpers"))]
 use dlp_common::hook_ipc::{ControlResponse, UnhookAck};
 
-#[cfg(test)]
-pub(crate) static MOCK_POLL_CONTROL: std::sync::Mutex<Vec<Result<ControlResponse, PipeError>>> =
+#[cfg(any(test, feature = "test-helpers"))]
+pub static MOCK_POLL_CONTROL: std::sync::Mutex<Vec<Result<ControlResponse, PipeError>>> =
     std::sync::Mutex::new(Vec::new());
 
-#[cfg(test)]
-pub(crate) static MOCK_UNHOOK_ACK_SINK: std::sync::Mutex<Vec<UnhookAck>> =
+#[cfg(any(test, feature = "test-helpers"))]
+pub static MOCK_UNHOOK_ACK_SINK: std::sync::Mutex<Vec<UnhookAck>> =
     std::sync::Mutex::new(Vec::new());
 
 /// Test-only helper to clear the pipe-client mock queues.
 ///
-/// Used by unit tests to ensure a clean mock state between tests.
-#[cfg(test)]
-pub(crate) fn reset_pipe_client_mocks() {
+/// Used by unit tests to ensure a clean mock state between test runs.
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn reset_pipe_client_mocks() {
     if let Ok(mut mock) = MOCK_POLL_CONTROL.lock() {
         mock.clear();
     }
@@ -215,7 +215,7 @@ pub fn send_unhook_ack(
     pipe_name: &str,
     ack: &dlp_common::hook_ipc::UnhookAck,
 ) -> Result<(), PipeError> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-helpers"))]
     {
         if let Ok(mut sink) = MOCK_UNHOOK_ACK_SINK.lock() {
             if !sink.is_empty() || std::env::var("DLP_HOOK_TEST_MOCK_ACK").is_ok() {
@@ -259,7 +259,7 @@ pub fn poll_control(
     poll: &dlp_common::hook_ipc::PollControl,
     timeout_ms: u32,
 ) -> Result<dlp_common::hook_ipc::ControlResponse, PipeError> {
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-helpers"))]
     {
         if let Ok(mut mock) = MOCK_POLL_CONTROL.lock() {
             if !mock.is_empty() {
@@ -482,7 +482,9 @@ fn read_exact_with_timeout(pipe: HANDLE, buf: &mut [u8], timeout_ms: u32) -> Res
         let offset = buf.len() - remaining;
         let slice_len = remaining.min(65536);
 
-        let slice_timeout = deadline.saturating_duration_since(Instant::now()).as_millis() as u32;
+        let slice_timeout = deadline
+            .saturating_duration_since(Instant::now())
+            .as_millis() as u32;
         if slice_timeout == 0 {
             unsafe {
                 let _ = CloseHandle(event);

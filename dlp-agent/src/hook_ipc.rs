@@ -18,6 +18,7 @@
 //! always falls through to the full ABAC evaluation via pipe round-trip.
 
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -115,6 +116,9 @@ pub struct HookIpcServer {
     audit_ctx: Option<crate::audit_emitter::EmitContext>,
     /// Phase 58.5: Optional observer invoked for every received `PollControl` frame.
     poll_control_handler: Option<PollControlHandler>,
+    /// Test-only shutdown token. When set and `true`, the accept loop exits
+    /// after closing the current pipe handle.
+    shutdown_token: Option<Arc<AtomicBool>>,
 }
 
 impl HookIpcServer {
@@ -135,6 +139,7 @@ impl HookIpcServer {
             registry: None,
             audit_ctx: None,
             poll_control_handler: None,
+            shutdown_token: None,
         }
     }
 
@@ -170,6 +175,7 @@ impl HookIpcServer {
             registry: None,
             audit_ctx: None,
             poll_control_handler: None,
+            shutdown_token: None,
         }
     }
 
@@ -196,6 +202,7 @@ impl HookIpcServer {
             registry: None,
             audit_ctx: None,
             poll_control_handler: None,
+            shutdown_token: None,
         }
     }
 
@@ -223,6 +230,7 @@ impl HookIpcServer {
             registry: None,
             audit_ctx: None,
             poll_control_handler: None,
+            shutdown_token: None,
         }
     }
 
@@ -281,6 +289,14 @@ impl HookIpcServer {
         self
     }
 
+    /// Sets a shutdown token that causes the accept loop to exit when `true`.
+    ///
+    /// This is intended for tests that need to stop a mock server cleanly.
+    pub fn with_shutdown_token(mut self, token: Arc<AtomicBool>) -> Self {
+        self.shutdown_token = Some(token);
+        self
+    }
+
     /// Runs the blocking accept loop on the current thread.
     ///
     /// Callers should spawn this in a dedicated `std::thread`.  Connections
@@ -309,6 +325,7 @@ impl HookIpcServer {
             self.registry,
             self.audit_ctx.as_ref(),
             self.poll_control_handler,
+            self.shutdown_token,
         )
     }
 }
@@ -428,9 +445,18 @@ fn accept_loop(
     registry: Option<Arc<crate::process_registry::ProcessRegistry>>,
     audit_ctx: Option<&crate::audit_emitter::EmitContext>,
     poll_control_handler: Option<PollControlHandler>,
+    shutdown_token: Option<Arc<AtomicBool>>,
 ) -> Result<()> {
     let mut pipe = first_pipe;
     loop {
+        // Test-only shutdown token: exit cleanly when the token is set.
+        if let Some(token) = &shutdown_token {
+            if token.load(Ordering::Relaxed) {
+                let _ = unsafe { CloseHandle(pipe) };
+                return Ok(());
+            }
+        }
+
         // During graceful shutdown the accept loop must keep serving clients
         // while the cooperative unhook window is active. Injected processes poll
         // the pipe to receive `UnhookCommand`; if we exited as soon as

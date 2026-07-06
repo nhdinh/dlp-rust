@@ -79,12 +79,12 @@ static BACKGROUND_THREAD_STATE: std::sync::Mutex<BackgroundThreadState> =
     std::sync::Mutex::new(BackgroundThreadState::NotStarted);
 
 /// Test-only hook that forces `shutdown_background_thread` to report a timeout.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-helpers"))]
 static FORCE_SHUTDOWN_TIMEOUT: AtomicBool = AtomicBool::new(false);
 
 /// Test-only helper to force the next `shutdown_background_thread` call to
 /// behave as if the thread did not exit within its timeout.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-helpers"))]
 pub fn force_shutdown_timeout_for_test(force: bool) {
     FORCE_SHUTDOWN_TIMEOUT.store(force, Ordering::SeqCst);
 }
@@ -231,20 +231,27 @@ pub fn shutdown_background_thread() -> bool {
 
     let mut joined_cleanly = true;
 
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-helpers"))]
     if FORCE_SHUTDOWN_TIMEOUT.swap(false, Ordering::SeqCst) {
-        // Test-only path: simulate a timeout without blocking. We still close
-        // the event handle below, but we detach the thread as if it did not
-        // exit in time.
+        // Test-only path: simulate a timeout without blocking. Signal the
+        // shutdown event so the detached thread exits cleanly rather than
+        // busy-looping on a closed handle and interfering with later tests.
+        // The event handle is intentionally leaked here because the detached
+        // thread may still be waiting on it; the kernel object is freed when
+        // the process exits.
+        if let Some(event) = event {
+            unsafe {
+                use windows::Win32::System::Threading::SetEvent;
+                let _ = SetEvent(event);
+            }
+            // Leak the handle — do not CloseHandle while the detached thread
+            // may still be waiting.
+            let _ = event;
+        }
         joined_cleanly = false;
         tracing::warn!("background_thread shutdown timed out after 5s; detaching thread");
         if let Some(handle) = handle {
             drop(handle);
-        }
-        if let Some(event) = event {
-            unsafe {
-                let _ = windows::Win32::Foundation::CloseHandle(event);
-            }
         }
         return joined_cleanly;
     }

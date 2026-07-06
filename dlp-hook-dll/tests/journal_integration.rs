@@ -177,6 +177,7 @@ mod windows_tests {
 
     /// Test that journal_write writes the correct op code for a write operation.
     #[test]
+    #[serial_test::serial]
     fn test_journal_entry_op_code_for_write() {
         cleanup_test_mapping();
 
@@ -232,6 +233,7 @@ mod windows_tests {
 
     /// Test that emit_journal_degraded_alert constructs the correct payload.
     #[test]
+    #[serial_test::serial]
     fn test_emit_journal_degraded_alert_constructs_envelope() {
         // This test verifies the envelope construction logic by calling
         // emit_journal_degraded_alert. The function will attempt to send

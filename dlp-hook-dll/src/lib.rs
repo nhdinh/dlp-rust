@@ -50,9 +50,15 @@ use dlp_common::hook_ipc::{IpcEnvelope, IpcMessageV1, IpcPayloadV1};
 use dlp_common::{Decision, HookRequest, VolumeClass};
 
 mod allowlist;
+#[cfg(not(any(test, feature = "test-helpers")))]
 mod background_thread;
+#[cfg(any(test, feature = "test-helpers"))]
+pub mod background_thread;
 mod classification_cache;
+#[cfg(not(any(test, feature = "test-helpers")))]
 mod control_thread;
+#[cfg(any(test, feature = "test-helpers"))]
+pub mod control_thread;
 mod crash_guard;
 pub mod diagnostic_ring;
 pub mod edr_detector;
@@ -63,7 +69,10 @@ mod hook_journal;
 pub mod ntdll_patcher;
 mod pe_utils;
 mod perf_telemetry;
+#[cfg(not(any(test, feature = "test-helpers")))]
 mod pipe_client;
+#[cfg(any(test, feature = "test-helpers"))]
+pub mod pipe_client;
 pub mod sid;
 pub mod thread_suspender;
 pub mod trampolines;
@@ -80,18 +89,68 @@ pub use crash_guard::{guard_trampoline, seh_guard, with_reentrancy_guard};
 pub use background_thread::reset_background_thread_for_test;
 pub use background_thread::{shutdown_background_thread, start_background_thread};
 pub use classification_cache::lru;
+#[cfg(any(test, feature = "test-helpers"))]
+pub use classification_cache::unmap_cache;
 pub use classification_cache::{CacheHeader, CacheLookup};
 pub use fail_mode::{decide_isolated, is_cache_stale, FailModeState, FailState};
 
-// Re-export hook_journal for integration tests (journal_integration.rs, journal_degraded_test.rs).
+// Re-exports for integration tests (control_thread_integration.rs, unhook_protocol.rs).
 #[cfg(any(test, feature = "test-helpers"))]
-pub use hook_journal::{emit_journal_degraded_alert, journal_write, JournalEntry, JournalHeader};
+pub use control_thread::{
+    handle_unhook_command, reset_watchdog_test_state, run_control_loop_for_test,
+    shutdown_control_thread, start_control_thread,
+};
+
+// Re-export hook_journal for integration tests (journal_integration.rs, journal_degraded_test.rs,
+// journal_chaos_test.rs).
+#[cfg(any(test, feature = "test-helpers"))]
+pub use hook_journal::{
+    emit_journal_degraded_alert, is_journal_mapped, journal_write, set_journal_for_test,
+    unmap_journal, HookJournal, JournalEntry, JournalHeader, JournalView,
+};
+#[cfg(any(test, feature = "test-helpers"))]
+pub use hook_journal::{ENTRY_CAPACITY, ENTRY_SIZE, JOURNAL_SIZE};
 
 // Re-export sid helper for diagnostic snapshot capture.
 pub use sid::get_current_user_sid;
 
+// Test-only utilities (unit tests and integration tests).
+#[cfg(any(test, feature = "test-helpers"))]
+mod test_utils;
+#[cfg(any(test, feature = "test-helpers"))]
+pub use test_utils::{reset_for_test, set_test_pipe_name, unique_pipe_name, MockAgentServer};
+
 /// Default pipe name used by the hook DLL.
 pub(crate) const DEFAULT_PIPE_NAME: &str = r"\\.\pipe\DlpHookPipe";
+
+/// Test-only override for the pipe name.
+///
+/// Integration tests set this so that each test can spin up a mock agent server
+/// on a unique pipe without colliding with production `DEFAULT_PIPE_NAME`.
+#[cfg(any(test, feature = "test-helpers"))]
+static TEST_PIPE_OVERRIDE: std::sync::Mutex<Option<&'static str>> = std::sync::Mutex::new(None);
+
+/// Returns the pipe name to use for the current build.
+///
+/// In production builds this is a compile-time constant (`DEFAULT_PIPE_NAME`).
+/// In test builds it returns the value installed by [`set_test_pipe_name`] if
+/// any, otherwise falls back to `DEFAULT_PIPE_NAME`.
+#[cfg(any(test, feature = "test-helpers"))]
+#[inline]
+pub fn current_pipe_name() -> &'static str {
+    TEST_PIPE_OVERRIDE
+        .lock()
+        .ok()
+        .and_then(|g| *g)
+        .unwrap_or(DEFAULT_PIPE_NAME)
+}
+
+/// Production version of [`current_pipe_name`] — always the constant.
+#[cfg(not(any(test, feature = "test-helpers")))]
+#[inline]
+pub const fn current_pipe_name() -> &'static str {
+    DEFAULT_PIPE_NAME
+}
 
 /// Maximum wide-character length for path extraction.
 const MAX_WIDE_CHARS: usize = 32_768;
@@ -121,12 +180,21 @@ const UNICODE_STRING_BUFFER_OFFSET: isize = 0x04;
 // ---------------------------------------------------------------------------
 
 /// Guard to ensure one-time initialisation.
+#[cfg(any(test, feature = "test-helpers"))]
+pub static INITIALISED: AtomicBool = AtomicBool::new(false);
+#[cfg(not(any(test, feature = "test-helpers")))]
 static INITIALISED: AtomicBool = AtomicBool::new(false);
 
 /// Set to true while the DLL is shutting down so new hook calls pass through.
+#[cfg(any(test, feature = "test-helpers"))]
+pub static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
+#[cfg(not(any(test, feature = "test-helpers")))]
 static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
 
 /// Number of hook calls currently executing.
+#[cfg(any(test, feature = "test-helpers"))]
+pub static ACTIVE_CALLS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(not(any(test, feature = "test-helpers")))]
 static ACTIVE_CALLS: AtomicUsize = AtomicUsize::new(0);
 
 /// Captured DLL HINSTANCE from `DllMain` DLL_PROCESS_ATTACH.
@@ -137,19 +205,19 @@ static ACTIVE_CALLS: AtomicUsize = AtomicUsize::new(0);
 /// to `HINSTANCE` only when `self_unload` is called on the owning thread.
 static DLL_INSTANCE: Mutex<Option<isize>> = Mutex::new(None);
 
-/// Serializes Phase 58.5 tests that mutate process-global hook state
+/// Serializes tests that mutate process-global hook state
 /// (IAT restore, ntdll patcher, control thread lifecycle, shared-memory
 /// mappings). Prevents parallel tests from corrupting each other's state.
-#[cfg(test)]
-pub(crate) static PHASE_58_5_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+#[cfg(any(test, feature = "test-helpers"))]
+pub static PHASE_58_5_TEST_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 /// Reset process-global hook state to a clean baseline for tests.
 ///
 /// Clears shutdown and active-call counters, resets the initialization flag,
 /// drops the captured DLL instance, disables ntdll patching, and unpatches any
 /// stubs that were initialized by prior tests.
-#[cfg(test)]
-pub(crate) fn reset_hook_globals() {
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn reset_hook_globals() {
     SHUTTING_DOWN.store(false, Ordering::SeqCst);
     ACTIVE_CALLS.store(0, Ordering::SeqCst);
     INITIALISED.store(false, Ordering::SeqCst);
@@ -177,6 +245,9 @@ static NTDLL_PATCHING_ENABLED: AtomicBool = AtomicBool::new(false);
 ///
 /// The Mutex ensures only one thread initializes the patcher and only one
 /// patch/unpatch operation runs at a time.
+#[cfg(any(test, feature = "test-helpers"))]
+pub static NTDLL_PATCHER: OnceLock<Mutex<crate::ntdll_patcher::NtdllPatcher>> = OnceLock::new();
+#[cfg(not(any(test, feature = "test-helpers")))]
 static NTDLL_PATCHER: OnceLock<Mutex<crate::ntdll_patcher::NtdllPatcher>> = OnceLock::new();
 
 // ---------------------------------------------------------------------------
@@ -209,6 +280,19 @@ type SetFileInformationByHandleFn =
 /// Original `CreateFileW` pointer saved before patching.
 ///
 /// SAFETY: written once during `DllMain` / init, then read-only.
+#[cfg(any(test, feature = "test-helpers"))]
+pub static mut ORIGINAL_CREATE_FILE_W: Option<
+    unsafe extern "system" fn(
+        PCWSTR,
+        u32,
+        FILE_SHARE_MODE,
+        *const SECURITY_ATTRIBUTES,
+        FILE_CREATION_DISPOSITION,
+        FILE_FLAGS_AND_ATTRIBUTES,
+        HANDLE,
+    ) -> HANDLE,
+> = None;
+#[cfg(not(any(test, feature = "test-helpers")))]
 static mut ORIGINAL_CREATE_FILE_W: Option<
     unsafe extern "system" fn(
         PCWSTR,
@@ -347,7 +431,11 @@ static mut ORIGINAL_NT_SET_INFORMATION_FILE: Option<
 // Saved IAT entry addresses so `UnhookAll` can restore them
 // ---------------------------------------------------------------------------
 
+#[cfg(any(test, feature = "test-helpers"))]
+pub static mut IAT_CREATE_FILE_W: Option<*mut usize> = None;
+#[cfg(not(any(test, feature = "test-helpers")))]
 static mut IAT_CREATE_FILE_W: Option<*mut usize> = None;
+
 static mut IAT_NT_CREATE_FILE: Option<*mut usize> = None;
 static mut IAT_WRITE_FILE: Option<*mut usize> = None;
 static mut IAT_WRITE_FILE_EX: Option<*mut usize> = None;
@@ -597,6 +685,16 @@ extern "system" fn DllMain(inst: HINSTANCE, reason: u32, _reserved: usize) -> i3
 ///
 /// Called from hook trampolines — never from `DllMain` (loader-lock safety).
 /// The `enabled` flag is stored during `init()` from shared memory.
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn lazy_init_ntdll_patcher(
+    enabled: bool,
+) -> &'static Mutex<crate::ntdll_patcher::NtdllPatcher> {
+    NTDLL_PATCHER.get_or_init(|| {
+        let patcher = crate::ntdll_patcher::NtdllPatcher::new(enabled);
+        Mutex::new(patcher)
+    })
+}
+#[cfg(not(any(test, feature = "test-helpers")))]
 fn lazy_init_ntdll_patcher(enabled: bool) -> &'static Mutex<crate::ntdll_patcher::NtdllPatcher> {
     NTDLL_PATCHER.get_or_init(|| {
         let patcher = crate::ntdll_patcher::NtdllPatcher::new(enabled);
@@ -771,15 +869,19 @@ pub(crate) fn unhook_all_internal() -> bool {
     unsafe {
         for hook in HOOKS.iter() {
             let iat_opt = *(hook.iat_ptr as *const Option<*mut usize>);
-            let orig_opt = *(hook.original_ptr as *const Option<usize>);
-            match (iat_opt, orig_opt) {
-                (Some(iat), Some(orig)) => {
+            // Original pointers are stored as `Option<fn pointer>`, which uses
+            // niche optimization (None = 0, Some = pointer value). Read the raw
+            // usize value directly so the representation matches what
+            // `restore_iat` expects.
+            let orig = *(hook.original_ptr as *const usize);
+            match (iat_opt, orig != 0) {
+                (Some(iat), true) => {
                     if !restore_iat(iat, orig) {
                         restore_success = false;
                     }
                 }
-                (Some(_), None) | (None, Some(_)) => restore_success = false,
-                (None, None) => {}
+                (Some(_), false) | (None, true) => restore_success = false,
+                (None, false) => {}
             }
         }
     }
@@ -981,6 +1083,36 @@ pub fn self_unload_check() -> Option<HINSTANCE> {
 /// * `source_volume_class` - Volume class of the source path (if known).
 /// * `destination_volume_class` - Volume class of the destination path
 ///   (for copy/move operations).
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn classify_path(
+    path: &str,
+    action: &str,
+    pipe_name: &str,
+    source_volume_class: Option<VolumeClass>,
+    destination_volume_class: Option<VolumeClass>,
+) -> Result<dlp_common::HookResponse, pipe_client::PipeError> {
+    let op = if action.eq_ignore_ascii_case("WRITE")
+        || action.eq_ignore_ascii_case("CREATE")
+        || action.eq_ignore_ascii_case("NT_WRITE")
+    {
+        dlp_common::hook_ipc::HookOp::Write
+    } else {
+        dlp_common::hook_ipc::HookOp::Read
+    };
+    let req = HookRequest {
+        path: path.to_string(),
+        action: action.to_string(),
+        source_volume_class,
+        destination_volume_class,
+        pid: std::process::id(),
+        op,
+        ..Default::default()
+    };
+    pipe_client::send_request(
+        pipe_name, &req, 50, // 50 ms timeout per task spec
+    )
+}
+#[cfg(not(any(test, feature = "test-helpers")))]
 pub(crate) fn classify_path(
     path: &str,
     action: &str,
@@ -1120,36 +1252,7 @@ pub(crate) unsafe fn extract_nt_path(objectattributes: *mut std::ffi::c_void) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use dlp_agent::hook_ipc::HookIpcServer;
-    use dlp_common::hook_ipc::{ControlResponse, UnhookCommand, UnhookReason};
-    use dlp_common::{Decision, HookRequest, HookResponse};
-    use std::sync::Arc;
-    use std::time::Duration;
-
-    #[cfg(windows)]
-    use std::os::windows::ffi::OsStrExt;
-
-    /// Starts a [`HookIpcServer`] on a dedicated thread using the given
-    /// handler, waits until the pipe is ready, and returns the thread handle.
-    pub fn start_agent_mock_server(
-        pipe_name: &str,
-        handler: Arc<dyn Fn(HookRequest) -> HookResponse + Send + Sync>,
-    ) -> std::thread::JoinHandle<()> {
-        let name = pipe_name.to_string();
-        let (tx, rx) = std::sync::mpsc::channel::<()>();
-        let handle = std::thread::spawn(move || {
-            let server = HookIpcServer::new(name, handler);
-            server
-                .run_with_ready(|| {
-                    let _ = tx.send(());
-                })
-                .unwrap();
-        });
-
-        rx.recv_timeout(Duration::from_secs(5))
-            .expect("mock server did not become ready");
-        handle
-    }
+    use crate::reset_for_test;
 
     #[test]
     fn hash_path_is_deterministic() {
@@ -1197,125 +1300,20 @@ mod tests {
     }
 
     #[test]
-    fn pipe_client_connection_refused_when_no_server() {
-        let req = HookRequest {
-            path: r"C:\test.txt".to_string(),
-            action: "CREATE".to_string(),
-            ..Default::default()
-        };
-        let result = pipe_client::send_request(r"\\.\pipe\DlpHookPipeTestNoServer", &req, 100);
-        assert!(
-            matches!(result, Err(pipe_client::PipeError::ConnectionRefused)),
-            "expected ConnectionRefused, got {:?}",
-            result
-        );
-    }
-
-    #[test]
-    fn pipe_client_roundtrip_deny() {
-        let pipe_name = r"\\.\pipe\DlpHookPipeTestDeny";
-        let handler = Arc::new(|req: HookRequest| HookResponse {
-            decision: Decision::DENY,
-            reason: format!("blocked: {}", req.path),
-            cache_hint: None,
-            cache_version: 0,
-            approval_override: None,
-        });
-        let _server = start_agent_mock_server(pipe_name, handler);
-        std::thread::sleep(Duration::from_millis(50));
-
-        let req = HookRequest {
-            path: r"C:\secret.txt".to_string(),
-            action: "CREATE".to_string(),
-            ..Default::default()
-        };
-        let resp =
-            pipe_client::send_request(pipe_name, &req, 1000).expect("send_request should succeed");
-        assert_eq!(resp.decision, Decision::DENY);
-        assert_eq!(resp.reason, "blocked: C:\\secret.txt");
-    }
-
-    #[test]
-    fn pipe_client_roundtrip_allow() {
-        let pipe_name = r"\\.\pipe\DlpHookPipeTestAllow";
-        let handler = Arc::new(|_req: HookRequest| HookResponse {
-            decision: Decision::ALLOW,
-            reason: "allowed".to_string(),
-            cache_hint: None,
-            cache_version: 0,
-            approval_override: None,
-        });
-        let _server = start_agent_mock_server(pipe_name, handler);
-        std::thread::sleep(Duration::from_millis(50));
-
-        let req = HookRequest {
-            path: r"C:\public.txt".to_string(),
-            action: "CREATE".to_string(),
-            ..Default::default()
-        };
-        let resp =
-            pipe_client::send_request(pipe_name, &req, 1000).expect("send_request should succeed");
-        assert_eq!(resp.decision, Decision::ALLOW);
-        assert_eq!(resp.reason, "allowed");
-    }
-
-    #[test]
-    fn hook_createfilew_fail_closed_on_deny() {
-        let pipe_name = r"\\.\pipe\DlpHookPipeTestHookDeny";
-        let handler = Arc::new(|_req: HookRequest| HookResponse {
-            decision: Decision::DENY,
-            reason: "denied".to_string(),
-            cache_hint: None,
-            cache_version: 0,
-            approval_override: None,
-        });
-        let _server = start_agent_mock_server(pipe_name, handler);
-        std::thread::sleep(Duration::from_millis(50));
-
-        let result = classify_path(r"C:\secret.txt", "CREATE", pipe_name, None, None);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().decision, Decision::DENY);
-    }
-
-    #[test]
-    fn hook_createfilew_allow_when_allowed() {
-        let pipe_name = r"\\.\pipe\DlpHookPipeTestHookAllow";
-        let handler = Arc::new(|_req: HookRequest| HookResponse {
-            decision: Decision::ALLOW,
-            reason: "allowed".to_string(),
-            cache_hint: None,
-            cache_version: 0,
-            approval_override: None,
-        });
-        let _server = start_agent_mock_server(pipe_name, handler);
-        std::thread::sleep(Duration::from_millis(50));
-
-        let result = classify_path(r"C:\public.txt", "CREATE", pipe_name, None, None);
-        assert!(result.is_ok());
-        assert_eq!(result.unwrap().decision, Decision::ALLOW);
-    }
-
-    #[test]
-    fn unhook_all_is_idempotent() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        reset_hook_globals();
-        UnhookAll();
-        UnhookAll();
-    }
-
-    #[test]
+    #[serial_test::serial]
     fn shutdown_flag_stops_new_hook_calls() {
         let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        reset_hook_globals();
+        reset_for_test();
         SHUTTING_DOWN.store(true, Ordering::SeqCst);
         assert!(!enter_hook_call());
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
     }
 
     #[test]
+    #[serial_test::serial]
     fn active_call_guard_balanced() {
         let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        reset_hook_globals();
+        reset_for_test();
         // Ensure shutdown flag is clear; a prior test may have left it set.
         SHUTTING_DOWN.store(false, Ordering::SeqCst);
         let before = ACTIVE_CALLS.load(Ordering::SeqCst);
@@ -1386,8 +1384,11 @@ mod tests {
     /// test binary does not import the hooked functions — the pe_utils tests
     /// verify patch/restore on a controlled memory page.
     #[test]
+    #[serial_test::serial]
     #[ignore = "patches the test process IAT; run in an isolated harness"]
     fn iat_patch_and_restore_roundtrip() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+        reset_for_test();
         // Reset INITIALISED so init() will run.
         INITIALISED.store(false, Ordering::SeqCst);
 
@@ -1426,450 +1427,10 @@ mod tests {
     // --- Phase 58.5: Unhook protocol tests ---
 
     #[test]
-    fn unhook_all_sets_shutting_down() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        // Ensure we start from a clean state.
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-        UnhookAll();
-        assert!(SHUTTING_DOWN.load(Ordering::SeqCst));
-        // Reset for subsequent tests.
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-    }
-
-    #[test]
-    fn unhook_all_unpatches_ntdll_stubs() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        reset_hook_globals();
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-        INITIALISED.store(true, Ordering::SeqCst);
-
-        // Seed the global patcher with simulated Patched states.
-        let _ = lazy_init_ntdll_patcher(true);
-        if let Some(patcher_lock) = NTDLL_PATCHER.get() {
-            let mut patcher = patcher_lock.lock().unwrap();
-            patcher.set_stub_state_for_test(
-                crate::ntdll_patcher::StubName::NtCreateFile,
-                crate::ntdll_patcher::StubPatchState::Patched,
-            );
-            patcher.set_stub_state_for_test(
-                crate::ntdll_patcher::StubName::NtOpenFile,
-                crate::ntdll_patcher::StubPatchState::Patched,
-            );
-        }
-
-        UnhookAll();
-
-        if let Some(patcher_lock) = NTDLL_PATCHER.get() {
-            let patcher = patcher_lock.lock().unwrap();
-            assert_eq!(
-                *patcher.stub_state(crate::ntdll_patcher::StubName::NtCreateFile),
-                crate::ntdll_patcher::StubPatchState::Unpatched
-            );
-            assert_eq!(
-                *patcher.stub_state(crate::ntdll_patcher::StubName::NtOpenFile),
-                crate::ntdll_patcher::StubPatchState::Unpatched
-            );
-        }
-
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-    }
-
-    #[test]
-    fn unhook_all_unmaps_shared_memory() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        reset_hook_globals();
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-
-        // Seed the journal global with a dummy None; unmap_journal should clear it.
-        // We cannot easily create a real mapping here without Windows APIs, so we
-        // verify the public unmap functions are idempotent and reset globals.
-        crate::hook_journal::unmap_journal();
-        crate::classification_cache::unmap_cache();
-
-        UnhookAll();
-
-        // After UnhookAll the globals should remain None / empty.
-        assert!(crate::hook_journal::HookJournal::get().is_none());
-        assert!(crate::classification_cache::CacheLookup::get().is_none());
-    }
-
-    #[test]
-    fn unhook_all_infallible_per_stub() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        use windows::Win32::System::Memory::{
-            VirtualAlloc, MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE,
-        };
-
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-        INITIALISED.store(true, Ordering::SeqCst);
-
-        unsafe {
-            // Allocate a page to act as a corrupted IAT entry. restore_iat will
-            // attempt to write the original value back; using a real page avoids
-            // an access violation while still exercising the infallible loop.
-            let page = VirtualAlloc(None, 4096, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
-            assert!(!page.is_null());
-            let iat = page as *mut usize;
-            *iat = 0xDEADBEEF;
-
-            IAT_CREATE_FILE_W = Some(iat);
-            // Write the original value as a usize bit-pattern through the same
-            // address that UnhookAll reads via the HOOKS table. The HOOKS table
-            // stores this static's address as *mut usize and reads it as
-            // Option<usize>, so the bit pattern is what matters for the test.
-            let original_ptr = &raw mut ORIGINAL_CREATE_FILE_W as *mut Option<usize>;
-            *original_ptr = Some(0xBEEFDEAD);
-
-            UnhookAll();
-
-            // The corrupted entry should have been processed without panic.
-            // restore_iat writes the original value into the IAT page.
-            assert_eq!(*iat, 0xBEEFDEAD);
-
-            // Reset globals so later tests do not dereference the freed page.
-            IAT_CREATE_FILE_W = None;
-            ORIGINAL_CREATE_FILE_W = None;
-
-            let _ = windows::Win32::System::Memory::VirtualFree(
-                page,
-                0,
-                windows::Win32::System::Memory::VIRTUAL_FREE_TYPE(0x8000),
-            );
-        }
-
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-    }
-
-    // --- Task 3: self_unload safety tests ---
-
-    #[test]
-    fn self_unload_check_returns_captured_instance_or_none_in_tests() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        reset_hook_globals();
-
-        // In the test binary DllMain is not invoked as a DLL entry point, so no
-        // instance is captured. If the function were executed inside a loaded
-        // DLL, the same accessor would return the HINSTANCE passed to DllMain.
-        let instance = crate::self_unload_check();
-        assert!(
-            instance.is_none(),
-            "self_unload_check should return None when DllMain has not captured an instance"
-        );
-    }
-
-    #[test]
-    fn self_unload_aborts_when_active_calls_remain() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        reset_hook_globals();
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-        ACTIVE_CALLS.store(0, Ordering::SeqCst);
-
-        let guard = crate::ActiveCallGuard::new();
-        assert!(guard.is_active());
-
-        // SAFETY: self_unload returns early because ACTIVE_CALLS > 0, so it
-        // does not reach FreeLibraryAndExitThread.
-        let result = unsafe { crate::self_unload() };
-        assert!(
-            !result,
-            "self_unload should abort while active hook calls remain"
-        );
-
-        drop(guard);
-        assert_eq!(ACTIVE_CALLS.load(Ordering::SeqCst), 0);
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-    }
-
-    #[test]
-    fn self_unload_aborts_when_dll_instance_not_captured() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        reset_hook_globals();
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-        ACTIVE_CALLS.store(0, Ordering::SeqCst);
-
-        // Ensure no instance is captured in the test binary.
-        assert!(crate::self_unload_check().is_none());
-
-        // SAFETY: no active calls and no captured instance, so self_unload
-        // returns false before any unload attempt.
-        let result = unsafe { crate::self_unload() };
-        assert!(
-            !result,
-            "self_unload should abort when the DLL instance is unknown"
-        );
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-    }
-
-    #[test]
-    fn unhook_all_drains_active_calls() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        reset_hook_globals();
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-        ACTIVE_CALLS.store(0, Ordering::SeqCst);
-
-        let barrier = Arc::new(std::sync::Barrier::new(2));
-        let barrier_clone = Arc::clone(&barrier);
-
-        let handle = std::thread::spawn(move || {
-            ACTIVE_CALLS.fetch_add(1, Ordering::SeqCst);
-            barrier_clone.wait();
-            // Hold the active call for a short time while UnhookAll drains.
-            std::thread::sleep(Duration::from_millis(50));
-            ACTIVE_CALLS.fetch_sub(1, Ordering::SeqCst);
-        });
-
-        barrier.wait();
-        // Give the spawned thread time to increment ACTIVE_CALLS.
-        std::thread::sleep(Duration::from_millis(10));
-        assert!(ACTIVE_CALLS.load(Ordering::SeqCst) > 0);
-
-        UnhookAll();
-
-        handle.join().unwrap();
-        // UnhookAll either waited for the active call to finish or timed out.
-        // In either case it should complete without panic.
-        assert_eq!(ACTIVE_CALLS.load(Ordering::SeqCst), 0);
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-    }
-
-    #[test]
-    fn handle_unhook_command_sends_success_ack() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        reset_hook_globals();
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-        crate::control_thread::reset_watchdog_test_state();
-        ACTIVE_CALLS.store(0, Ordering::SeqCst);
-
-        // Ensure no stale hook entries interfere with UnhookAll.
-        unsafe {
-            IAT_CREATE_FILE_W = None;
-            ORIGINAL_CREATE_FILE_W = None;
-        }
-
-        // Enable the mock ack sink.
-        std::env::set_var("DLP_HOOK_TEST_MOCK_ACK", "1");
-        let cmd = UnhookCommand {
-            reason: UnhookReason::AgentShutdown,
-            timestamp_secs: 1_700_000_000,
-        };
-        crate::control_thread::handle_unhook_command(cmd, std::process::id(), 12345);
-        std::env::remove_var("DLP_HOOK_TEST_MOCK_ACK");
-
-        let captured = {
-            let mut sink = crate::pipe_client::MOCK_UNHOOK_ACK_SINK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            sink.pop()
-        };
-        assert!(captured.is_some(), "expected an UnhookAck to be sent");
-        let captured = captured.unwrap();
-        assert!(captured.success);
-        assert_eq!(captured.pid, std::process::id());
-        assert_eq!(captured.creation_time, 12345);
-
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-    }
-
-    #[test]
-    fn handle_unhook_command_sends_failure_ack() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        reset_hook_globals();
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-        crate::control_thread::reset_watchdog_test_state();
-        ACTIVE_CALLS.store(0, Ordering::SeqCst);
-
-        // Force UnhookAll to report failure by creating an inconsistent hook
-        // entry: an IAT address is present but the saved original pointer is
-        // missing, so the restore cannot succeed.
-        std::env::set_var("DLP_HOOK_TEST_MOCK_ACK", "1");
-        let mut dummy_iat: usize = 0;
-        unsafe {
-            IAT_CREATE_FILE_W = Some(&mut dummy_iat as *mut usize);
-            ORIGINAL_CREATE_FILE_W = None;
-        }
-        let cmd = UnhookCommand {
-            reason: UnhookReason::AgentShutdown,
-            timestamp_secs: 1_700_000_000,
-        };
-        crate::control_thread::handle_unhook_command(cmd, std::process::id(), 12345);
-        std::env::remove_var("DLP_HOOK_TEST_MOCK_ACK");
-
-        unsafe {
-            IAT_CREATE_FILE_W = None;
-            ORIGINAL_CREATE_FILE_W = None;
-        }
-
-        let captured = {
-            let mut sink = crate::pipe_client::MOCK_UNHOOK_ACK_SINK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            sink.pop()
-        };
-        assert!(captured.is_some(), "expected an UnhookAck to be sent");
-        let captured = captured.unwrap();
-        assert!(
-            !captured.success,
-            "expected ack.success == false when UnhookAll fails"
-        );
-
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-    }
-
-    #[test]
-    fn handle_unhook_command_sends_failure_ack_when_background_thread_times_out() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        reset_hook_globals();
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-        crate::control_thread::reset_watchdog_test_state();
-        ACTIVE_CALLS.store(0, Ordering::SeqCst);
-
-        // Start a background thread and force its shutdown to time out so that
-        // handle_unhook_command aborts the unhook and reports failure.
-        crate::background_thread::reset_background_thread_for_test();
-        let state = std::sync::Arc::new(crate::fail_mode::FailModeState::new());
-        crate::background_thread::start_background_thread(
-            std::ptr::null(),
-            std::sync::Arc::clone(&state),
-            None,
-            None,
-        );
-        crate::background_thread::force_shutdown_timeout_for_test(true);
-
-        std::env::set_var("DLP_HOOK_TEST_MOCK_ACK", "1");
-        let cmd = UnhookCommand {
-            reason: UnhookReason::AgentShutdown,
-            timestamp_secs: 1_700_000_000,
-        };
-        crate::control_thread::handle_unhook_command(cmd, std::process::id(), 12345);
-        std::env::remove_var("DLP_HOOK_TEST_MOCK_ACK");
-
-        let captured = {
-            let mut sink = crate::pipe_client::MOCK_UNHOOK_ACK_SINK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            sink.pop()
-        };
-        assert!(captured.is_some(), "expected an UnhookAck to be sent");
-        let captured = captured.unwrap();
-        assert!(
-            !captured.success,
-            "expected ack.success == false when background thread shutdown times out"
-        );
-
-        crate::background_thread::reset_background_thread_for_test();
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-    }
-
-    #[test]
-    fn control_poll_thread_starts_from_post_attach_path() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        // Reset control thread state so enter_hook_call will start it.
-        crate::control_thread::shutdown_control_thread();
-
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-        let started = crate::enter_hook_call();
-        assert!(started);
-
-        // Give the control thread time to transition to Running.
-        std::thread::sleep(Duration::from_millis(50));
-
-        crate::exit_hook_call();
-        crate::control_thread::shutdown_control_thread();
-    }
-
-    #[test]
-    fn control_poll_thread_triggers_after_grace_and_failures() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        reset_hook_globals();
-        crate::control_thread::reset_watchdog_test_state();
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-
-        // Seed many consecutive failures so the watchdog has ample budget to
-        // fire even when the test runner is heavily loaded and loop iterations
-        // are delayed. A large queue prevents the loop from exhausting the mock
-        // responses before the grace timeout elapses.
-        let failures: Vec<_> = (0..32)
-            .map(|_| Err(crate::pipe_client::PipeError::ConnectionRefused))
-            .collect();
-
-        // Use a watchdog timeout (2500 ms) longer than one poll interval
-        // (1000 ms) so the first two failures fall inside the grace window
-        // and a later failure exceeds it.
-        let (iterations, triggered) =
-            crate::control_thread::run_control_loop_for_test(failures, 2_500, 64);
-
-        assert!(triggered, "watchdog should trigger after grace period");
-        assert!(
-            iterations >= 3,
-            "should take at least three iterations to exceed the window"
-        );
-
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-    }
-
-    #[test]
-    fn control_poll_thread_resets_on_success() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        reset_hook_globals();
-        crate::control_thread::reset_watchdog_test_state();
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-
-        // Two failures followed by a successful no-op response.
-        let results = vec![
-            Err(crate::pipe_client::PipeError::ConnectionRefused),
-            Err(crate::pipe_client::PipeError::ConnectionRefused),
-            Ok(ControlResponse { command: None }),
-        ];
-
-        // Use a generous watchdog timeout so a heavily loaded test runner still
-        // reaches the successful poll before the grace window expires.
-        let (_iterations, triggered) =
-            crate::control_thread::run_control_loop_for_test(results, 5_000, 16);
-
-        assert!(
-            !triggered,
-            "successful poll should reset failure counter and avoid watchdog"
-        );
-
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-    }
-
-    #[test]
-    fn control_poll_thread_handles_unhook_command() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        reset_hook_globals();
-        crate::control_thread::reset_watchdog_test_state();
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-        std::env::set_var("DLP_HOOK_TEST_MOCK_ACK", "1");
-
-        let results = vec![Ok(ControlResponse {
-            command: Some(UnhookCommand {
-                reason: UnhookReason::AgentShutdown,
-                timestamp_secs: 1_700_000_000,
-            }),
-        })];
-
-        let (_iterations, triggered) =
-            crate::control_thread::run_control_loop_for_test(results, 30_000, 5);
-
-        assert!(!triggered);
-        let captured = {
-            let mut sink = crate::pipe_client::MOCK_UNHOOK_ACK_SINK
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            sink.pop()
-        };
-        assert!(captured.is_some(), "expected an UnhookAck");
-        let captured = captured.unwrap();
-        assert!(captured.success);
-
-        std::env::remove_var("DLP_HOOK_TEST_MOCK_ACK");
-        SHUTTING_DOWN.store(false, Ordering::SeqCst);
-    }
-
-    #[test]
+    #[serial_test::serial]
     fn shutting_down_passes_through_create_file_w() {
         let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+        reset_for_test();
         crate::set_shutting_down_for_test(true);
         // classify_and_log_path is the internal helper used by HookCreateFileW.
         // When shutting down it must return None without attempting a pipe call.
@@ -1887,8 +1448,10 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn shutting_down_passes_through_nt_create_file() {
         let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+        reset_for_test();
         crate::set_shutting_down_for_test(true);
         let result = crate::trampolines::classify_and_log_path(
             r"C:\test.txt",
@@ -1904,8 +1467,10 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn trampoline_entry_counts_active_calls() {
         let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+        reset_for_test();
         crate::set_shutting_down_for_test(false);
         ACTIVE_CALLS.store(0, Ordering::SeqCst);
 
@@ -1916,87 +1481,5 @@ mod tests {
             assert_eq!(crate::active_call_count(), before + 1);
         }
         assert_eq!(crate::active_call_count(), before);
-    }
-
-    #[test]
-    fn start_dlp_control_thread_export_is_reachable() {
-        // Locate the built DLL next to the workspace root.
-        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let workspace_root = manifest_dir.parent().expect("workspace root");
-        let profile = if cfg!(debug_assertions) {
-            "debug"
-        } else {
-            "release"
-        };
-        let dll_path = workspace_root
-            .join("target")
-            .join(profile)
-            .join("dlp_hook_dll.dll");
-
-        if !dll_path.exists() {
-            eprintln!(
-                "Skipping export reachability test: DLL not found at {}. Run `cargo build -p dlp-hook-dll` first.",
-                dll_path.display()
-            );
-            return;
-        }
-
-        let dll_wide: Vec<u16> = dll_path
-            .as_os_str()
-            .encode_wide()
-            .chain(std::iter::once(0))
-            .collect();
-
-        // Load as a datafile/DLL without calling DllMain or resolving imports.
-        // This is safe for verifying the export table without patching the test
-        // process IAT or leaving a control thread behind.
-        let module = unsafe {
-            windows::Win32::System::LibraryLoader::LoadLibraryExW(
-                windows::core::PCWSTR(dll_wide.as_ptr()),
-                None,
-                windows::Win32::System::LibraryLoader::DONT_RESOLVE_DLL_REFERENCES,
-            )
-        };
-
-        assert!(
-            module.is_ok(),
-            "LoadLibraryExW should succeed for built DLL"
-        );
-        let module = module.unwrap();
-
-        let proc = unsafe { GetProcAddress(module, windows::core::s!("StartDlpControlThread")) };
-        assert!(
-            proc.is_some(),
-            "StartDlpControlThread export should be resolvable in built DLL"
-        );
-
-        // Intentionally do not FreeLibrary the datafile-loaded module:
-        // windows-rs 0.62 does not expose FreeLibrary in this configuration,
-        // and the module is loaded without DllMain/imports so no hooks or
-        // threads are started. The handle is released when the test process
-        // exits.
-    }
-
-    #[test]
-    fn start_dlp_control_thread_starts_thread_and_is_idempotent() {
-        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        crate::control_thread::shutdown_control_thread();
-        crate::control_thread::reset_watchdog_test_state();
-
-        // Call the in-scope export directly (the test binary links this crate).
-        let result = StartDlpControlThread();
-        assert_eq!(
-            result, 0,
-            "StartDlpControlThread should return 0 on success"
-        );
-
-        // Give the thread time to transition from Starting to Running.
-        std::thread::sleep(Duration::from_millis(50));
-
-        // Second call should be idempotent (return 0, no crash).
-        let result2 = StartDlpControlThread();
-        assert_eq!(result2, 0, "StartDlpControlThread should be idempotent");
-
-        crate::control_thread::shutdown_control_thread();
     }
 }

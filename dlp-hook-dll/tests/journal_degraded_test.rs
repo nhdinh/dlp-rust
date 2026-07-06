@@ -107,6 +107,7 @@ mod windows_tests {
     /// Test that emit_journal_degraded_alert sends the correct payload
     /// over the named pipe and the server receives it.
     #[test]
+    #[serial_test::serial]
     fn test_journal_degraded_alert_pipe_send() {
         use windows::Win32::Storage::FileSystem::PIPE_ACCESS_DUPLEX;
         use windows::Win32::System::Pipes::{

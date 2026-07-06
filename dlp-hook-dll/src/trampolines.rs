@@ -63,7 +63,8 @@
 #![allow(clippy::transmutes_expressible_as_ptr_casts)]
 
 use dlp_common::hook_ipc::HookOp;
-use std::sync::{Arc, OnceLock};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HANDLE, NTSTATUS};
 
@@ -77,27 +78,41 @@ use dlp_common::Classification;
 
 /// Global fail-mode state machine.
 ///
-/// Initialized lazily on the first hook call (NOT from `DllMain`).
-static FAIL_STATE: OnceLock<Arc<FailModeState>> = OnceLock::new();
+/// Stored in a resettable `Mutex<Option<...>>` so tests can tear it down
+/// between runs. Production code never resets it; the mutex is uncontended
+/// after initialization.
+static FAIL_STATE: Mutex<Option<Arc<FailModeState>>> = Mutex::new(None);
 
 /// Returns the global fail-mode state machine, initializing if needed.
-fn get_fail_state() -> &'static Arc<FailModeState> {
-    FAIL_STATE.get_or_init(|| {
-        // Start background thread for RESYNC detection.
-        let state = Arc::new(FailModeState::new());
-        if let Some(cache) = crate::classification_cache::CacheLookup::get() {
-            let header = &cache as *const _ as *const crate::classification_cache::CacheHeader;
-            // Pass None for verify_fn — ntdll trampoline verification callback
-            // will be wired in Plan 06 when NtdllPatcher is initialized.
-            crate::background_thread::start_background_thread(
-                header,
-                Arc::clone(&state),
-                None,
-                None,
-            );
+fn get_fail_state() -> Arc<FailModeState> {
+    {
+        let guard = FAIL_STATE.lock();
+        if let Some(state) = guard.as_ref() {
+            return Arc::clone(state);
         }
-        state
-    })
+    }
+
+    let state = Arc::new(FailModeState::new());
+    if let Some(cache) = crate::classification_cache::CacheLookup::get() {
+        let header = &cache as *const _ as *const crate::classification_cache::CacheHeader;
+        // Pass None for verify_fn — ntdll trampoline verification callback
+        // will be wired in Plan 06 when NtdllPatcher is initialized.
+        crate::background_thread::start_background_thread(header, Arc::clone(&state), None, None);
+    }
+
+    let mut guard = FAIL_STATE.lock();
+    if guard.is_none() {
+        *guard = Some(Arc::clone(&state));
+    }
+    Arc::clone(guard.as_ref().unwrap())
+}
+
+/// Test-only helper to reset the global fail-mode state machine.
+#[cfg(any(test, feature = "test-helpers"))]
+pub(crate) fn reset_fail_state_for_test() {
+    crate::background_thread::shutdown_background_thread();
+    let mut guard = FAIL_STATE.lock();
+    *guard = None;
 }
 
 /// DIFF-04: Record a pipe round-trip and emit a health snapshot every
@@ -109,7 +124,9 @@ fn record_pipe_round_trip_and_maybe_emit() {
         + 1;
     if health_count.is_multiple_of(crate::perf_telemetry::HEALTH_EMIT_INTERVAL) {
         let snapshot = crate::perf_telemetry::emit_health_snapshot();
-        if let Err(e) = crate::pipe_client::send_health_snapshot(crate::DEFAULT_PIPE_NAME, &snapshot) {
+        if let Err(e) =
+            crate::pipe_client::send_health_snapshot(crate::current_pipe_name(), &snapshot)
+        {
             crate::debug_log(&format!("[dlp-hook] health snapshot send failed: {}\0", e));
         }
     }
@@ -271,7 +288,7 @@ pub(crate) fn classify_and_log_path(
                 match crate::classify_path(
                     path,
                     action,
-                    crate::DEFAULT_PIPE_NAME,
+                    crate::current_pipe_name(),
                     source_volume_class,
                     destination_volume_class,
                 ) {
@@ -339,7 +356,7 @@ pub(crate) fn classify_and_log_path(
                     match crate::classify_path(
                         path,
                         action,
-                        crate::DEFAULT_PIPE_NAME,
+                        crate::current_pipe_name(),
                         source_volume_class,
                         destination_volume_class,
                     ) {
@@ -422,7 +439,7 @@ pub(crate) fn classify_and_log_path(
                 match crate::classify_path(
                     path,
                     action,
-                    crate::DEFAULT_PIPE_NAME,
+                    crate::current_pipe_name(),
                     source_volume_class,
                     destination_volume_class,
                 ) {
@@ -601,7 +618,7 @@ fn classify_and_log_handle(
 
     let start = std::time::Instant::now();
 
-    let response = crate::classify_handle(handle_value, action, crate::DEFAULT_PIPE_NAME);
+    let response = crate::classify_handle(handle_value, action, crate::current_pipe_name());
     let latency = start.elapsed();
 
     let result = match response {
@@ -925,7 +942,7 @@ pub unsafe extern "system" fn HookWriteFile(
                                 .as_secs(),
                         };
                         let _ = crate::pipe_client::send_hash_evidence(
-                            crate::DEFAULT_PIPE_NAME,
+                            crate::current_pipe_name(),
                             &evidence,
                         );
 
@@ -1044,7 +1061,7 @@ pub unsafe extern "system" fn HookWriteFileEx(
                                 .as_secs(),
                         };
                         let _ = crate::pipe_client::send_hash_evidence(
-                            crate::DEFAULT_PIPE_NAME,
+                            crate::current_pipe_name(),
                             &evidence,
                         );
 
@@ -1682,24 +1699,19 @@ pub unsafe extern "system" fn HookNtWriteFile(
                         classify_and_log_handle(handle_value, "NT_WRITE", "NtWriteFile", 2, "")
                     {
                         // DIFF-03: Compute content hash from buffer / length.
-                        let (hash, truncated, skipped) =
-                            if !buffer.is_null() && length > 0 {
-                                if (length as usize)
-                                    < crate::hash_compute::SMALL_BUFFER_THRESHOLD
-                                {
-                                    unsafe {
-                                        crate::hash_compute::compute_content_hash(buffer, length)
-                                    }
-                                } else {
-                                    unsafe {
-                                        crate::hash_compute::compute_content_hash_offloaded(
-                                            buffer, length,
-                                        )
-                                    }
-                                }
+                        let (hash, truncated, skipped) = if !buffer.is_null() && length > 0 {
+                            if (length as usize) < crate::hash_compute::SMALL_BUFFER_THRESHOLD {
+                                unsafe { crate::hash_compute::compute_content_hash(buffer, length) }
                             } else {
-                                (None, false, false)
-                            };
+                                unsafe {
+                                    crate::hash_compute::compute_content_hash_offloaded(
+                                        buffer, length,
+                                    )
+                                }
+                            }
+                        } else {
+                            (None, false, false)
+                        };
 
                         let evidence = dlp_common::hook_ipc::HashEvidenceFrame {
                             pid: std::process::id(),
@@ -1713,7 +1725,7 @@ pub unsafe extern "system" fn HookNtWriteFile(
                                 .as_secs(),
                         };
                         let _ = crate::pipe_client::send_hash_evidence(
-                            crate::DEFAULT_PIPE_NAME,
+                            crate::current_pipe_name(),
                             &evidence,
                         );
 
@@ -2186,24 +2198,19 @@ pub unsafe extern "system" fn NtdllTrampolineNtWriteFile(
                         classify_and_log_handle(handle_value, "NT_WRITE", "NtWriteFile", 2, "")
                     {
                         // DIFF-03: Compute content hash from buffer / length.
-                        let (hash, truncated, skipped) =
-                            if !buffer.is_null() && length > 0 {
-                                if (length as usize)
-                                    < crate::hash_compute::SMALL_BUFFER_THRESHOLD
-                                {
-                                    unsafe {
-                                        crate::hash_compute::compute_content_hash(buffer, length)
-                                    }
-                                } else {
-                                    unsafe {
-                                        crate::hash_compute::compute_content_hash_offloaded(
-                                            buffer, length,
-                                        )
-                                    }
-                                }
+                        let (hash, truncated, skipped) = if !buffer.is_null() && length > 0 {
+                            if (length as usize) < crate::hash_compute::SMALL_BUFFER_THRESHOLD {
+                                unsafe { crate::hash_compute::compute_content_hash(buffer, length) }
                             } else {
-                                (None, false, false)
-                            };
+                                unsafe {
+                                    crate::hash_compute::compute_content_hash_offloaded(
+                                        buffer, length,
+                                    )
+                                }
+                            }
+                        } else {
+                            (None, false, false)
+                        };
 
                         let evidence = dlp_common::hook_ipc::HashEvidenceFrame {
                             pid: std::process::id(),
@@ -2217,7 +2224,7 @@ pub unsafe extern "system" fn NtdllTrampolineNtWriteFile(
                                 .as_secs(),
                         };
                         let _ = crate::pipe_client::send_hash_evidence(
-                            crate::DEFAULT_PIPE_NAME,
+                            crate::current_pipe_name(),
                             &evidence,
                         );
 
@@ -2777,13 +2784,8 @@ mod tests {
     #[test]
     fn test_diagnostic_snapshot_on_deny_path() {
         let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        crate::reset_hook_globals();
-        crate::perf_telemetry::reset_perf_counters();
-        crate::pipe_client::reset_pipe_client_mocks();
-        // Drain any leftover snapshots from prior tests.
-        crate::diagnostic_ring::drain_all_snapshots();
+        crate::reset_for_test();
 
-        let pipe_name = r"\\.\pipe\DlpHookPipeTestDiagPath";
         let handler =
             std::sync::Arc::new(|_req: dlp_common::HookRequest| dlp_common::HookResponse {
                 decision: dlp_common::Decision::DENY,
@@ -2792,7 +2794,7 @@ mod tests {
                 cache_version: 0,
                 approval_override: None,
             });
-        let _server = crate::tests::start_agent_mock_server(pipe_name, handler);
+        let _server = crate::MockAgentServer::start(handler);
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         // Call classify_and_log_path with a test path and action.
@@ -2961,23 +2963,14 @@ mod tests {
 
     // --- DIFF-01: Approval override allows denied operation ---
     //
-    // Intentionally placed LAST in this module. The mock agent server is started
-    // on DEFAULT_PIPE_NAME and the existing helper does not shut down when its
-    // JoinHandle is dropped, so running this test after all other lib tests
-    // prevents a leaked server from causing later tests on DEFAULT_PIPE_NAME to
-    // hang. Integration tests run in separate processes and are unaffected.
-
+    // Renamed with `zzz_` prefix so cargo test runs it LAST in this module.
+    // The mock agent server is started on a unique pipe by MockAgentServer::start,
+    // so a leaked server cannot collide with other tests.
     #[test]
-    fn test_approval_override_allows_deny_path() {
+    fn test_zzz_approval_override_allows_deny_path() {
         let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
-        crate::reset_hook_globals();
-        crate::perf_telemetry::reset_perf_counters();
-        crate::pipe_client::reset_pipe_client_mocks();
-        crate::diagnostic_ring::drain_all_snapshots();
+        crate::reset_for_test();
 
-        // classify_and_log_path hardcodes DEFAULT_PIPE_NAME, so the mock server
-        // must listen there. Holding PHASE_58_5_TEST_LOCK prevents parallel tests
-        // from colliding on the same pipe name.
         let handler =
             std::sync::Arc::new(|_req: dlp_common::HookRequest| dlp_common::HookResponse {
                 decision: dlp_common::Decision::DENY,
@@ -2986,11 +2979,11 @@ mod tests {
                 cache_version: 0,
                 approval_override: Some(true),
             });
-        let _server = crate::tests::start_agent_mock_server(crate::DEFAULT_PIPE_NAME, handler);
+        let _server = crate::MockAgentServer::start(handler);
         std::thread::sleep(std::time::Duration::from_millis(50));
 
         let result = classify_and_log_path(
-            r"C:\test\override.txt",
+            r"C:\test\approval_override_unique_path.txt",
             "CREATE",
             "CreateFileW",
             0,

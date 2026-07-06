@@ -706,7 +706,7 @@ fn emit_bypass_alert(reason: BypassReason, stub_name: &str) {
 
     match bincode::serialize(&envelope) {
         Ok(payload) => {
-            let _ = crate::pipe_client::send_raw_oneway(crate::DEFAULT_PIPE_NAME, &payload);
+            let _ = crate::pipe_client::send_raw_oneway(crate::current_pipe_name(), &payload);
         }
         Err(e) => {
             let msg = format!("[dlp-hook] BypassAlert serialization failed: {:?}", e);

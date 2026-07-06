@@ -173,7 +173,7 @@ fn query_volume_class_from_agent(letter: char) -> Option<VolumeClass> {
 
     // Send raw request and receive raw response.
     let response_bytes = match crate::pipe_client::send_raw_request(
-        crate::DEFAULT_PIPE_NAME,
+        crate::current_pipe_name(),
         &payload,
         100, // 100ms timeout for volume class query
     ) {

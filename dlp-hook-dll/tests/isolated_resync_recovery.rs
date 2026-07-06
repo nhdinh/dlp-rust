@@ -75,6 +75,7 @@ fn create_test_cache(
 /// version after being unreachable, the hook DLL's background thread must
 /// detect it and trigger automatic recovery.
 #[test]
+#[serial_test::serial]
 fn isolated_to_resync_via_background_thread() {
     #[cfg(not(windows))]
     {
@@ -181,6 +182,7 @@ fn resync_to_healthy_hysteresis() {
 
 /// Verify FAIL-01: Full cycle HEALTHY -> DEGRADED -> ISOLATED -> RESYNC -> HEALTHY.
 #[test]
+#[serial_test::serial]
 fn full_cycle_end_to_end() {
     #[cfg(not(windows))]
     {
@@ -249,6 +251,7 @@ fn full_cycle_end_to_end() {
 /// compute_checksum and the hook-dll's compute_checksum produce identical
 /// results for the same header content.
 #[test]
+#[serial_test::serial]
 fn cross_crate_checksum_validation() {
     #[cfg(not(windows))]
     {
@@ -277,6 +280,7 @@ fn cross_crate_checksum_validation() {
 /// The guarantee is about LRU version pinning, not shared-memory read
 /// isolation (the mapping flips atomically).
 #[test]
+#[serial_test::serial]
 fn in_flight_decision_uses_old_cache() {
     #[cfg(not(windows))]
     {
@@ -331,6 +335,7 @@ fn in_flight_decision_uses_old_cache() {
 /// The background thread skips odd versions because they indicate the writer
 /// is still building the inactive buffer.
 #[test]
+#[serial_test::serial]
 fn odd_version_during_rebuild_ignored() {
     #[cfg(not(windows))]
     {
