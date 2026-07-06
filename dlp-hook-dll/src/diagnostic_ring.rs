@@ -83,19 +83,30 @@ pub fn drain_snapshots(limit: usize) -> Vec<DiagnosticSnapshot> {
     let one_hour_ticks = freq.saturating_mul(ENTRY_EXPIRY_SECONDS);
     let qpc_ok = now_qpc > 0 && freq > 0;
 
+    // Fallback wall-clock time when QPC is unavailable.
+    let now_wall = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .map(|d| d.as_secs());
+
     while result.len() < limit {
         let Some(snapshot) = ring.pop() else {
             break;
         };
 
-        // Skip expired entries (lazy eviction) only when QPC is usable.
-        // If QPC failed (now_qpc == 0 or freq == 0), we cannot compute a
-        // meaningful age, so we retain the snapshot rather than evicting
-        // everything or retaining stale data indefinitely.
-        if qpc_ok
-            && snapshot.timestamp_qpc > 0
-            && now_qpc.wrapping_sub(snapshot.timestamp_qpc) > one_hour_ticks
-        {
+        // Skip expired entries (lazy eviction). Prefer QPC-based expiry when
+        // QPC is usable; otherwise fall back to wall-clock expiry so stale
+        // snapshots are not retained indefinitely when QPC fails.
+        let expired = if qpc_ok {
+            snapshot.timestamp_qpc > 0
+                && now_qpc.wrapping_sub(snapshot.timestamp_qpc) > one_hour_ticks
+        } else if let Some(now) = now_wall {
+            snapshot.timestamp_secs > 0
+                && now.saturating_sub(snapshot.timestamp_secs) > ENTRY_EXPIRY_SECONDS
+        } else {
+            false
+        };
+        if expired {
             continue;
         }
 
