@@ -5851,7 +5851,9 @@ fn test_spawn_hook_ipc_server_starts_named_thread() {
     reset_shutdown_signal();
     reset_unhook_signal();
 
-    let config = test_hook_ipc_config(crate::hook_ipc::DEFAULT_PIPE_NAME);
+    // Use a unique pipe name so this test does not collide with the integration
+    // test that injects the real hook DLL and expects the default pipe name.
+    let config = test_hook_ipc_config(r"\\.\pipe\DlpHookPipeTestSpawnNamedThread");
 
     let handle = spawn_hook_ipc_server(config).expect("hook IPC server thread should spawn");
 

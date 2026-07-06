@@ -67,7 +67,7 @@ impl EngineClient {
         let key_path = std::env::var("DLP_ENGINE_KEY_PATH").ok();
 
         let tls_verify = std::env::var("DLP_ENGINE_TLS_VERIFY")
-            .map(|v| v.to_ascii_lowercase() != "false")
+            .map(|v| !v.eq_ignore_ascii_case("false"))
             .unwrap_or(true);
 
         let mut builder = Client::builder().timeout(Duration::from_secs(10));

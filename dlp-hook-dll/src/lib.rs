@@ -773,10 +773,13 @@ fn read_ntdll_patching_flag_from_shared_memory() -> bool {
 /// Worker thread procedure that performs deferred IAT patching.
 ///
 /// Runs outside the Windows loader lock to avoid deadlocks during import-table
-/// resolution and memory protection changes.
+/// resolution and memory protection changes. After patching completes, the
+/// control-poll/watchdog thread is started so the agent is notified of the
+/// injected process even if it never calls a hooked API.
 unsafe extern "system" fn init_thread_proc(_param: *mut std::ffi::c_void) -> u32 {
     init();
     LAZY_INIT_REQUIRED.store(false, Ordering::Relaxed);
+    crate::control_thread::start_control_thread();
     0
 }
 

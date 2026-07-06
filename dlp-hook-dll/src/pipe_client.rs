@@ -261,13 +261,18 @@ pub fn poll_control(
 ) -> Result<dlp_common::hook_ipc::ControlResponse, PipeError> {
     #[cfg(any(test, feature = "test-helpers"))]
     {
-        if let Ok(mut mock) = MOCK_POLL_CONTROL.lock() {
-            if !mock.is_empty() {
-                return mock.remove(0);
+        // Unit/integration tests that script responses use the mock queue.
+        // Integration tests that load the DLL into a live process set
+        // DLP_HOOK_TEST_REAL_POLL to force real named-pipe I/O instead.
+        if std::env::var("DLP_HOOK_TEST_REAL_POLL").is_err() {
+            if let Ok(mut mock) = MOCK_POLL_CONTROL.lock() {
+                if !mock.is_empty() {
+                    return mock.remove(0);
+                }
+                // Empty mock queue means the test has exhausted its scripted
+                // responses; return a no-op so the loop does not hit the real pipe.
+                return Ok(ControlResponse { command: None });
             }
-            // Empty mock queue means the test has exhausted its scripted
-            // responses; return a no-op so the loop does not hit the real pipe.
-            return Ok(ControlResponse { command: None });
         }
     }
 

@@ -976,6 +976,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_effective_config_path_no_env_uses_default() {
         // Temporarily clear the env var (if set) and verify fallback.
         // Using a separate env key to avoid interfering with running tests.
@@ -987,6 +988,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn test_effective_config_path_env_override() {
         // Use std::env::set_var inside a block so we restore after the test.
         // Note: parallel test execution can race on env vars — acceptable for

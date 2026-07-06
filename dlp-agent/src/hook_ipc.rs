@@ -958,34 +958,49 @@ fn build_cache_hint(path: &str, classification: Option<Classification>) -> Optio
 // Client helpers (used by tests and, in the future, the hook DLL)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/// Connects to a named pipe as a client.
+/// Connects a client to a named pipe.
 ///
 /// Returns `Err` if the pipe does not exist or the server is not listening.
+/// Retries briefly on `ERROR_FILE_NOT_FOUND`/`ERROR_PIPE_BUSY` so callers that
+/// connect immediately after a server creates the pipe do not fail on the race
+/// between `CreateNamedPipeW` and `ConnectNamedPipe`.
 pub fn connect_client(pipe_name: &str) -> Result<HANDLE> {
     let name_wide: Vec<u16> = pipe_name.encode_utf16().chain(std::iter::once(0)).collect();
 
-    let handle = unsafe {
-        CreateFileW(
-            PCWSTR::from_raw(name_wide.as_ptr()),
-            FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
-            FILE_SHARE_NONE,
-            None,
-            OPEN_EXISTING,
-            windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(0),
-            None,
-        )
-    };
+    const MAX_RETRIES: u32 = 50;
+    const RETRY_DELAY_MS: u64 = 10;
 
-    match handle {
-        Ok(h) => Ok(h),
-        Err(e) => {
-            let code = (e.code().0 as u32) & 0xFFFF;
-            Err(anyhow::anyhow!(
-                "CreateFileW failed (win32={}) — pipe server not running?",
-                code
-            ))
+    for attempt in 0..=MAX_RETRIES {
+        let handle = unsafe {
+            CreateFileW(
+                PCWSTR::from_raw(name_wide.as_ptr()),
+                FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
+                FILE_SHARE_NONE,
+                None,
+                OPEN_EXISTING,
+                windows::Win32::Storage::FileSystem::FILE_FLAGS_AND_ATTRIBUTES(0),
+                None,
+            )
+        };
+
+        match handle {
+            Ok(h) => return Ok(h),
+            Err(e) => {
+                let code = (e.code().0 as u32) & 0xFFFF;
+                // Retry while the server is still calling ConnectNamedPipe.
+                if (code == 2 || code == 231) && attempt < MAX_RETRIES {
+                    std::thread::sleep(std::time::Duration::from_millis(RETRY_DELAY_MS));
+                    continue;
+                }
+                return Err(anyhow::anyhow!(
+                    "CreateFileW failed (win32={}) — pipe server not running?",
+                    code
+                ));
+            }
         }
     }
+
+    unreachable!("loop always returns")
 }
 
 /// Sends a [`HookRequest`] over an open pipe and returns the [`HookResponse`].
@@ -2182,6 +2197,7 @@ mod tests {
     fn poll_control_no_op_when_not_requested() {
         // Ensure the flag is false for this test.
         crate::service::reset_unhook_signal();
+        crate::service::reset_shutdown_signal();
 
         let pipe_name = r"\\.\pipe\DlpHookPipeTestPollControlNoOp";
         let registry = registry_with_injected(1234, 1000);

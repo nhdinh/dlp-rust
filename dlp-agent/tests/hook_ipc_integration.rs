@@ -797,19 +797,23 @@ fn idle_injected_process_sends_poll_control_with_creation_time() {
 
     dlp_agent::service::reset_unhook_signal();
 
-    let dll_path = {
-        let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-        let workspace_root = manifest_dir.parent().expect("workspace root");
-        let profile = if cfg!(debug_assertions) {
-            "debug"
-        } else {
-            "release"
-        };
-        workspace_root
-            .join("target")
-            .join(profile)
-            .join("dlp_hook_dll.dll")
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir.parent().expect("workspace root");
+    let profile = if cfg!(debug_assertions) {
+        "debug"
+    } else {
+        "release"
     };
+
+    // `cargo test` builds dlp-hook-dll with the `test-helpers` feature, which
+    // includes a mock `poll_control` queue for unit tests. The injected DLL is
+    // an independent process, so we force real named-pipe I/O via the env var
+    // below rather than building a second production DLL (which would contend
+    // with the outer `cargo test` and could confuse doctest compilation).
+    let dll_path = workspace_root
+        .join("target")
+        .join(profile)
+        .join("dlp_hook_dll.dll");
 
     if !dll_path.exists() {
         eprintln!(
@@ -858,7 +862,12 @@ fn idle_injected_process_sends_poll_control_with_creation_time() {
     // Spawn an idle child process that will not call any hooked API.
     // Use ping instead of timeout because MSYS/Cygwin timeout.exe may shadow
     // the cmd built-in and reject the bare "30" argument.
+    //
+    // Force real named-pipe I/O in the injected DLL: the DLL is built with
+    // test-helpers in this configuration, so without this flag poll_control
+    // would read from an empty mock queue and never reach the agent server.
     let mut child = Command::new("cmd.exe")
+        .env("DLP_HOOK_TEST_REAL_POLL", "1")
         .args(["/c", "ping", "-n", "31", "127.0.0.1"])
         .stdout(Stdio::null())
         .stderr(Stdio::inherit())
