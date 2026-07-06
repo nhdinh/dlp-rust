@@ -97,6 +97,9 @@ pub fn handle_event(app: &mut App, event: AppEvent) {
 
 /// Moves a selection index up/down within a menu of `count` items.
 fn nav(selected: &mut usize, count: usize, key: KeyCode) {
+    if count == 0 {
+        return;
+    }
     match key {
         KeyCode::Up => {
             *selected = selected.checked_sub(1).unwrap_or(count - 1);
