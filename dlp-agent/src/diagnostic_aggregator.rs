@@ -158,14 +158,13 @@ impl DiagnosticAggregator {
     /// Checks whether a single snapshot matches the filter criteria.
     fn matches_filter(snap: &DiagnosticSnapshot, filter: &DiagnosticFilter) -> bool {
         if let Some(ref since) = filter.since {
-            // Convert QPC timestamp to a chrono DateTime for comparison.
-            // QPC ticks are not directly comparable to wall-clock time,
-            // so we use a best-effort conversion. In practice, the agent
-            // should use the snapshot's capture time if available.
-            // For now, we skip time-based filtering since DiagnosticSnapshot
-            // only has QPC (not wall-clock). The since filter is a no-op
-            // until wall-clock timestamps are added to DiagnosticSnapshot.
-            let _ = since;
+            // `timestamp_secs` is a wall-clock Unix timestamp captured by the
+            // hook DLL when the snapshot is created. Snapshots captured before
+            // the requested window are excluded.
+            let since_secs = since.timestamp().max(0) as u64;
+            if snap.timestamp_secs < since_secs {
+                return false;
+            }
         }
 
         if let Some(ref user_sid) = filter.user_sid {
@@ -196,6 +195,15 @@ mod tests {
     use dlp_common::hook_ipc::{ClassificationSource, DiagnosticSnapshot};
 
     fn make_snapshot(user_sid: &str, policy_id: Option<&str>, qpc: u64) -> DiagnosticSnapshot {
+        make_snapshot_with_secs(user_sid, policy_id, qpc, qpc)
+    }
+
+    fn make_snapshot_with_secs(
+        user_sid: &str,
+        policy_id: Option<&str>,
+        qpc: u64,
+        secs: u64,
+    ) -> DiagnosticSnapshot {
         DiagnosticSnapshot {
             hook_function: "WriteFile".to_string(),
             classification_source: ClassificationSource::CacheHit,
@@ -207,6 +215,7 @@ mod tests {
             enforcement_mode: Some("Block".to_string()),
             decision_latency_us: 150,
             timestamp_qpc: qpc,
+            timestamp_secs: secs,
             user_sid: user_sid.to_string(),
         }
     }
@@ -307,6 +316,29 @@ mod tests {
         assert!(result
             .iter()
             .all(|s| s.matched_policy_id == Some("pol-001".to_string())));
+    }
+
+    #[test]
+    fn test_filter_by_since() {
+        let agg = DiagnosticAggregator::new();
+        agg.ingest(
+            "AGENT-01",
+            100,
+            vec![
+                make_snapshot_with_secs("S-1-5-21-1", Some("pol-001"), 1000, 100),
+                make_snapshot_with_secs("S-1-5-21-1", Some("pol-001"), 2000, 200),
+                make_snapshot_with_secs("S-1-5-21-1", Some("pol-001"), 3000, 300),
+            ],
+        );
+
+        let since = DateTime::from_timestamp(150, 0).expect("valid timestamp");
+        let filter = DiagnosticFilter {
+            since: Some(since),
+            ..Default::default()
+        };
+        let result = agg.get_snapshots(&filter);
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().all(|s| s.timestamp_secs >= 150));
     }
 
     #[test]

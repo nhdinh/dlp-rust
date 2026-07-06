@@ -186,6 +186,7 @@ mod tests {
             enforcement_mode: Some("Block".to_string()),
             decision_latency_us: 150,
             timestamp_qpc,
+            timestamp_secs: timestamp_qpc,
             user_sid: "S-1-5-21-1".to_string(),
         }
     }

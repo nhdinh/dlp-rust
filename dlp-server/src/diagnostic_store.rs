@@ -308,6 +308,7 @@ mod tests {
             enforcement_mode: Some("Block".to_string()),
             decision_latency_us: 150,
             timestamp_qpc: qpc,
+            timestamp_secs: qpc,
             user_sid: user_sid.to_string(),
         }
     }

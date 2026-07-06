@@ -507,6 +507,10 @@ pub(crate) fn classify_and_log_path(
             enforcement_mode: None,
             decision_latency_us: elapsed_qpc,
             timestamp_qpc: crate::perf_telemetry::query_performance_counter(),
+            timestamp_secs: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
             user_sid: crate::get_current_user_sid(),
         };
         crate::diagnostic_ring::push_snapshot(snapshot);
@@ -817,6 +821,10 @@ fn classify_and_log_handle(
             enforcement_mode: None,
             decision_latency_us: latency.as_micros() as u64,
             timestamp_qpc: crate::perf_telemetry::query_performance_counter(),
+            timestamp_secs: std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs(),
             user_sid: crate::get_current_user_sid(),
         };
         crate::diagnostic_ring::push_snapshot(snapshot);

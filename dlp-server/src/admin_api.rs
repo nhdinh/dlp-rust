@@ -12550,6 +12550,7 @@ mod tests {
             enforcement_mode: Some("Block".to_string()),
             decision_latency_us: 150,
             timestamp_qpc: 1000,
+            timestamp_secs: 1000,
             user_sid: "S-1-5-21-1".to_string(),
         };
         diag_store.ingest("AGENT-01", 1234, vec![snap]);
@@ -12653,6 +12654,7 @@ mod tests {
                 enforcement_mode: Some("Block".to_string()),
                 decision_latency_us: 150,
                 timestamp_qpc: i as u64 * 1000,
+                timestamp_secs: i as u64 * 1000,
                 user_sid: if i % 2 == 0 {
                     "S-1-5-21-A".to_string()
                 } else {

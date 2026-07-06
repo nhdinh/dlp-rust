@@ -446,6 +446,9 @@ pub struct DiagnosticSnapshot {
     /// QPC timestamp when the snapshot was captured.
     #[serde(default)]
     pub timestamp_qpc: u64,
+    /// Wall-clock Unix timestamp (seconds) when the snapshot was captured.
+    #[serde(default)]
+    pub timestamp_secs: u64,
     /// The user's Windows SID.
     #[serde(default)]
     pub user_sid: String,
@@ -1162,6 +1165,7 @@ mod tests {
             enforcement_mode: Some("Block".to_string()),
             decision_latency_us: 150,
             timestamp_qpc: 1_000_000,
+            timestamp_secs: 1_000_000,
             user_sid: "S-1-5-21-1".to_string(),
         };
         let json = serde_json::to_string(&snap).unwrap();
@@ -1183,6 +1187,7 @@ mod tests {
                 enforcement_mode: None,
                 decision_latency_us: 200,
                 timestamp_qpc: 2_000_000,
+                timestamp_secs: 2_000_000,
                 user_sid: "S-1-5-21-1".to_string(),
             }],
         };
@@ -1283,6 +1288,7 @@ mod tests {
                 enforcement_mode: Some("Audit".to_string()),
                 decision_latency_us: 300,
                 timestamp_qpc: 3_000_000,
+                timestamp_secs: 3_000_000,
                 user_sid: "S-1-5-21-2".to_string(),
             }],
         };

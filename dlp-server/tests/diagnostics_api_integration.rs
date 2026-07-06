@@ -162,6 +162,7 @@ async fn test_diagnostics_with_data_returns_snapshots() {
         enforcement_mode: Some("Block".to_string()),
         decision_latency_us: 150,
         timestamp_qpc: 1_000_000,
+        timestamp_secs: 1_000_000,
         user_sid: "S-1-5-21-1".to_string(),
     };
     store.ingest("AGENT-01", 1234, vec![snapshot]);
@@ -273,6 +274,7 @@ async fn test_diagnostics_pagination() {
             enforcement_mode: Some("Block".to_string()),
             decision_latency_us: 150,
             timestamp_qpc: i as u64 * 1000,
+            timestamp_secs: i as u64 * 1000,
             user_sid: format!("S-1-5-21-{}", i),
         });
     }
@@ -406,6 +408,7 @@ async fn test_diagnostics_filter_by_user_sid() {
                 enforcement_mode: Some("Block".to_string()),
                 decision_latency_us: 150,
                 timestamp_qpc: 1000,
+                timestamp_secs: 1000,
                 user_sid: "S-1-5-21-A".to_string(),
             },
             dlp_common::hook_ipc::DiagnosticSnapshot {
@@ -419,6 +422,7 @@ async fn test_diagnostics_filter_by_user_sid() {
                 enforcement_mode: Some("Audit".to_string()),
                 decision_latency_us: 200,
                 timestamp_qpc: 2000,
+                timestamp_secs: 2000,
                 user_sid: "S-1-5-21-B".to_string(),
             },
         ],
