@@ -57,7 +57,7 @@ fn new_request_roundtrips() {
         source_volume_class: None,
         destination_volume_class: None,
         pid: 0,
-    handle_value: 0,
+        handle_value: 0,
     };
 
     let bytes = bincode::serialize(&req).unwrap();
@@ -146,7 +146,7 @@ fn envelope_v1_roundtrip() {
         source_volume_class: None,
         destination_volume_class: None,
         pid: 0,
-    handle_value: 0,
+        handle_value: 0,
     };
 
     let envelope = IpcEnvelope::V1(IpcMessageV1 {

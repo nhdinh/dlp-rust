@@ -466,7 +466,7 @@ fn test_hook_request_to_evaluate_request_forwards_volume_class() {
         source_volume_class: Some(VolumeClass::LocalNTFS),
         destination_volume_class: Some(VolumeClass::Optical),
         pid: 1234,
-    handle_value: 0,
+        handle_value: 0,
     };
     let eval_req = hook_request_to_evaluate_request(&hook_req, "S-1-5-21-test".to_string());
     assert_eq!(eval_req.source_volume_class, Some(VolumeClass::LocalNTFS));
@@ -546,7 +546,7 @@ fn test_hook_ipc_volume_class_matches_deny() {
         source_volume_class: Some(VolumeClass::LocalNTFS),
         destination_volume_class: Some(VolumeClass::Optical),
         pid: 1234,
-    handle_value: 0,
+        handle_value: 0,
     };
 
     let resp = dlp_agent::hook_ipc::send_request(client, &req).expect("send request");
@@ -611,7 +611,7 @@ fn test_hook_ipc_volume_class_mismatch_allow_mock_fallback() {
         source_volume_class: Some(VolumeClass::LocalNTFS),
         destination_volume_class: Some(VolumeClass::LocalNTFS),
         pid: 1234,
-    handle_value: 0,
+        handle_value: 0,
     };
 
     let resp = dlp_agent::hook_ipc::send_request(client, &req).expect("send request");
@@ -668,7 +668,7 @@ fn test_hook_ipc_missing_volume_class_fail_closed() {
         source_volume_class: None,
         destination_volume_class: None,
         pid: 1234,
-    handle_value: 0,
+        handle_value: 0,
     };
 
     let resp = dlp_agent::hook_ipc::send_request(client, &req).expect("send request");
@@ -730,7 +730,7 @@ fn test_hook_ipc_end_to_end_volume_class_denies_t4_to_optical() {
         source_volume_class: Some(VolumeClass::LocalNTFS),
         destination_volume_class: Some(VolumeClass::Optical),
         pid: 1234,
-    handle_value: 0,
+        handle_value: 0,
     };
 
     let resp = dlp_agent::hook_ipc::send_request(client, &req).expect("send request");

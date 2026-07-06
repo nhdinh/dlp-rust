@@ -141,7 +141,7 @@ fn test_consolidated_server_routes_request_frame() {
         source_volume_class: Some(VolumeClass::LocalNTFS),
         destination_volume_class: Some(VolumeClass::LocalNTFS),
         pid: 1234,
-    handle_value: 0,
+        handle_value: 0,
     };
 
     let envelope = IpcEnvelope::V1(IpcMessageV1 {
@@ -374,7 +374,7 @@ fn test_consolidated_server_volume_class_allow_deny() {
             source_volume_class: Some(VolumeClass::LocalNTFS),
             destination_volume_class: Some(VolumeClass::LocalNTFS),
             pid: 1234,
-        handle_value: 0,
+            handle_value: 0,
         };
         let envelope = IpcEnvelope::V1(IpcMessageV1 {
             payload: IpcPayloadV1::Request(req),
@@ -406,7 +406,7 @@ fn test_consolidated_server_volume_class_allow_deny() {
             source_volume_class: Some(VolumeClass::LocalNTFS),
             destination_volume_class: None,
             pid: 1234,
-        handle_value: 0,
+            handle_value: 0,
         };
         let envelope = IpcEnvelope::V1(IpcMessageV1 {
             payload: IpcPayloadV1::Request(req),

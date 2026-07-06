@@ -17,8 +17,8 @@
 //! bypassed. A cache hit enables tier-gated fast-path decisions; a cache miss
 //! always falls through to the full ABAC evaluation via pipe round-trip.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use anyhow::{Context, Result};
@@ -1112,7 +1112,7 @@ mod tests {
                 source_volume_class: None,
                 destination_volume_class: None,
                 pid: 1234,
-            handle_value: 0,
+                handle_value: 0,
             };
 
             let start = Instant::now();
@@ -1180,7 +1180,7 @@ mod tests {
             source_volume_class: None,
             destination_volume_class: None,
             pid: 1234,
-        handle_value: 0,
+            handle_value: 0,
         };
         let resp = send_request(client, &req).expect("send empty path request");
         assert_eq!(resp.decision, Decision::ALLOW);
@@ -1363,7 +1363,7 @@ mod tests {
             source_volume_class: None,
             destination_volume_class: None,
             pid: 1234,
-        handle_value: 0,
+            handle_value: 0,
         };
 
         // Serialisation itself should succeed.
@@ -1436,7 +1436,7 @@ mod tests {
             source_volume_class: None,
             destination_volume_class: None,
             pid: 1234,
-        handle_value: 0,
+            handle_value: 0,
         };
 
         let resp = handle_hook_request(req, &inner, &cache, None);
@@ -1472,7 +1472,7 @@ mod tests {
             source_volume_class: None,
             destination_volume_class: None,
             pid: 1234,
-        handle_value: 0,
+            handle_value: 0,
         };
 
         let resp = handle_hook_request(req, &inner, &cache, None);
@@ -1504,7 +1504,7 @@ mod tests {
             source_volume_class: None,
             destination_volume_class: None,
             pid: 1234,
-        handle_value: 0,
+            handle_value: 0,
         };
 
         let resp = handle_hook_request(req, &inner, &cache, None);
@@ -1610,7 +1610,7 @@ mod tests {
             source_volume_class: None,
             destination_volume_class: None,
             pid: 0,
-        handle_value: 0,
+            handle_value: 0,
         };
         let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
             payload: dlp_common::hook_ipc::IpcPayloadV1::Request(req),
@@ -1652,7 +1652,7 @@ mod tests {
             source_volume_class: None,
             destination_volume_class: None,
             pid: 0,
-        handle_value: 0,
+            handle_value: 0,
         };
         let raw_bytes = bincode::serialize(&req).unwrap();
 
@@ -1932,7 +1932,7 @@ mod tests {
             source_volume_class: None,
             destination_volume_class: None,
             pid: 0,
-        handle_value: 0,
+            handle_value: 0,
         };
 
         let resp = handle_hook_request(req, &inner, &cache, Some(&approval_cache));
@@ -1965,7 +1965,7 @@ mod tests {
             source_volume_class: None,
             destination_volume_class: None,
             pid: 0,
-        handle_value: 0,
+            handle_value: 0,
         };
 
         let resp = handle_hook_request(req, &inner, &cache, None);

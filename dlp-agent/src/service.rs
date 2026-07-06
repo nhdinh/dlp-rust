@@ -1790,11 +1790,8 @@ async fn run_loop_init(
             // Best-effort fallback — OfflineManager will handle unreachable engine.
             // Keep TLS verification enabled even in the fallback client; the
             // original failure was reachability, not certificate validation.
-            crate::engine_client::EngineClient::new(
-                crate::engine_client::DEFAULT_ENGINE_URL,
-                true,
-            )
-            .expect("engine client must be constructable")
+            crate::engine_client::EngineClient::new(crate::engine_client::DEFAULT_ENGINE_URL, true)
+                .expect("engine client must be constructable")
         });
 
     let cache = Arc::new(crate::cache::Cache::new());
@@ -5973,7 +5970,7 @@ fn test_hook_request_to_evaluate_request() {
         source_volume_class: Some(dlp_common::VolumeClass::LocalNTFS),
         destination_volume_class: Some(dlp_common::VolumeClass::USBRemovable),
         pid: 1234,
-    handle_value: 0,
+        handle_value: 0,
     };
     let caller_sid = "S-1-5-21-1234567890-1234567890-1234567890-1001".to_string();
 
@@ -6009,7 +6006,7 @@ fn test_hook_request_to_evaluate_request_forwards_volume_classes() {
         source_volume_class: Some(dlp_common::VolumeClass::LocalNTFS),
         destination_volume_class: Some(dlp_common::VolumeClass::Optical),
         pid: 1234,
-    handle_value: 0,
+        handle_value: 0,
     };
     let caller_sid = "S-1-5-21-123".to_string();
 
@@ -6040,7 +6037,7 @@ fn test_hook_request_to_evaluate_request_leaves_optional_fields_none() {
         source_volume_class: None,
         destination_volume_class: None,
         pid: 1234,
-    handle_value: 0,
+        handle_value: 0,
     };
     let eval_req = hook_request_to_evaluate_request(&req, "S-1-5-21-test".to_string());
 
@@ -6159,7 +6156,7 @@ fn test_invalid_pid_returns_deny_identity_resolution_failed() {
         source_volume_class: None,
         destination_volume_class: None,
         pid: 0,
-    handle_value: 0,
+        handle_value: 0,
     };
 
     let response_envelope = send_request_and_read_response(client, req);
@@ -6217,7 +6214,7 @@ fn test_copy_move_none_volume_class_logs_warning() {
         source_volume_class: None,
         destination_volume_class: None,
         pid: std::process::id(),
-    handle_value: 0,
+        handle_value: 0,
     };
 
     let response_envelope = send_request_and_read_response(client, req);
