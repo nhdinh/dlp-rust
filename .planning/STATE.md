@@ -5,9 +5,9 @@ milestone_name: Real-Time File Access Prevention
 current_phase: 58.5
 status: completed
 stopped_at: Completed 58.5-05-PLAN.md
-last_updated: "2026-07-03T15:57:36.355Z"
-last_activity: 2026-07-03
-last_activity_desc: Phase 58.5 marked complete
+last_updated: "2026-07-06T00:00:00.000Z"
+last_activity: 2026-07-06
+last_activity_desc: Quick task isolate-dlp-hook-tests complete
 progress:
   total_phases: 49
   completed_phases: 38
@@ -245,6 +245,7 @@ Resume file: None
 | 2026-06-21 | construct-hook-ipc-server-wire-bypass | Wired `HookIpcServer` construction and `bypass_tx` into `dlp-agent/src/service.rs`; added shutdown-aware accept loop and unit tests. | complete |
 | 2026-06-21 | fix-uat-benchmark-warmup | Fixed `scripts/Uat-Benchmark.ps1` cargo warm-up build failure caused by `$ErrorActionPreference = 'Stop'` treating cargo stderr as terminating error. Added `Invoke-CargoBuildCommand` helper. | complete |
 | 2026-06-21 | verify-dlp-user-ui-not-spawned | Checked whether dlp-agent still spawns dlp-user-ui. Finding: it still spawns at startup and on session changes via ui_spawner::init() and session_monitor. | complete |
+| 2026-07-06 | isolate-dlp-hook-tests | Stabilized dlp-hook-dll test suite with unique named pipes, stoppable MockAgentServer, reset_for_test() helper, integration-test binaries, and run-isolated-tests.ps1/.sh. | complete |
 
 ## Decisions
 
