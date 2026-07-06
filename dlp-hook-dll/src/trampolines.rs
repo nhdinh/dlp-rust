@@ -169,6 +169,11 @@ pub(crate) fn classify_and_log_path(
     source_volume_class: Option<dlp_common::VolumeClass>,
     destination_volume_class: Option<dlp_common::VolumeClass>,
 ) -> Option<crate::fail_closed::DenyReturn> {
+    // Ensure IAT hooks are patched before any classification work. DllMain
+    // defers patching to a worker thread; this fallback covers tests and the
+    // unlikely case where the init thread failed to start.
+    crate::lazy_init();
+
     // Shutdown pass-through: do not classify, do not touch shared mappings,
     // do not increment active-call counters. Returning None tells the trampoline
     // to call the original API.
@@ -609,6 +614,11 @@ fn classify_and_log_handle(
     journal_op: u8,
     path: &str,
 ) -> Option<crate::fail_closed::DenyReturn> {
+    // Ensure IAT hooks are patched before any classification work. DllMain
+    // defers patching to a worker thread; this fallback covers tests and the
+    // unlikely case where the init thread failed to start.
+    crate::lazy_init();
+
     // Shutdown pass-through: do not classify, do not touch shared mappings,
     // do not increment active-call counters. Returning None tells the trampoline
     // to call the original API.

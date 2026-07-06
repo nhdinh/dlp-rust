@@ -32,7 +32,7 @@ use std::cell::UnsafeCell;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Mutex, OnceLock};
 use windows::core::{w, PCWSTR};
-use windows::Win32::Foundation::{HANDLE, HINSTANCE, NTSTATUS};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HINSTANCE, NTSTATUS};
 use windows::Win32::Security::SECURITY_ATTRIBUTES;
 use windows::Win32::Storage::FileSystem::{
     FILE_CREATION_DISPOSITION, FILE_FLAGS_AND_ATTRIBUTES, FILE_SHARE_MODE,
@@ -40,6 +40,9 @@ use windows::Win32::Storage::FileSystem::{
 use windows::Win32::System::Diagnostics::Debug::OutputDebugStringW;
 use windows::Win32::System::LibraryLoader::{
     FreeLibraryAndExitThread, GetModuleHandleW, GetProcAddress,
+};
+use windows::Win32::System::Threading::{
+    CreateThread, WaitForSingleObject, THREAD_CREATION_FLAGS,
 };
 // pe_utils.rs uses VirtualProtect and PAGE_EXECUTE_READWRITE; keep import
 // if any code in this file needs them, otherwise they are unused.
@@ -185,6 +188,21 @@ pub static INITIALISED: AtomicBool = AtomicBool::new(false);
 #[cfg(not(any(test, feature = "test-helpers")))]
 static INITIALISED: AtomicBool = AtomicBool::new(false);
 
+/// Flag set by DllMain to request deferred IAT patching outside the Windows
+/// loader lock. The actual patching is performed by a one-shot worker thread
+/// spawned from DllMain, or lazily on the first trampoline call if the thread
+/// fails to start.
+#[cfg(any(test, feature = "test-helpers"))]
+pub static LAZY_INIT_REQUIRED: AtomicBool = AtomicBool::new(false);
+#[cfg(not(any(test, feature = "test-helpers")))]
+static LAZY_INIT_REQUIRED: AtomicBool = AtomicBool::new(false);
+
+/// Handle to the one-shot initialization worker thread spawned from DllMain.
+/// Stored as a raw pointer value so DllMain PROCESS_DETACH can wait for the
+/// thread before unhooking. `HANDLE` is not `Send`/`Sync`, so we store the
+/// underlying pointer value.
+static INIT_THREAD_HANDLE: Mutex<Option<usize>> = Mutex::new(None);
+
 /// Set to true while the DLL is shutting down so new hook calls pass through.
 #[cfg(any(test, feature = "test-helpers"))]
 pub static SHUTTING_DOWN: AtomicBool = AtomicBool::new(false);
@@ -221,10 +239,14 @@ pub fn reset_hook_globals() {
     SHUTTING_DOWN.store(false, Ordering::SeqCst);
     ACTIVE_CALLS.store(0, Ordering::SeqCst);
     INITIALISED.store(false, Ordering::SeqCst);
+    LAZY_INIT_REQUIRED.store(false, Ordering::SeqCst);
     if let Ok(mut guard) = DLL_INSTANCE.lock() {
         *guard = None;
     }
     NTDLL_PATCHING_ENABLED.store(false, Ordering::Relaxed);
+    if let Ok(mut guard) = INIT_THREAD_HANDLE.lock() {
+        *guard = None;
+    }
     if let Some(patcher_lock) = NTDLL_PATCHER.get() {
         if let Ok(mut patcher) = patcher_lock.lock() {
             patcher.unpatch_all_stubs();
@@ -670,8 +692,45 @@ extern "system" fn DllMain(inst: HINSTANCE, reason: u32, _reserved: usize) -> i3
         if let Ok(mut guard) = DLL_INSTANCE.lock() {
             *guard = Some(inst.0 as isize);
         }
-        init();
+
+        // Defer IAT patching out of the Windows loader lock. Patching imports
+        // while holding the loader lock can deadlock when resolving dependent
+        // DLLs. A one-shot worker thread performs the patching outside the lock.
+        // If the thread cannot be created, LAZY_INIT_REQUIRED remains true so
+        // the first trampoline call will patch lazily.
+        LAZY_INIT_REQUIRED.store(true, Ordering::Relaxed);
+        unsafe {
+            let mut thread_id: u32 = 0;
+            match CreateThread(
+                None,
+                0,
+                Some(init_thread_proc),
+                None,
+                THREAD_CREATION_FLAGS(0),
+                Some(&mut thread_id),
+            ) {
+                Ok(handle) => {
+                    if let Ok(mut guard) = INIT_THREAD_HANDLE.lock() {
+                        *guard = Some(handle.0 as usize);
+                    }
+                }
+                Err(_) => {
+                    debug_log("[dlp-hook] DllMain: failed to spawn init thread; will lazy-init on first hook call\0");
+                }
+            }
+        }
     } else if reason == DLL_PROCESS_DETACH {
+        // Wait for the init thread to finish before unhooking so that
+        // UnhookAll does not race with IAT patching.
+        unsafe {
+            if let Ok(mut guard) = INIT_THREAD_HANDLE.lock() {
+                if let Some(handle_value) = guard.take() {
+                    let handle = HANDLE(handle_value as *mut std::ffi::c_void);
+                    let _ = WaitForSingleObject(handle, 5000);
+                    let _ = CloseHandle(handle);
+                }
+            }
+        }
         UnhookAll();
     }
     1
@@ -713,12 +772,32 @@ fn read_ntdll_patching_flag_from_shared_memory() -> bool {
     false
 }
 
+/// Worker thread procedure that performs deferred IAT patching.
+///
+/// Runs outside the Windows loader lock to avoid deadlocks during import-table
+/// resolution and memory protection changes.
+unsafe extern "system" fn init_thread_proc(_param: *mut std::ffi::c_void) -> u32 {
+    init();
+    LAZY_INIT_REQUIRED.store(false, Ordering::Relaxed);
+    0
+}
+
+/// Performs deferred IAT patching if DllMain requested it but the worker thread
+/// has not yet run. Used as a fallback when the init thread fails to spawn or
+/// when classification helpers are called directly from tests.
+pub(crate) fn lazy_init() {
+    if LAZY_INIT_REQUIRED.swap(false, Ordering::SeqCst) {
+        init();
+    }
+}
+
 /// Initialises the hook DLL.
 ///
 /// Saves original function pointers and patches the host module's IAT.
 /// Per D-19: ordering is self-allowlist check -> IAT patch -> read ntdll flag.
 fn init() {
     if INITIALISED.swap(true, Ordering::SeqCst) {
+        LAZY_INIT_REQUIRED.store(false, Ordering::Relaxed);
         return;
     }
 
@@ -726,6 +805,7 @@ fn init() {
         let host = GetModuleHandleW(None).unwrap_or_default();
         if host.is_invalid() {
             debug_log("[dlp-hook] init: GetModuleHandleW failed\0");
+            LAZY_INIT_REQUIRED.store(false, Ordering::Relaxed);
             return;
         }
         let host_ptr = host.0 as *mut u8;
@@ -766,6 +846,7 @@ fn init() {
         debug_log("[dlp-hook] init: ntdll patching disabled\0");
     }
 
+    LAZY_INIT_REQUIRED.store(false, Ordering::Relaxed);
     debug_log("[dlp-hook] initialised — IAT hooks active\0");
 }
 
