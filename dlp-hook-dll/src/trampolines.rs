@@ -626,69 +626,191 @@ fn classify_and_log_handle(
         return None;
     }
 
+    let path_hash = crate::hash_path(path);
+
+    // Determine operation type for tier-gated decisions.
+    let op = if is_write_action(action) {
+        HookOp::Write
+    } else {
+        HookOp::Read
+    };
+
+    // If a path was provided (e.g., future trampolines resolve handle->path),
+    // apply the same fast-path checks as path-based hooks.
+    if !path.is_empty() {
+        let cache_lookup = crate::classification_cache::CacheLookup::get();
+        let header_ref = cache_lookup.map(|c|
+            // SAFETY: CacheLookup header pointer is valid read-only mapping.
+            unsafe { &*c.header });
+        let (allowlisted, category) = crate::allowlist::is_allowlisted(path, header_ref);
+        if allowlisted {
+            let msg = format!(
+                "[dlp-hook] ALLOW(allowlist) {} handle={} hash={:016x}\0",
+                fn_name, handle_value, path_hash
+            );
+            crate::debug_log(&msg);
+            let fail_state = get_fail_state();
+            let context_str = format!("{:?}", fail_state.current_state()).to_ascii_uppercase();
+            if let Some(cat) = category {
+                crate::allowlist::emit_allowlist_hit(path, cat, &context_str);
+            }
+            return None;
+        }
+    }
+
     let start = std::time::Instant::now();
+    let mut classification_source = ClassificationSource::Pipe;
 
-    let response = crate::classify_handle(handle_value, action, crate::current_pipe_name());
-    let latency = start.elapsed();
+    let fail_state = get_fail_state();
+    let current_state = fail_state.current_state();
 
-    let result = match response {
-        Ok(ref resp)
-            if resp.decision == crate::Decision::ALLOW
-                || resp.decision == crate::Decision::AllowWithLog =>
-        {
-            record_pipe_round_trip_and_maybe_emit();
-            let msg = format!(
-                "[dlp-hook] ALLOW {} handle={} latency={}us\0",
-                fn_name,
-                handle_value,
-                latency.as_micros()
-            );
-            crate::debug_log(&msg);
-            None
-        }
-        Ok(ref resp) if resp.decision.is_denied() && resp.approval_override == Some(true) => {
-            record_pipe_round_trip_and_maybe_emit();
-            // DIFF-01: Approval override granted — allow the operation.
-            let msg = format!(
-                "[dlp-hook] ALLOW(override) {} handle={} latency={}us\0",
-                fn_name,
-                handle_value,
-                latency.as_micros()
-            );
-            crate::debug_log(&msg);
-            None
-        }
-        Ok(ref resp) if resp.decision.is_denied() => {
-            record_pipe_round_trip_and_maybe_emit();
-            let msg = format!(
-                "[dlp-hook] DENY {} handle={} latency={}us\0",
-                fn_name,
-                handle_value,
-                latency.as_micros()
-            );
-            crate::debug_log(&msg);
-            Some(crate::fail_closed::DenyReturn::BoolFalse)
-        }
-        _ => {
-            record_pipe_round_trip_and_maybe_emit();
-            let msg = format!(
-                "[dlp-hook] DENY(fail-closed) {} handle={} latency={}us\0",
-                fn_name,
-                handle_value,
-                latency.as_micros()
-            );
-            crate::debug_log(&msg);
-            Some(crate::fail_closed::DenyReturn::BoolFalse)
+    // Attempt a pipe round-trip for a handle-based request and map the
+    // response to a deny/allow decision while updating fail-mode counters.
+    let attempt_pipe = || -> Option<crate::fail_closed::DenyReturn> {
+        match crate::classify_handle(handle_value, action, crate::current_pipe_name()) {
+            Ok(ref resp)
+                if resp.decision == crate::Decision::ALLOW
+                    || resp.decision == crate::Decision::AllowWithLog =>
+            {
+                fail_state.record_pipe_success(0);
+                record_pipe_round_trip_and_maybe_emit();
+                let latency = start.elapsed();
+                let msg = format!(
+                    "[dlp-hook] ALLOW {} handle={} latency={}us\0",
+                    fn_name,
+                    handle_value,
+                    latency.as_micros()
+                );
+                crate::debug_log(&msg);
+                None
+            }
+            Ok(ref resp) if resp.decision.is_denied() && resp.approval_override == Some(true) => {
+                fail_state.record_pipe_success(0);
+                record_pipe_round_trip_and_maybe_emit();
+                // DIFF-01: Approval override granted — allow the operation.
+                let latency = start.elapsed();
+                let msg = format!(
+                    "[dlp-hook] ALLOW(override) {} handle={} latency={}us\0",
+                    fn_name,
+                    handle_value,
+                    latency.as_micros()
+                );
+                crate::debug_log(&msg);
+                None
+            }
+            Ok(ref resp) if resp.decision.is_denied() => {
+                fail_state.record_pipe_success(0);
+                record_pipe_round_trip_and_maybe_emit();
+                let latency = start.elapsed();
+                let msg = format!(
+                    "[dlp-hook] DENY {} handle={} latency={}us\0",
+                    fn_name,
+                    handle_value,
+                    latency.as_micros()
+                );
+                crate::debug_log(&msg);
+                Some(crate::fail_closed::DenyReturn::BoolFalse)
+            }
+            Ok(_) => {
+                fail_state.record_pipe_success(0);
+                record_pipe_round_trip_and_maybe_emit();
+                let latency = start.elapsed();
+                let msg = format!(
+                    "[dlp-hook] DENY {} handle={} latency={}us\0",
+                    fn_name,
+                    handle_value,
+                    latency.as_micros()
+                );
+                crate::debug_log(&msg);
+                Some(crate::fail_closed::DenyReturn::BoolFalse)
+            }
+            Err(_) => {
+                fail_state.record_pipe_failure();
+                record_pipe_round_trip_and_maybe_emit();
+                let latency = start.elapsed();
+                let msg = format!(
+                    "[dlp-hook] DENY(fail-closed) {} handle={} latency={}us\0",
+                    fn_name,
+                    handle_value,
+                    latency.as_micros()
+                );
+                crate::debug_log(&msg);
+                Some(crate::fail_closed::DenyReturn::BoolFalse)
+            }
         }
     };
+
+    let result = match current_state {
+        FailState::Healthy => {
+            // HEALTHY: authoritative pipe round-trip.
+            attempt_pipe()
+        }
+        FailState::Degraded => {
+            // DEGRADED: retry pipe periodically, otherwise use fail-mode decision.
+            // Handle-based ops currently cannot resolve handle->path locally, so
+            // the shared-memory cache cannot be consulted. The TODO below tracks
+            // wiring handle-to-path resolution for full cache integration.
+            // TODO(Phase 58.4): Resolve handle to path and consult cache in Degraded.
+            if fail_state.should_retry_pipe() {
+                attempt_pipe()
+            } else {
+                let decision = crate::fail_mode::decide_degraded(None, op);
+                let msg = if decision.is_some() {
+                    format!("[dlp-hook] DENY(degraded) {} handle={}\0", fn_name, handle_value)
+                } else {
+                    format!("[dlp-hook] ALLOW(degraded) {} handle={}\0", fn_name, handle_value)
+                };
+                crate::debug_log(&msg);
+                decision
+            }
+        }
+        FailState::Isolated => {
+            // ISOLATED: cache-only, no pipe attempts. Without handle->path
+            // resolution we have no cached classification, so fall through to
+            // the isolated fail-mode decision.
+            classification_source = ClassificationSource::CacheHit;
+            let decision = crate::fail_mode::decide_isolated(None, op);
+            let msg = if decision.is_some() {
+                format!("[dlp-hook] DENY(isolated) {} handle={}\0", fn_name, handle_value)
+            } else {
+                format!("[dlp-hook] ALLOW(isolated) {} handle={}\0", fn_name, handle_value)
+            };
+            crate::debug_log(&msg);
+            decision
+        }
+        FailState::Resync => {
+            // RESYNC: flush LRU, reset counters, transition to Healthy, retry.
+            crate::classification_cache::lru::clear_all();
+            fail_state.reset_counters();
+            fail_state.set_state(FailState::Healthy);
+            attempt_pipe()
+        }
+    };
+
+    // Emit state transition if state changed during this call.
+    let new_state = fail_state.current_state();
+    if new_state != current_state {
+        let reason = format!("state_changed_during_{}", fn_name);
+        crate::perf_telemetry::emit_state_transition_immediate(
+            current_state,
+            new_state,
+            &reason,
+        );
+    }
+
+    let latency = start.elapsed();
 
     // DIFF-02: Push diagnostic snapshot on every DENY branch.
     if result.is_some() {
         let snapshot = dlp_common::hook_ipc::DiagnosticSnapshot {
             hook_function: fn_name.to_string(),
-            classification_source: ClassificationSource::Pipe,
+            classification_source,
             classification_age_ms: 0,
-            abac_resource: path.to_string(),
+            abac_resource: if path.is_empty() {
+                format!("handle:{}", handle_value)
+            } else {
+                path.to_string()
+            },
             abac_action: action.to_string(),
             abac_environment: String::new(),
             matched_policy_id: None,
