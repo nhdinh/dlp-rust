@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
-current_phase: 58.5
-status: completed
-stopped_at: Completed 58.5-05-PLAN.md
-last_updated: "2026-07-06T00:00:00.000Z"
-last_activity: 2026-07-06
-last_activity_desc: Quick task isolate-dlp-hook-tests complete
+current_phase: 58.7
+status: inserted
+stopped_at: Inserted 58.7 for urgent DACL protected_paths wiring
+last_updated: "2026-07-08T03:49:40.233Z"
+last_activity: 2026-07-08
+last_activity_desc: Inserted Phase 58.7 — Close gap: DACL protected_paths wiring
 progress:
-  total_phases: 49
+  total_phases: 50
   completed_phases: 38
   total_plans: 210
   completed_plans: 179
-  percent: 78
-current_phase_name: unhook-dlp-hook-dll-when-dlp-agent-is-killed-exited
+  percent: 76
+current_phase_name: close-gap-dacl-protected_paths-wiring
 ---
 
 # Project State
@@ -23,19 +23,27 @@ current_phase_name: unhook-dlp-hook-dll-when-dlp-agent-is-killed-exited
 
 **Project:** DLP-RUST — Enterprise DLP System (NTFS + Active Directory + ABAC)
 **Core Value:** Prevent data exfiltration via a layered enforcement stack (NTFS + ABAC + AD identity)
-**Current Focus:** Phase 58.5 — unhook-dlp-hook-dll-when-dlp-agent-is-killed-exited
+**Current Focus:** Phase 58.7 — close-gap-dacl-protected_paths-wiring (INSERTED — urgent gap closure)
 
 ---
 
 ## Current Position
 
-Phase: 58.5 — COMPLETE
+Phase: 58.7 — INSERTED
+Plan: 0 of 0
+Status: Phase 58.7 inserted after Phase 58; urgent gap closure for DACL protected_paths wiring.
+Verification: TBD
+Last activity: 2026-07-08 — Inserted Phase 58.7 into ROADMAP.md and STATE.md
+
+### Previous: Phase 58.5 — COMPLETE
+
 Plan: 1 of 8
 Status: Phase 58.5 complete; quick plan `20260706-isolate-dlp-hook-tests` executed to stabilize the dlp-hook-dll test suite.
 Verification: 10/10 must-haves verified, 0 gaps
 Last activity: 2026-07-06 — Test isolation quick plan complete (329 lib tests passed, integration tests passed, run-isolated-tests.ps1 green)
 
 ### Quick Plan: Isolate dlp-hook-dll Tests (2026-07-06)
+
 - Added unique named-pipe override, stoppable `MockAgentServer`, and `reset_for_test()` helper.
 - Replaced all `DEFAULT_PIPE_NAME` call sites with `current_pipe_name()`; production still inlines the constant.
 - Moved heavy integration tests to `dlp-hook-dll/tests/*.rs` and annotated stateful tests with `#[serial_test::serial]`.
@@ -216,6 +224,7 @@ Resume file: None
 - Phase 58.5 inserted after Phase 58.4: Unhook dlp_hook_dll.dll when dlp-agent is killed/exited (URGENT)
 - Phase 58.6 inserted after Phase 58.5: Targeted hook injection: only processes that perform file operations (URGENT)
 - Phase 71 added: Implement admin allowlist API handlers in dlp-admin-cli and dlp-server
+- Phase 58.7 inserted after Phase 58: Close gap: DACL protected_paths wiring (URGENT)
 
 ## Performance Metrics
 

@@ -77,6 +77,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 58.4: Close gap: DIFF-02/03/04 — wire differentiators into hook DLL deny paths (INSERTED)** — invoke diagnostic snapshot capture, content SHA-256 hashing, and health snapshot ingestion from the hook DLL deny paths. (completed 2026-06-29)
 - [x] **Phase 58.5: Unhook dlp_hook_dll.dll when dlp-agent is killed/exited (INSERTED)** — Core unhook protocol complete 2026-07-02; test-isolation quick plan `20260706-isolate-dlp-hook-tests` completed 2026-07-06.
 - [ ] **Phase 58.6: Targeted hook injection — only processes that perform file operations (INSERTED)** — investigate and implement selective hook injection based on process file-operation behavior instead of universal injection.
+- [ ] **Phase 58.7: Close gap: DACL protected_paths wiring (INSERTED)** — wire the protected_paths configuration from policy sync through the DACL tripwire repair watcher and agent enforcement path.
 
 ---
 
@@ -579,6 +580,17 @@ Plans:
 - [ ] `58.4-02-PLAN.md` — Wire content SHA-256 hash computation into `HookWriteFile` / `HookWriteFileEx` deny branches.
 - [ ] `58.4-03-PLAN.md` — Wire hook DLL health snapshot population and emission to the agent health handler.
 - [ ] `58.4-04-PLAN.md` — Add end-to-end tests for diagnostic, hash, and health data paths.
+
+### Phase 58.7: Close gap: DACL protected_paths wiring (INSERTED)
+
+**Goal:** [Urgent work - to be planned]
+**Requirements**: TBD
+**Depends on:** Phase 58
+**Plans:** 0 plans
+
+Plans:
+
+- [ ] TBD (run `/gsd-plan-phase 58.7` to break down)
 
 ### Phase 59: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 
