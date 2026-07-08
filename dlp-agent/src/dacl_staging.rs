@@ -401,7 +401,9 @@ impl DaclStaging {
     /// Returns `DaclStagingError::Sqlite` on database errors.
     pub fn is_staged(&self, path: &str) -> Result<bool, DaclStagingError> {
         let normalized = normalize_protected_path(path).map_err(|_| {
-            DaclStagingError::InvalidPath(format!("cannot query staged state for invalid path: {path}"))
+            DaclStagingError::InvalidPath(format!(
+                "cannot query staged state for invalid path: {path}"
+            ))
         })?;
         let conn = self
             .conn
@@ -429,7 +431,9 @@ impl DaclStaging {
     /// Returns `DaclStagingError::Sqlite` on database errors.
     pub fn is_staged_and_applied(&self, path: &str) -> Result<bool, DaclStagingError> {
         let normalized = normalize_protected_path(path).map_err(|_| {
-            DaclStagingError::InvalidPath(format!("cannot query applied state for invalid path: {path}"))
+            DaclStagingError::InvalidPath(format!(
+                "cannot query applied state for invalid path: {path}"
+            ))
         })?;
         let conn = self
             .conn
@@ -593,22 +597,19 @@ impl DaclStaging {
 
             let exists: i64 = conn.query_row(
                 "SELECT COUNT(*) FROM protected_paths_staging WHERE path = ?1",
-                [&canonical,
-                ],
+                [&canonical],
                 |row| row.get(0),
             )?;
 
             if exists > 0 {
                 conn.execute(
                     "DELETE FROM protected_paths_staging WHERE path = ?1",
-                    [&raw,
-                    ],
+                    [&raw],
                 )?;
             } else {
                 conn.execute(
                     "UPDATE protected_paths_staging SET path = ?1 WHERE path = ?2",
-                    [&canonical, &raw,
-                    ],
+                    [&canonical, &raw],
                 )?;
             }
             migrated += 1;
