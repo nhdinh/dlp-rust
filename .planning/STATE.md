@@ -6,14 +6,14 @@ current_phase: 58.7
 current_phase_name: close-gap-dacl-protected_paths-wiring
 status: executing
 stopped_at: Completed 58.7-02-PLAN.md
-last_updated: "2026-07-08T11:51:15.313Z"
+last_updated: "2026-07-08T12:31:19.217Z"
 last_activity: 2026-07-08
 last_activity_desc: Phase 58.7 execution started
 progress:
   total_phases: 50
   completed_phases: 38
   total_plans: 214
-  completed_plans: 181
+  completed_plans: 182
   percent: 76
 ---
 
@@ -30,7 +30,7 @@ progress:
 ## Current Position
 
 Phase: 58.7 (close-gap-dacl-protected_paths-wiring) — EXECUTING
-Plan: 3 of 4
+Plan: 4 of 4
 Status: Ready to execute
 Verification: TBD
 Last activity: 2026-07-08 — Phase 58.7 execution started
@@ -194,7 +194,7 @@ Phase 59 and later are complete and shipped as part of v0.11.0.
 
 ## Session Continuity
 
-Last session: 2026-07-08T11:51:15.290Z
+Last session: 2026-07-08T12:29:27.535Z
 Stopped at: Completed 58.7-02-PLAN.md
 Resume file: None
 
@@ -248,6 +248,7 @@ Resume file: None
 | Phase 58.5 P07 | 55 | 3 tasks | 2 files |
 | Phase 58.7 P01 | 12min | 3 tasks | 2 files |
 | Phase 58.7-close-gap-dacl-protected_paths-wiring P02 | 48min | 3 tasks | 1 files |
+| Phase 58.7-close-gap-dacl-protected_paths-wiring P03 | 35min | 2 tasks | 2 files |
 
 ## Quick Tasks Completed
 
@@ -299,3 +300,6 @@ Resume file: None
 - [Phase 58.7-close-gap-dacl-protected_paths-wiring]: Grouped all DACL watcher handles into DaclWatcherBundle so the manager can atomically own and replace the entire subsystem — Replaces the previous nine-element tuple, enabling atomic runtime reinitialization in Plan 58.7-03.
 - [Phase 58.7-close-gap-dacl-protected_paths-wiring]: Used try_send for Reinit and Shutdown commands to keep config polling and service shutdown non-blocking — Mitigates T-58.7-06 Denial of Service: a stuck manager cannot block config polling or service shutdown.
 - [Phase 58.7-close-gap-dacl-protected_paths-wiring]: Retained the poll backstop shutdown sender inside the bundle instead of discarding it — The previous 9-tuple discarded the poll shutdown sender with _poll_shutdown_tx; the bundle now enables full graceful shutdown.
+- [Phase 58.7-close-gap-dacl-protected_paths-wiring]: Kept parking_lot::RwLock instead of arc-swap to avoid a new dependency; migration to arc-swap is reserved for proven reader contention — The correlator reads protected_paths on every ETW event and writes only on policy sync. RwLock satisfies the hot path without adding a dependency; the ignored latency test documents the acceptance criterion.
+- [Phase 58.7-close-gap-dacl-protected_paths-wiring]: Reordered run_loop_init so the bypass correlator is built before the DACL manager — The manager must hold a clone of the Arc<BypassCorrelator> to call set_protected_paths during Reinit without restarting the correlator task.
+- [Phase 58.7-close-gap-dacl-protected_paths-wiring]: Reinit reads a fresh AgentConfig snapshot each time so global_mode cannot become stale — Threat T-58.7-08 requires that Reinit use current global_mode. Building the minimal reinit config inside the command handler from the shared config Arc guarantees a fresh snapshot.
