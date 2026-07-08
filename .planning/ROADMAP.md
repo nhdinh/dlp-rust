@@ -586,7 +586,7 @@ Plans:
 **Goal:** Close the agent-side wiring gap so all consumers of the protected-path list read from the server-pushed `AgentConfig.protected_paths` field, and enable runtime reinitialization of the DACL watcher and classification cache when `protected_paths` changes without requiring an agent service restart.
 **Requirements**: DACL-01, DACL-02, DACL-03, DACL-04, DACL-05, CACHE-04
 **Depends on:** Phase 58
-**Plans:** 3 plans
+**Plans:** 4 plans
 
 **Wave 1** *(no dependencies)*
 
@@ -594,11 +594,15 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] `58.7-02-PLAN.md` — Runtime reinitialization: DaclWatcherManager actor, config-poll change signal, controlled watcher restart, cache rebuild, and dynamic correlator path update.
+- [ ] `58.7-02-PLAN.md` — DaclWatcherBundle refactor and run-loop structural wiring: bundle type, compile-check gate, config-poll Reinit signal, and manager actor skeleton.
 
 **Wave 3** *(blocked on Wave 2 completion)*
 
-- [ ] `58.7-03-PLAN.md` — Agent-side Deny ACE removal: use the stored canonical ACL snapshot in DaclWatcher to remove the tripwire before marking staged removals applied.
+- [ ] `58.7-03-PLAN.md` — Runtime reinitialization behavior: BypassCorrelator dynamic path update and DaclWatcherManager command handling (Shutdown, Reinit, cache rebuild).
+
+**Wave 4** *(blocked on Wave 3 completion)*
+
+- [ ] `58.7-04-PLAN.md` — Agent-side Deny ACE removal: use the stored canonical ACL snapshot in DaclWatcher to remove the tripwire before marking staged removals applied.
 
 ### Phase 59: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 
