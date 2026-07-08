@@ -396,6 +396,26 @@ impl DaclWatcher {
         snapshots.insert(path.to_path_buf(), snapshot);
     }
 
+    /// Returns the stored canonical ACL snapshot for a registered path.
+    ///
+    /// This is a lightweight lookup used by the staged removal application
+    /// task to restore the original ACL before the tripwire is removed. The
+    /// snapshot is cloned so callers can mutate it without affecting the
+    /// stored canonical copy.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` — The protected path whose snapshot should be retrieved.
+    ///
+    /// # Returns
+    ///
+    /// `Some(CanonicalAclSnapshot)` if the path is currently registered,
+    /// otherwise `None`.
+    pub fn get_snapshot(&self, path: &Path) -> Option<CanonicalAclSnapshot> {
+        let snapshots = self.snapshots.lock();
+        snapshots.get(&path.to_path_buf()).cloned()
+    }
+
     /// Sets the DLP-Admin SID used during repair.
     ///
     /// The SID is cached and passed to `apply_tripwire_to_path` on repair.
@@ -1379,7 +1399,103 @@ mod tests {
         }
     }
 
-    // --- Test 12: set_dlp_admin_sid caches SID ---
+    // --- Test 12: get_snapshot returns cloned snapshot for registered path ---
+
+    #[test]
+    fn test_get_snapshot_registered() {
+        let watcher = DaclWatcher::new();
+        let path = PathBuf::from(r"C:\TestSnapshot");
+        let snapshot = CanonicalAclSnapshot {
+            sddl: String::from("D:(A;;FA;;;S-1-5-18)"),
+            created_at: Utc::now(),
+            path: path.clone(),
+        };
+
+        {
+            let mut snaps = watcher.snapshots.lock();
+            snaps.insert(path.clone(), snapshot.clone());
+        }
+
+        let result = watcher.get_snapshot(&path);
+        assert!(
+            result.is_some(),
+            "get_snapshot should return Some for registered path"
+        );
+        assert_eq!(result.unwrap().sddl, snapshot.sddl);
+    }
+
+    /// Test 13: get_snapshot returns None for unregistered path.
+    #[test]
+    fn test_get_snapshot_unregistered() {
+        let watcher = DaclWatcher::new();
+        let path = PathBuf::from(r"C:\NotRegistered");
+
+        let result = watcher.get_snapshot(&path);
+        assert!(
+            result.is_none(),
+            "get_snapshot should return None for unregistered path"
+        );
+    }
+
+    /// Test 14: get_snapshot returns None after unregister.
+    #[test]
+    fn test_get_snapshot_after_unregister() {
+        let temp_dir = std::env::temp_dir().join("dlp_watcher_test_snapshot_unregister");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let watcher = DaclWatcher::new();
+        let snapshot = CanonicalAclSnapshot {
+            sddl: String::from("D:(A;;FA;;;S-1-5-18)"),
+            created_at: Utc::now(),
+            path: temp_dir.clone(),
+        };
+
+        let result = watcher.register(&temp_dir, snapshot);
+        if result.is_err() {
+            let _ = std::fs::remove_dir_all(&temp_dir);
+            return;
+        }
+
+        assert!(watcher.get_snapshot(&temp_dir).is_some());
+        watcher.unregister(&temp_dir).unwrap();
+        assert!(
+            watcher.get_snapshot(&temp_dir).is_none(),
+            "snapshot should be removed after unregister"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Test 15: get_snapshot returns an independent clone.
+    #[test]
+    fn test_get_snapshot_clone_independence() {
+        let watcher = DaclWatcher::new();
+        let path = PathBuf::from(r"C:\TestSnapshotClone");
+        let snapshot = CanonicalAclSnapshot {
+            sddl: String::from("D:ORIGINAL"),
+            created_at: Utc::now(),
+            path: path.clone(),
+        };
+
+        {
+            let mut snaps = watcher.snapshots.lock();
+            snaps.insert(path.clone(), snapshot);
+        }
+
+        let mut returned = watcher.get_snapshot(&path).expect("snapshot should exist");
+        returned.sddl = String::from("D:MUTATED");
+
+        let stored = watcher
+            .get_snapshot(&path)
+            .expect("snapshot should still exist");
+        assert_eq!(
+            stored.sddl, "D:ORIGINAL",
+            "mutating returned clone should not affect stored snapshot"
+        );
+    }
+
+    // --- Test 16: set_dlp_admin_sid caches SID ---
 
     #[test]
     fn test_set_dlp_admin_sid() {
@@ -1389,7 +1505,7 @@ mod tests {
         assert_eq!(sid.as_deref(), Some("S-1-5-32-544"));
     }
 
-    // --- Test 13: Default trait ---
+    // --- Test 17: Default trait ---
 
     #[test]
     fn test_default_trait() {
@@ -1398,7 +1514,7 @@ mod tests {
         assert!(watchers.is_empty());
     }
 
-    // --- Test 14: SecurityEvent clone and debug ---
+    // --- Test 18: SecurityEvent clone and debug ---
 
     #[test]
     fn test_security_event_clone_debug() {
@@ -1413,7 +1529,7 @@ mod tests {
 
     // --- Phase 52-07: Staging-aware tamper suppression tests ---
 
-    /// Test 15: set_staging stores the staging reference.
+    /// Test 19: set_staging stores the staging reference.
     #[test]
     fn test_set_staging() {
         let watcher = DaclWatcher::new();
@@ -1428,7 +1544,7 @@ mod tests {
         assert!(guard.is_some(), "staging should be set");
     }
 
-    /// Test 16: Staging row suppresses tamper alert for removal operation.
+    /// Test 20: Staging row suppresses tamper alert for removal operation.
     #[test]
     fn test_staging_removal_suppresses_alert() {
         let watcher = DaclWatcher::new();
@@ -1452,7 +1568,7 @@ mod tests {
         assert!(row.applied_at.is_none());
     }
 
-    /// Test 17: Unstaged path does NOT suppress tamper alert.
+    /// Test 21: Unstaged path does NOT suppress tamper alert.
     #[test]
     fn test_unstaged_path_does_not_suppress() {
         let watcher = DaclWatcher::new();
@@ -1472,7 +1588,7 @@ mod tests {
         );
     }
 
-    /// Test 18: Staging-aware watcher with applied removal row.
+    /// Test 22: Staging-aware watcher with applied removal row.
     #[test]
     fn test_staging_applied_removal_still_suppresses() {
         let watcher = DaclWatcher::new();
