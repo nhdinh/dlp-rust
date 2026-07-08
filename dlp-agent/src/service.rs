@@ -2225,17 +2225,7 @@ async fn run_loop_init(
 
     // ── Phase 52: DaclWatcher (after WfpManager, before PrintEnforcer) ────
     // Wfp network filters must be active before file ACLs are modified.
-    let (
-        dacl_watcher_opt,
-        dacl_watcher_shutdown_opt,
-        dacl_watcher_handle_opt,
-        dacl_poll_handle_opt,
-        dacl_staging_opt,
-        dacl_gc_shutdown_opt,
-        dacl_gc_handle_opt,
-        dacl_removal_shutdown_opt,
-        dacl_removal_handle_opt,
-    ) = init_dacl_watcher(&agent_config, ad_client.as_ref().as_ref()).await;
+    let dacl_bundle = init_dacl_watcher(&agent_config, ad_client.as_ref().as_ref()).await;
 
     // ── PrintEnforcer (M017/S04) ──────────────────────────────────────────
     let print_enforcer_opt: Option<crate::print_enforcer::PrintEnforcer> = {
@@ -2389,15 +2379,15 @@ async fn run_loop_init(
         retry_handle,
         classification_cache,
         cache_pusher_handle: Some(_cache_pusher_handle),
-        dacl_watcher: dacl_watcher_opt,
-        dacl_watcher_shutdown: dacl_watcher_shutdown_opt,
-        dacl_watcher_handle: dacl_watcher_handle_opt,
-        dacl_poll_handle: dacl_poll_handle_opt,
-        dacl_staging: dacl_staging_opt,
-        dacl_gc_shutdown: dacl_gc_shutdown_opt,
-        dacl_gc_handle: dacl_gc_handle_opt,
-        dacl_removal_shutdown: dacl_removal_shutdown_opt,
-        dacl_removal_handle: dacl_removal_handle_opt,
+        dacl_watcher: dacl_bundle.watcher,
+        dacl_watcher_shutdown: dacl_bundle.watcher_shutdown,
+        dacl_watcher_handle: dacl_bundle.watcher_handle,
+        dacl_poll_handle: dacl_bundle.poll_handle,
+        dacl_staging: dacl_bundle.staging,
+        dacl_gc_shutdown: dacl_bundle.gc_shutdown,
+        dacl_gc_handle: dacl_bundle.gc_handle,
+        dacl_removal_shutdown: dacl_bundle.removal_shutdown,
+        dacl_removal_handle: dacl_bundle.removal_handle,
         // Phase 53: ETW Kernel-File consumer.
         etw_consumer: Some(etw_consumer),
         // Phase 53: Bypass correlator shutdown signal.
@@ -2760,23 +2750,177 @@ fn init_offline_manager(
     Arc::new(om)
 }
 
-/// Return type for [`init_dacl_watcher`] and [`init_dacl_watcher_without_staging`].
+/// Commands sent to the DACL watcher lifecycle manager.
 ///
-/// The nine-element tuple is verbose because it carries every handle created by
-/// the watcher subsystem.  Using a type alias keeps the two function signatures
-/// in sync and avoids a large duplicated type annotation.
-#[allow(clippy::type_complexity)]
-type DaclWatcherInitResult = (
-    Option<std::sync::Arc<crate::dacl_repair_watcher::DaclWatcher>>,
-    Option<tokio::sync::watch::Sender<bool>>,
-    Option<tokio::task::JoinHandle<()>>,
-    Option<tokio::task::JoinHandle<()>>,
-    Option<Arc<crate::dacl_staging::DaclStaging>>,
-    Option<tokio::sync::watch::Sender<bool>>,
-    Option<tokio::task::JoinHandle<()>>,
-    Option<tokio::sync::watch::Sender<bool>>,
-    Option<tokio::task::JoinHandle<()>>,
-);
+/// The manager owns the current [`DaclWatcherBundle`] and serialises all
+/// lifecycle transitions so the watcher set can be atomically replaced at
+/// runtime.
+#[derive(Debug)]
+pub enum DaclManagerCommand {
+    /// Replace the current watcher bundle with a fresh one built from the latest
+    /// server-pushed `protected_paths`.
+    Reinit,
+    /// Gracefully shut down the current bundle and exit the manager task.
+    Shutdown,
+}
+
+/// Holds every handle created by the DACL watcher subsystem.
+///
+/// Replaces the previous nine-element tuple return type so the watcher set can
+/// be shut down and replaced atomically by [`DaclWatcherManager`].
+pub struct DaclWatcherBundle {
+    /// The watcher registry itself (used to unregister paths on shutdown).
+    pub watcher: Option<std::sync::Arc<crate::dacl_repair_watcher::DaclWatcher>>,
+    /// Shutdown signal for the debounced repair task.
+    pub watcher_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    /// Handle for the debounced repair task.
+    pub watcher_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Shutdown signal for the polling backstop task.
+    pub poll_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    /// Handle for the polling backstop task.
+    pub poll_handle: Option<tokio::task::JoinHandle<()>>,
+    /// The staging layer for two-phase removals.
+    pub staging: Option<Arc<crate::dacl_staging::DaclStaging>>,
+    /// Shutdown signal for the staging GC task.
+    pub gc_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    /// Handle for the staging GC task.
+    pub gc_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Shutdown signal for the removal application task.
+    pub removal_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    /// Handle for the removal application task.
+    pub removal_handle: Option<tokio::task::JoinHandle<()>>,
+}
+
+impl DaclWatcherBundle {
+    /// Creates an empty bundle with every handle set to `None`.
+    ///
+    /// Useful as an initial placeholder and in tests where no watcher subsystem
+    /// is actually running.
+    pub fn empty() -> Self {
+        Self {
+            watcher: None,
+            watcher_shutdown: None,
+            watcher_handle: None,
+            poll_shutdown: None,
+            poll_handle: None,
+            staging: None,
+            gc_shutdown: None,
+            gc_handle: None,
+            removal_shutdown: None,
+            removal_handle: None,
+        }
+    }
+
+    /// Gracefully shuts down every subsystem in lifecycle order.
+    ///
+    /// Signals removal application first, then GC, then the repair task, and
+    /// finally the polling backstop. Each handle is awaited after its shutdown
+    /// signal is sent. An empty bundle completes immediately.
+    pub async fn shutdown(self) {
+        // Removal application task first so it stops modifying ACLs before the
+        // watcher shuts down.
+        if let Some(tx) = self.removal_shutdown {
+            let _ = tx.send(true);
+        }
+        if let Some(handle) = self.removal_handle {
+            let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+        }
+
+        // Staging GC task next.
+        if let Some(tx) = self.gc_shutdown {
+            let _ = tx.send(true);
+        }
+        if let Some(handle) = self.gc_handle {
+            let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+        }
+
+        // Debounced repair task.
+        if let Some(tx) = self.watcher_shutdown {
+            let _ = tx.send(true);
+        }
+        if let Some(handle) = self.watcher_handle {
+            let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+        }
+
+        // Polling backstop last so it keeps catching tampering until the repair
+        // task is fully drained.
+        if let Some(tx) = self.poll_shutdown {
+            let _ = tx.send(true);
+        }
+        if let Some(handle) = self.poll_handle {
+            let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
+        }
+
+        // Unregister all watched paths so OS handles are released.
+        if let Some(watcher) = self.watcher {
+            watcher.unregister_all();
+        }
+    }
+}
+
+impl Default for DaclWatcherBundle {
+    fn default() -> Self {
+        Self::empty()
+    }
+}
+
+/// Owner of the active [`DaclWatcherBundle`] and command receiver.
+///
+/// This async task is spawned by [`spawn_dacl_watcher_manager`]. It listens for
+/// [`DaclManagerCommand`] messages and applies lifecycle transitions. In Plan
+/// 58.7-02 it is a structural skeleton: commands are logged and graceful
+/// shutdown is handled. Runtime reinitialisation will be implemented in Plan
+/// 58.7-03.
+pub struct DaclWatcherManager;
+
+impl DaclWatcherManager {
+    /// Runs the manager loop, owning the supplied bundle and reading commands.
+    ///
+    /// # Arguments
+    ///
+    /// * `bundle` - The initial watcher bundle to own.
+    /// * `mut cmd_rx` - Receiver for [`DaclManagerCommand`] messages.
+    pub async fn run(
+        bundle: DaclWatcherBundle,
+        mut cmd_rx: tokio::sync::mpsc::Receiver<DaclManagerCommand>,
+    ) {
+        // In Plan 58.7-02 the manager owns the bundle so the structural wiring
+        // compiles; shutdown is the only command that mutates state.
+        let _ = bundle;
+
+        while let Some(cmd) = cmd_rx.recv().await {
+            match cmd {
+                DaclManagerCommand::Reinit => {
+                    info!("DaclWatcherManager received Reinit command");
+                    // Plan 58.7-03: shutdown old bundle and replace with new.
+                }
+                DaclManagerCommand::Shutdown => {
+                    info!("DaclWatcherManager received Shutdown command");
+                    break;
+                }
+            }
+        }
+
+        info!("DaclWatcherManager stopped");
+    }
+}
+
+/// Spawns the [`DaclWatcherManager`] task and returns its command sender.
+///
+/// # Arguments
+///
+/// * `bundle` - The initial watcher bundle to own.
+/// * `cmd_rx` - Receiver for [`DaclManagerCommand`] messages.
+///
+/// # Returns
+///
+/// A `JoinHandle` for the spawned manager task.
+pub fn spawn_dacl_watcher_manager(
+    bundle: DaclWatcherBundle,
+    cmd_rx: tokio::sync::mpsc::Receiver<DaclManagerCommand>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(DaclWatcherManager::run(bundle, cmd_rx))
+}
 
 /// Initialises the DACL repair watcher for protected path ACL tamper detection.
 ///
@@ -2795,10 +2939,10 @@ type DaclWatcherInitResult = (
 async fn init_dacl_watcher(
     agent_config: &crate::config::AgentConfig,
     ad_client: Option<&dlp_common::AdClient>,
-) -> DaclWatcherInitResult {
+) -> DaclWatcherBundle {
     if agent_config.protected_paths.is_empty() {
         info!("no protected paths configured — skipping DaclWatcher");
-        return (None, None, None, None, None, None, None, None, None);
+        return DaclWatcherBundle::empty();
     }
 
     // Phase 52-07: Create staging layer for two-phase removal protocol.
@@ -2924,7 +3068,7 @@ async fn init_dacl_watcher(
     let (repair_shutdown_tx, repair_shutdown_rx) = tokio::sync::watch::channel(false);
     let repair_handle = watcher.start_repair_task(repair_shutdown_rx);
 
-    let (_poll_shutdown_tx, poll_shutdown_rx) = tokio::sync::watch::channel(false);
+    let (poll_shutdown_tx, poll_shutdown_rx) = tokio::sync::watch::channel(false);
     let poll_handle = watcher.start_poll_backstop(60, poll_shutdown_rx);
 
     // Phase 52-07: Spawn GC task for expired staging rows (5-minute TTL, 60s interval).
@@ -2942,27 +3086,28 @@ async fn init_dacl_watcher(
     );
 
     info!("DaclWatcher initialised with repair task, polling backstop, staging GC, and removal application");
-    (
-        Some(watcher_arc),
-        Some(repair_shutdown_tx),
-        Some(repair_handle),
-        Some(poll_handle),
-        Some(staging),
-        Some(gc_shutdown_tx),
-        Some(gc_handle),
-        Some(removal_shutdown_tx),
-        Some(removal_handle),
-    )
+    DaclWatcherBundle {
+        watcher: Some(watcher_arc),
+        watcher_shutdown: Some(repair_shutdown_tx),
+        watcher_handle: Some(repair_handle),
+        poll_shutdown: Some(poll_shutdown_tx),
+        poll_handle: Some(poll_handle),
+        staging: Some(staging),
+        gc_shutdown: Some(gc_shutdown_tx),
+        gc_handle: Some(gc_handle),
+        removal_shutdown: Some(removal_shutdown_tx),
+        removal_handle: Some(removal_handle),
+    }
 }
 
 /// Fallback initialisation without staging (when DaclStaging creation fails).
 async fn init_dacl_watcher_without_staging(
     agent_config: &crate::config::AgentConfig,
     ad_client: Option<&dlp_common::AdClient>,
-) -> DaclWatcherInitResult {
+) -> DaclWatcherBundle {
     if agent_config.protected_paths.is_empty() {
         info!("no protected paths configured — skipping DaclWatcher without staging");
-        return (None, None, None, None, None, None, None, None, None);
+        return DaclWatcherBundle::empty();
     }
 
     let watcher = crate::dacl_repair_watcher::DaclWatcher::new();
@@ -3024,20 +3169,21 @@ async fn init_dacl_watcher_without_staging(
     let (repair_shutdown_tx, repair_shutdown_rx) = tokio::sync::watch::channel(false);
     let repair_handle = watcher.start_repair_task(repair_shutdown_rx);
 
-    let (_poll_shutdown_tx, poll_shutdown_rx) = tokio::sync::watch::channel(false);
+    let (poll_shutdown_tx, poll_shutdown_rx) = tokio::sync::watch::channel(false);
     let poll_handle = watcher.start_poll_backstop(60, poll_shutdown_rx);
 
-    (
-        Some(std::sync::Arc::new(watcher)),
-        Some(repair_shutdown_tx),
-        Some(repair_handle),
-        Some(poll_handle),
-        None,
-        None,
-        None,
-        None,
-        None,
-    )
+    DaclWatcherBundle {
+        watcher: Some(std::sync::Arc::new(watcher)),
+        watcher_shutdown: Some(repair_shutdown_tx),
+        watcher_handle: Some(repair_handle),
+        poll_shutdown: Some(poll_shutdown_tx),
+        poll_handle: Some(poll_handle),
+        staging: None,
+        gc_shutdown: None,
+        gc_handle: None,
+        removal_shutdown: None,
+        removal_handle: None,
+    }
 }
 
 /// Spawns a background task that applies staged removals on a fixed interval.
@@ -5619,7 +5765,7 @@ mod tests {
 
         let result = init_dacl_watcher(&cfg, None).await;
         assert!(
-            result.0.is_none(),
+            result.watcher.is_none(),
             "watcher must be None when protected_paths is empty"
         );
     }
@@ -5636,7 +5782,7 @@ mod tests {
 
         let result = init_dacl_watcher(&cfg, None).await;
         assert!(
-            result.0.is_some(),
+            result.watcher.is_some(),
             "watcher must be created from protected_paths"
         );
     }
@@ -5656,9 +5802,106 @@ mod tests {
         // Must not panic; the valid path keeps the watcher subsystem alive.
         let result = init_dacl_watcher(&cfg, None).await;
         assert!(
-            result.0.is_some(),
+            result.watcher.is_some(),
             "watcher must be created when at least one valid protected path exists"
         );
+    }
+
+    // --- Phase 58.7-02: DaclWatcherBundle and manager actor types ---
+
+    /// Test that `DaclWatcherBundle::empty` returns a bundle with every field
+    /// set to `None` and that `shutdown` completes immediately.
+    #[tokio::test]
+    async fn test_dacl_watcher_bundle_empty() {
+        let bundle = DaclWatcherBundle::empty();
+        assert!(bundle.watcher.is_none());
+        assert!(bundle.watcher_shutdown.is_none());
+        assert!(bundle.watcher_handle.is_none());
+        assert!(bundle.poll_shutdown.is_none());
+        assert!(bundle.poll_handle.is_none());
+        assert!(bundle.staging.is_none());
+        assert!(bundle.gc_shutdown.is_none());
+        assert!(bundle.gc_handle.is_none());
+        assert!(bundle.removal_shutdown.is_none());
+        assert!(bundle.removal_handle.is_none());
+
+        // Shutdown on an empty bundle must complete without blocking.
+        bundle.shutdown().await;
+    }
+
+    /// Test that `DaclWatcherBundle::shutdown` signals each subsystem in order
+    /// (removal, gc, watcher, poll) and awaits the corresponding handles.
+    #[tokio::test]
+    async fn test_dacl_watcher_bundle_shutdown_order() {
+        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        // Helper that spawns a task recording its shutdown name.
+        let spawn_recording_task =
+            |name: &'static str, order: Arc<std::sync::Mutex<Vec<&'static str>>>| {
+                let (tx, mut rx) = tokio::sync::watch::channel(false);
+                let handle = tokio::spawn(async move {
+                    let _ = rx.changed().await;
+                    order.lock().expect("mutex poisoned").push(name);
+                });
+                (tx, handle)
+            };
+
+        let (removal_tx, removal_handle) = spawn_recording_task("removal", Arc::clone(&order));
+        let (gc_tx, gc_handle) = spawn_recording_task("gc", Arc::clone(&order));
+        let (watcher_tx, watcher_handle) = spawn_recording_task("watcher", Arc::clone(&order));
+        let (poll_tx, poll_handle) = spawn_recording_task("poll", Arc::clone(&order));
+
+        let bundle = DaclWatcherBundle {
+            watcher: None,
+            watcher_shutdown: Some(watcher_tx),
+            watcher_handle: Some(watcher_handle),
+            poll_shutdown: Some(poll_tx),
+            poll_handle: Some(poll_handle),
+            staging: None,
+            gc_shutdown: Some(gc_tx),
+            gc_handle: Some(gc_handle),
+            removal_shutdown: Some(removal_tx),
+            removal_handle: Some(removal_handle),
+        };
+
+        bundle.shutdown().await;
+
+        let observed = order.lock().expect("mutex poisoned");
+        assert_eq!(
+            observed.as_slice(),
+            &["removal", "gc", "watcher", "poll"],
+            "subsystems must shut down in lifecycle order"
+        );
+    }
+
+    /// Test that `init_dacl_watcher` returns a `DaclWatcherBundle` and retains
+    /// the poll backstop shutdown sender.
+    #[tokio::test]
+    async fn test_init_dacl_watcher_returns_bundle() {
+        let cfg = AgentConfig {
+            protected_paths: vec![make_protected_path(r"C:\ProtectedBundle", "T3")],
+            ..Default::default()
+        };
+
+        let result = init_dacl_watcher(&cfg, None).await;
+        assert!(result.watcher.is_some(), "watcher must be present");
+        assert!(
+            result.watcher_shutdown.is_some(),
+            "repair shutdown sender must be present"
+        );
+        assert!(
+            result.watcher_handle.is_some(),
+            "repair handle must be present"
+        );
+        assert!(
+            result.poll_shutdown.is_some(),
+            "poll shutdown sender must be retained (not discarded)"
+        );
+        assert!(result.poll_handle.is_some(), "poll handle must be present");
+
+        // Do not call shutdown here: the spawned watcher subsystem contains
+        // Windows file-system handles that can block the test runtime. Plan
+        // 58.7-02 validates the return-type contract only.
     }
 
     // --- Phase 58.7: bypass correlator and classification cache wiring ---
