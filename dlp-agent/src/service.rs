@@ -2076,8 +2076,7 @@ async fn run_loop_init(
     // ── Start the config poll loop ─────────────────────────────────────────
     // Phase 58.7-02: create the DACL manager channel early so the config poll
     // task can signal reinit when protected_paths changes.
-    let (dacl_manager_tx, dacl_manager_rx) =
-        tokio::sync::mpsc::channel::<DaclManagerCommand>(4);
+    let (dacl_manager_tx, dacl_manager_rx) = tokio::sync::mpsc::channel::<DaclManagerCommand>(4);
     let (config_shutdown_tx, _config_cmd_tx, config_poll_handle) = spawn_config_poll_task(
         server_client.clone(),
         Arc::clone(&config_arc),
@@ -5970,14 +5969,20 @@ mod tests {
             backstop_handle: None,
             retry_shutdown: None,
             retry_handle: None,
-            classification_cache: Arc::new(crate::classification_cache::ClassificationCache::new_with_name(
-                &format!("dlp-test-classification-cache-{}", std::process::id())
-            ).expect("classification cache must construct in test")),
+            classification_cache: Arc::new(
+                crate::classification_cache::ClassificationCache::new_with_name(&format!(
+                    "dlp-test-classification-cache-{}",
+                    std::process::id()
+                ))
+                .expect("classification cache must construct in test"),
+            ),
             cache_pusher_handle: None,
             etw_consumer: None,
             correlator_shutdown: None,
             correlator_handle: None,
-            diagnostic_aggregator: Arc::new(crate::diagnostic_aggregator::DiagnosticAggregator::new()),
+            diagnostic_aggregator: Arc::new(
+                crate::diagnostic_aggregator::DiagnosticAggregator::new(),
+            ),
             health_aggregator: Arc::new(crate::health_aggregator::HealthAggregator::new()),
             hook_ipc_handle: None,
             diagnostic_push_shutdown: None,
