@@ -2242,13 +2242,70 @@ async fn run_loop_init(
         None
     };
 
+    // ── Phase 53: ETW Kernel-File consumer + Bypass Correlator (construct early) ─
+    // The correlator is constructed here so the DACL watcher manager (spawned
+    // below) can call set_protected_paths on it when protected_paths changes at
+    // runtime. The actual correlator task is spawned after the manager is ready.
+    let mut etw_consumer = crate::etw_kernel_file::EtwKernelFileConsumer::new();
+    let etw_consumer_state = etw_consumer.start(&agent_config);
+
+    // Emit audit event for ETW consumer state.
+    match &etw_consumer_state {
+        crate::etw_kernel_file::EtwConsumerState::Started => {
+            info!("ETW Kernel-File consumer started");
+        }
+        crate::etw_kernel_file::EtwConsumerState::GatedOff { reason } => {
+            warn!(reason = %reason, "ETW Kernel-File consumer gated off");
+        }
+        crate::etw_kernel_file::EtwConsumerState::Failed { error } => {
+            error!(error = %error, "ETW Kernel-File consumer failed to start");
+        }
+    }
+
+    // Construct bypass correlator if ETW consumer started successfully.
+    let correlator: Option<Arc<crate::bypass_correlator::BypassCorrelator>> = if matches!(
+        etw_consumer_state,
+        crate::etw_kernel_file::EtwConsumerState::Started
+    ) {
+        if let (Some(_process_watcher), Some(_sc)) =
+            (process_watcher_opt.as_ref(), server_client.as_ref())
+        {
+            let reduced_mode = !agent_config.bypass_correlator_enabled();
+            Some(Arc::new(
+                crate::bypass_correlator::BypassCorrelator::new(
+                    crate::bypass_correlator::CorrelatorConfig {
+                        reduced_mode,
+                        enforcement_mode: agent_config.enforcement.global_mode,
+                        ..Default::default()
+                    },
+                )
+                .with_protected_paths(protected_path_strings.clone()),
+            ))
+        } else {
+            warn!("process watcher or server client unavailable — skipping bypass correlator");
+            None
+        }
+    } else {
+        warn!("ETW consumer not started — bypass correlator disabled");
+        None
+    };
+
     // ── Phase 52: DaclWatcher (after WfpManager, before PrintEnforcer) ────
     // Wfp network filters must be active before file ACLs are modified.
     let dacl_bundle = init_dacl_watcher(&agent_config, ad_client.as_ref().as_ref()).await;
 
-    // Phase 58.7-02: spawn the DACL watcher lifecycle manager and hand it the
-    // bundle. The config poll loop holds a clone of the command sender.
-    let dacl_manager_handle = spawn_dacl_watcher_manager(dacl_bundle, dacl_manager_rx);
+    // Phase 58.7-02/03: spawn the DACL watcher lifecycle manager and hand it the
+    // bundle. The config poll loop holds a clone of the command sender. The
+    // manager also receives the correlator so it can keep protected_paths in
+    // sync across runtime reinitialisations.
+    let dacl_manager_handle = spawn_dacl_watcher_manager(
+        dacl_bundle,
+        dacl_manager_rx,
+        Arc::clone(&ad_client),
+        Arc::clone(&classification_cache),
+        correlator.clone(),
+        Arc::clone(&config_arc),
+    );
 
     // ── PrintEnforcer (M017/S04) ──────────────────────────────────────────
     let print_enforcer_opt: Option<crate::print_enforcer::PrintEnforcer> = {
@@ -2270,65 +2327,31 @@ async fn run_loop_init(
         Some(enforcer)
     };
 
-    // ── Phase 53: ETW Kernel-File consumer + Bypass Correlator ────────────
-    let mut etw_consumer = crate::etw_kernel_file::EtwKernelFileConsumer::new();
-    let etw_consumer_state = etw_consumer.start(&agent_config);
+    // ── Phase 53: start the bypass correlator task ─────────────────────────
+    let (correlator_shutdown_tx, correlator_handle) = if let Some(correlator_arc) = correlator {
+        let etw_rx = etw_consumer.receiver().clone();
+        let process_rx = process_watcher_opt
+            .as_ref()
+            .expect("process watcher confirmed present above")
+            .receiver()
+            .clone();
+        let sc = server_client
+            .as_ref()
+            .expect("server client confirmed present above")
+            .clone();
+        let correlator_for_task = Arc::clone(&correlator_arc);
 
-    // Emit audit event for ETW consumer state.
-    match &etw_consumer_state {
-        crate::etw_kernel_file::EtwConsumerState::Started => {
-            info!("ETW Kernel-File consumer started");
-        }
-        crate::etw_kernel_file::EtwConsumerState::GatedOff { reason } => {
-            warn!(reason = %reason, "ETW Kernel-File consumer gated off");
-        }
-        crate::etw_kernel_file::EtwConsumerState::Failed { error } => {
-            error!(error = %error, "ETW Kernel-File consumer failed to start");
-        }
-    }
-
-    // Start bypass correlator if ETW consumer started successfully.
-    let (correlator_shutdown_tx, correlator_handle) = if matches!(
-        etw_consumer_state,
-        crate::etw_kernel_file::EtwConsumerState::Started
-    ) {
-        if let (Some(process_watcher), Some(sc)) =
-            (process_watcher_opt.as_ref(), server_client.as_ref())
-        {
-            let reduced_mode = !agent_config.bypass_correlator_enabled();
-            let correlator = crate::bypass_correlator::BypassCorrelator::new(
-                crate::bypass_correlator::CorrelatorConfig {
-                    reduced_mode,
-                    enforcement_mode: agent_config.enforcement.global_mode,
-                    ..Default::default()
-                },
-            )
-            .with_protected_paths(protected_path_strings.clone());
-
-            let etw_rx = etw_consumer.receiver().clone();
-            let process_rx = process_watcher.receiver().clone();
-            let sc = sc.clone();
-
-            // bypass_rx was created alongside bypass_tx when HookIpcServer was
-            // constructed; the correlator consumes hook DLL BypassAlert frames.
-            // Verified: bypass_tx/bypass_rx wiring per 58.1-02 (bounded 1000, with_bypass_channel).
-
-            let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
-            let handle = tokio::spawn(async move {
-                tokio::select! {
-                    _ = correlator.run(etw_rx, process_rx, bypass_rx, sc, lifecycle_rx) => {},
-                    _ = shutdown_rx.changed() => {
-                        info!("bypass correlator shutting down");
-                    }
+        let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(async move {
+            tokio::select! {
+                _ = correlator_for_task.run(etw_rx, process_rx, bypass_rx, sc, lifecycle_rx) => {},
+                _ = shutdown_rx.changed() => {
+                    info!("bypass correlator shutting down");
                 }
-            });
-            (Some(shutdown_tx), Some(handle))
-        } else {
-            warn!("process watcher or server client unavailable — skipping bypass correlator");
-            (None, None)
-        }
+            }
+        });
+        (Some(shutdown_tx), Some(handle))
     } else {
-        warn!("ETW consumer not started — bypass correlator disabled");
         (None, None)
     };
 
@@ -2766,53 +2789,37 @@ fn init_offline_manager(
     Arc::new(om)
 }
 
-/// Commands sent to the DACL watcher lifecycle manager.
+/// Container for all handles and resources owned by the DACL watcher subsystem.
 ///
-/// The manager owns the current [`DaclWatcherBundle`] and serialises all
-/// lifecycle transitions so the watcher set can be atomically replaced at
-/// runtime.
-#[derive(Debug)]
-pub enum DaclManagerCommand {
-    /// Replace the current watcher bundle with a fresh one built from the latest
-    /// server-pushed `protected_paths`.
-    Reinit,
-    /// Gracefully shut down the current bundle and exit the manager task.
-    Shutdown,
-}
-
-/// Holds every handle created by the DACL watcher subsystem.
-///
-/// Replaces the previous nine-element tuple return type so the watcher set can
-/// be shut down and replaced atomically by [`DaclWatcherManager`].
+/// Grouping the handles allows the lifecycle manager to atomically replace the
+/// entire subsystem on `Reinit` and to shut it down in lifecycle order.
+#[allow(dead_code)]
 pub struct DaclWatcherBundle {
-    /// The watcher registry itself (used to unregister paths on shutdown).
-    pub watcher: Option<std::sync::Arc<crate::dacl_repair_watcher::DaclWatcher>>,
-    /// Shutdown signal for the debounced repair task.
-    pub watcher_shutdown: Option<tokio::sync::watch::Sender<bool>>,
-    /// Handle for the debounced repair task.
-    pub watcher_handle: Option<tokio::task::JoinHandle<()>>,
+    /// The active `DaclWatcher` instance.
+    watcher: Option<Arc<crate::dacl_repair_watcher::DaclWatcher>>,
+    /// Shutdown signal for the repair task.
+    watcher_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    /// Join handle for the repair task.
+    watcher_handle: Option<tokio::task::JoinHandle<()>>,
     /// Shutdown signal for the polling backstop task.
-    pub poll_shutdown: Option<tokio::sync::watch::Sender<bool>>,
-    /// Handle for the polling backstop task.
-    pub poll_handle: Option<tokio::task::JoinHandle<()>>,
-    /// The staging layer for two-phase removals.
-    pub staging: Option<Arc<crate::dacl_staging::DaclStaging>>,
+    poll_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    /// Join handle for the polling backstop task.
+    poll_handle: Option<tokio::task::JoinHandle<()>>,
+    /// The two-phase removal staging layer.
+    staging: Option<Arc<crate::dacl_staging::DaclStaging>>,
     /// Shutdown signal for the staging GC task.
-    pub gc_shutdown: Option<tokio::sync::watch::Sender<bool>>,
-    /// Handle for the staging GC task.
-    pub gc_handle: Option<tokio::task::JoinHandle<()>>,
-    /// Shutdown signal for the removal application task.
-    pub removal_shutdown: Option<tokio::sync::watch::Sender<bool>>,
-    /// Handle for the removal application task.
-    pub removal_handle: Option<tokio::task::JoinHandle<()>>,
+    gc_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    /// Join handle for the staging GC task.
+    gc_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Shutdown signal for the staged removal application task.
+    removal_shutdown: Option<tokio::sync::watch::Sender<bool>>,
+    /// Join handle for the staged removal application task.
+    removal_handle: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl DaclWatcherBundle {
-    /// Creates an empty bundle with every handle set to `None`.
-    ///
-    /// Useful as an initial placeholder and in tests where no watcher subsystem
-    /// is actually running.
-    pub fn empty() -> Self {
+    /// Returns a bundle with every field set to `None`.
+    fn empty() -> Self {
         Self {
             watcher: None,
             watcher_shutdown: None,
@@ -2827,66 +2834,63 @@ impl DaclWatcherBundle {
         }
     }
 
-    /// Gracefully shuts down every subsystem in lifecycle order.
-    ///
-    /// Signals removal application first, then GC, then the repair task, and
-    /// finally the polling backstop. Each handle is awaited after its shutdown
-    /// signal is sent. An empty bundle completes immediately.
-    pub async fn shutdown(self) {
-        // Removal application task first so it stops modifying ACLs before the
-        // watcher shuts down.
-        if let Some(tx) = self.removal_shutdown {
+    /// Signals each subsystem to shut down in lifecycle order and awaits handles.
+    async fn shutdown(mut self) {
+        // Signal removal application task first so in-flight ACL operations finish
+        // before GC and watcher tasks are torn down.
+        if let Some(tx) = self.removal_shutdown.take() {
             let _ = tx.send(true);
         }
-        if let Some(handle) = self.removal_handle {
-            let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
-        }
-
-        // Staging GC task next.
-        if let Some(tx) = self.gc_shutdown {
+        if let Some(tx) = self.gc_shutdown.take() {
             let _ = tx.send(true);
         }
-        if let Some(handle) = self.gc_handle {
-            let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
-        }
-
-        // Debounced repair task.
-        if let Some(tx) = self.watcher_shutdown {
+        if let Some(tx) = self.watcher_shutdown.take() {
             let _ = tx.send(true);
         }
-        if let Some(handle) = self.watcher_handle {
-            let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
-        }
-
-        // Polling backstop last so it keeps catching tampering until the repair
-        // task is fully drained.
-        if let Some(tx) = self.poll_shutdown {
+        if let Some(tx) = self.poll_shutdown.take() {
             let _ = tx.send(true);
         }
-        if let Some(handle) = self.poll_handle {
-            let _ = tokio::time::timeout(Duration::from_secs(5), handle).await;
-        }
 
-        // Unregister all watched paths so OS handles are released.
-        if let Some(watcher) = self.watcher {
-            watcher.unregister_all();
+        if let Some(h) = self.removal_handle.take() {
+            let _ = h.await;
+        }
+        if let Some(h) = self.gc_handle.take() {
+            let _ = h.await;
+        }
+        if let Some(h) = self.watcher_handle.take() {
+            let _ = h.await;
+        }
+        if let Some(h) = self.poll_handle.take() {
+            let _ = h.await;
         }
     }
 }
 
-impl Default for DaclWatcherBundle {
-    fn default() -> Self {
-        Self::empty()
-    }
+/// Commands sent to the DACL watcher lifecycle manager.
+///
+/// The manager owns the current [`DaclWatcherBundle`] and serialises all
+/// lifecycle transitions so the watcher set can be atomically replaced at
+/// runtime.
+#[derive(Debug)]
+pub enum DaclManagerCommand {
+    /// Replace the current watcher bundle with a fresh one built from the latest
+    /// server-pushed `protected_paths`.
+    ///
+    /// This is the runtime application path for added protected paths: when the
+    /// config poll loop diffs a new path into `AgentConfig.protected_paths`, it
+    /// emits `Reinit`, which applies the Deny ACE and registers the watcher for
+    /// the addition without requiring an agent service restart.
+    Reinit,
+    /// Gracefully shut down the current bundle and exit the manager task.
+    Shutdown,
 }
 
 /// Owner of the active [`DaclWatcherBundle`] and command receiver.
 ///
 /// This async task is spawned by [`spawn_dacl_watcher_manager`]. It listens for
-/// [`DaclManagerCommand`] messages and applies lifecycle transitions. In Plan
-/// 58.7-02 it is a structural skeleton: commands are logged and graceful
-/// shutdown is handled. Runtime reinitialisation will be implemented in Plan
-/// 58.7-03.
+/// [`DaclManagerCommand`] messages and applies lifecycle transitions. Plan
+/// 58.7-02 provided the structural skeleton; Plan 58.7-03 adds full `Reinit`
+/// handling so `protected_paths` changes are applied at runtime.
 pub struct DaclWatcherManager;
 
 impl DaclWatcherManager {
@@ -2896,19 +2900,40 @@ impl DaclWatcherManager {
     ///
     /// * `bundle` - The initial watcher bundle to own.
     /// * `mut cmd_rx` - Receiver for [`DaclManagerCommand`] messages.
+    /// * `ad_client` - Shared AD client used to resolve the DLP-Admin SID.
+    /// * `classification_cache` - Shared classification cache; T3/T4 roots are
+    ///   rebuilt after every reinit.
+    /// * `correlator` - Optional shared bypass correlator; its protected-path
+    ///   list is updated after every reinit.
+    /// * `config` - Shared in-memory agent config. This is the same `Arc` that
+    ///   backs [`with_config`], so the manager always reads the latest pushed
+    ///   configuration.
     pub async fn run(
-        bundle: DaclWatcherBundle,
+        mut bundle: DaclWatcherBundle,
         mut cmd_rx: tokio::sync::mpsc::Receiver<DaclManagerCommand>,
+        ad_client: Arc<Option<dlp_common::AdClient>>,
+        classification_cache: Arc<crate::classification_cache::ClassificationCache>,
+        correlator: Option<Arc<crate::bypass_correlator::BypassCorrelator>>,
+        config: Arc<parking_lot::Mutex<crate::config::AgentConfig>>,
     ) {
-        // In Plan 58.7-02 the manager owns the bundle so the structural wiring
-        // compiles; shutdown is the only command that mutates state.
-        let _ = bundle;
-
         while let Some(cmd) = cmd_rx.recv().await {
             match cmd {
                 DaclManagerCommand::Reinit => {
                     info!("DaclWatcherManager received Reinit command");
-                    // Plan 58.7-03: shutdown old bundle and replace with new.
+
+                    // Shut down the old bundle before rebuilding so file-system
+                    // handles and ACL state are released cleanly.
+                    bundle.shutdown().await;
+
+                    // Read the latest config snapshot and rebuild the watcher.
+                    let new_bundle = reinit_dacl_bundle(
+                        &config,
+                        &ad_client,
+                        &classification_cache,
+                        correlator.as_ref(),
+                    )
+                    .await;
+                    bundle = new_bundle;
                 }
                 DaclManagerCommand::Shutdown => {
                     info!("DaclWatcherManager received Shutdown command");
@@ -2917,8 +2942,67 @@ impl DaclWatcherManager {
             }
         }
 
+        bundle.shutdown().await;
         info!("DaclWatcherManager stopped");
     }
+}
+
+/// Rebuilds the DACL watcher bundle from the latest in-memory config.
+///
+/// This helper is used by [`DaclWatcherManager::run`] on `Reinit`. It:
+/// 1. Reads `protected_paths` and `enforcement.global_mode` from `config`.
+/// 2. Builds a minimal `AgentConfig` containing those fields.
+/// 3. Calls `init_dacl_watcher` to apply tripwires and register watchers.
+/// 4. Re-populates the classification cache T3/T4 roots.
+/// 5. Updates the bypass correlator protected-path list if present.
+///
+/// Only field names and counts are logged; full path values are never logged
+/// (T-58.7-09).
+async fn reinit_dacl_bundle(
+    config: &Arc<parking_lot::Mutex<crate::config::AgentConfig>>,
+    ad_client: &Arc<Option<dlp_common::AdClient>>,
+    classification_cache: &Arc<crate::classification_cache::ClassificationCache>,
+    correlator: Option<&Arc<crate::bypass_correlator::BypassCorrelator>>,
+) -> DaclWatcherBundle {
+    let (protected_paths, global_mode) = {
+        let cfg = config.lock();
+        (cfg.protected_paths.clone(), cfg.enforcement.global_mode)
+    };
+
+    info!(
+        path_count = protected_paths.len(),
+        "DaclWatcherManager rebuilding bundle from latest config"
+    );
+
+    // Build a minimal AgentConfig containing only the fields the watcher needs.
+    let reinit_cfg = crate::config::AgentConfig {
+        protected_paths,
+        enforcement: crate::config::EnforcementConfig { global_mode },
+        ..Default::default()
+    };
+
+    let new_bundle = init_dacl_watcher(&reinit_cfg, ad_client.as_ref().as_ref()).await;
+
+    // Re-populate T3/T4 roots in the classification cache from the new paths.
+    let new_roots: Vec<std::path::PathBuf> = reinit_cfg
+        .protected_paths
+        .iter()
+        .filter_map(|p| crate::dacl_staging::normalize_protected_path(&p.path).ok())
+        .map(std::path::PathBuf::from)
+        .collect();
+    classification_cache.prepopulate_t3_t4_roots(new_roots);
+
+    // Update the bypass correlator's protected-path list for severity mapping.
+    if let Some(c) = correlator {
+        let normalized: Vec<String> = reinit_cfg
+            .protected_paths
+            .iter()
+            .filter_map(|p| crate::dacl_staging::normalize_protected_path(&p.path).ok())
+            .collect();
+        c.set_protected_paths(normalized);
+    }
+
+    new_bundle
 }
 
 /// Spawns the [`DaclWatcherManager`] task and returns its command sender.
@@ -2927,6 +3011,10 @@ impl DaclWatcherManager {
 ///
 /// * `bundle` - The initial watcher bundle to own.
 /// * `cmd_rx` - Receiver for [`DaclManagerCommand`] messages.
+/// * `ad_client` - Shared AD client.
+/// * `classification_cache` - Shared classification cache.
+/// * `correlator` - Optional shared bypass correlator.
+/// * `config` - Shared in-memory agent config.
 ///
 /// # Returns
 ///
@@ -2934,10 +3022,20 @@ impl DaclWatcherManager {
 pub fn spawn_dacl_watcher_manager(
     bundle: DaclWatcherBundle,
     cmd_rx: tokio::sync::mpsc::Receiver<DaclManagerCommand>,
+    ad_client: Arc<Option<dlp_common::AdClient>>,
+    classification_cache: Arc<crate::classification_cache::ClassificationCache>,
+    correlator: Option<Arc<crate::bypass_correlator::BypassCorrelator>>,
+    config: Arc<parking_lot::Mutex<crate::config::AgentConfig>>,
 ) -> tokio::task::JoinHandle<()> {
-    tokio::spawn(DaclWatcherManager::run(bundle, cmd_rx))
+    tokio::spawn(DaclWatcherManager::run(
+        bundle,
+        cmd_rx,
+        ad_client,
+        classification_cache,
+        correlator,
+        config,
+    ))
 }
-
 /// Initialises the DACL repair watcher for protected path ACL tamper detection.
 ///
 /// For each path in `agent_config.protected_paths`:
@@ -4941,6 +5039,7 @@ fn acquire_instance_mutex() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::bypass_correlator::{BypassCorrelator, CorrelatorConfig};
     use crate::config::AgentConfig;
     use crate::detection::disk::DiskEnumerator;
     use crate::server_client::AgentConfigPayload;
@@ -5920,8 +6019,27 @@ mod tests {
     /// instead of the nine individual watcher fields.
     #[tokio::test]
     async fn test_run_loop_context_manager_fields() {
+        let classification_cache = Arc::new(
+            crate::classification_cache::ClassificationCache::new_with_name(&format!(
+                "dlp-test-classification-cache-{}",
+                std::process::id()
+            ))
+            .expect("classification cache must construct in test"),
+        );
+        let ad_client: Arc<Option<dlp_common::AdClient>> = Arc::new(None);
+        let config_arc = Arc::new(parking_lot::Mutex::new(crate::config::AgentConfig {
+            ..Default::default()
+        }));
+
         let (tx, rx) = tokio::sync::mpsc::channel::<DaclManagerCommand>(4);
-        let handle = spawn_dacl_watcher_manager(DaclWatcherBundle::empty(), rx);
+        let handle = spawn_dacl_watcher_manager(
+            DaclWatcherBundle::empty(),
+            rx,
+            ad_client,
+            Arc::clone(&classification_cache),
+            None,
+            config_arc,
+        );
 
         let ctx = RunLoopContext {
             dacl_manager_tx: Some(tx),
@@ -5969,13 +6087,7 @@ mod tests {
             backstop_handle: None,
             retry_shutdown: None,
             retry_handle: None,
-            classification_cache: Arc::new(
-                crate::classification_cache::ClassificationCache::new_with_name(&format!(
-                    "dlp-test-classification-cache-{}",
-                    std::process::id()
-                ))
-                .expect("classification cache must construct in test"),
-            ),
+            classification_cache,
             cache_pusher_handle: None,
             etw_consumer: None,
             correlator_shutdown: None,
@@ -6006,6 +6118,148 @@ mod tests {
         if let Some(handle) = ctx.dacl_manager_handle {
             let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
         }
+    }
+
+    // --- Phase 58.7-03: DACL manager command handling ---
+
+    /// Test that the manager exits cleanly when it receives Shutdown.
+    #[tokio::test]
+    async fn test_dacl_manager_shutdown() {
+        let classification_cache = Arc::new(
+            crate::classification_cache::ClassificationCache::new_with_name(&format!(
+                "dlp-test-classification-cache-{}",
+                std::process::id()
+            ))
+            .expect("classification cache must construct in test"),
+        );
+        let ad_client: Arc<Option<dlp_common::AdClient>> = Arc::new(None);
+        let config_arc = Arc::new(parking_lot::Mutex::new(AgentConfig {
+            ..Default::default()
+        }));
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<DaclManagerCommand>(4);
+        let handle = spawn_dacl_watcher_manager(
+            DaclWatcherBundle::empty(),
+            rx,
+            ad_client,
+            classification_cache,
+            None,
+            config_arc,
+        );
+
+        tx.try_send(DaclManagerCommand::Shutdown)
+            .expect("Shutdown command must be accepted");
+
+        let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        assert!(result.is_ok(), "manager task must shut down within timeout");
+        assert!(
+            result.unwrap().is_ok(),
+            "manager task must exit without panic"
+        );
+    }
+
+    /// Test that the manager handles Reinit by rebuilding the watcher bundle and
+    /// remains responsive to a subsequent Shutdown.
+    #[tokio::test]
+    async fn test_dacl_manager_reinit() {
+        let classification_cache = Arc::new(
+            crate::classification_cache::ClassificationCache::new_with_name(&format!(
+                "dlp-test-classification-cache-{}",
+                std::process::id()
+            ))
+            .expect("classification cache must construct in test"),
+        );
+        let ad_client: Arc<Option<dlp_common::AdClient>> = Arc::new(None);
+        let config_arc = Arc::new(parking_lot::Mutex::new(AgentConfig {
+            protected_paths: vec![make_protected_path(r"C:\Data", "T3")],
+            ..Default::default()
+        }));
+        let correlator = Arc::new(BypassCorrelator::new(CorrelatorConfig::default()));
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<DaclManagerCommand>(4);
+        let handle = spawn_dacl_watcher_manager(
+            DaclWatcherBundle::empty(),
+            rx,
+            ad_client,
+            Arc::clone(&classification_cache),
+            Some(Arc::clone(&correlator)),
+            config_arc,
+        );
+
+        tx.try_send(DaclManagerCommand::Reinit)
+            .expect("Reinit command must be accepted");
+        tx.try_send(DaclManagerCommand::Shutdown)
+            .expect("Shutdown command must be accepted");
+
+        let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
+        assert!(
+            result.is_ok(),
+            "manager must process Reinit and Shutdown within timeout"
+        );
+        assert!(
+            result.unwrap().is_ok(),
+            "manager task must exit without panic"
+        );
+    }
+
+    /// Test that adding a protected path at runtime and sending Reinit updates
+    /// the bypass correlator's protected-path list without a service restart.
+    #[tokio::test]
+    async fn test_reinit_applies_added_protected_path() {
+        let classification_cache = Arc::new(
+            crate::classification_cache::ClassificationCache::new_with_name(&format!(
+                "dlp-test-classification-cache-{}",
+                std::process::id()
+            ))
+            .expect("classification cache must construct in test"),
+        );
+        let ad_client: Arc<Option<dlp_common::AdClient>> = Arc::new(None);
+        let config_arc = Arc::new(parking_lot::Mutex::new(AgentConfig {
+            protected_paths: vec![],
+            ..Default::default()
+        }));
+        let correlator = Arc::new(BypassCorrelator::new(CorrelatorConfig::default()));
+
+        let (tx, rx) = tokio::sync::mpsc::channel::<DaclManagerCommand>(4);
+        let handle = spawn_dacl_watcher_manager(
+            DaclWatcherBundle::empty(),
+            rx,
+            ad_client,
+            Arc::clone(&classification_cache),
+            Some(Arc::clone(&correlator)),
+            Arc::clone(&config_arc),
+        );
+
+        // Simulate a server-pushed addition to protected_paths.
+        {
+            let mut cfg = config_arc.lock();
+            cfg.protected_paths
+                .push(make_protected_path(r"C:\ReinitData", "T3"));
+        }
+
+        tx.try_send(DaclManagerCommand::Reinit)
+            .expect("Reinit command must be accepted");
+        tx.try_send(DaclManagerCommand::Shutdown)
+            .expect("Shutdown command must be accepted");
+
+        let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
+        assert!(
+            result.is_ok(),
+            "manager must process added-path Reinit and Shutdown"
+        );
+        assert!(
+            result.unwrap().is_ok(),
+            "manager task must exit without panic"
+        );
+
+        let sev = correlator.severity_for_alert(
+            dlp_common::hook_ipc::BypassReason::NoHookJournal,
+            r"C:\ReinitData\secret.docx",
+        );
+        assert_eq!(
+            sev, "crit",
+            "added protected path must be treated as protected after Reinit"
+        );
     }
 
     // --- Phase 58.7: bypass correlator and classification cache wiring ---
