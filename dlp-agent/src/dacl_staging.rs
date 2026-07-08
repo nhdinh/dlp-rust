@@ -53,9 +53,23 @@ pub enum DaclStagingError {
     /// State machine transition violation.
     #[error("state machine violation: {0}")]
     StateMachineViolation(String),
+    /// Invalid path string that cannot be normalized.
+    #[error("invalid path: {0}")]
+    InvalidPath(String),
     /// Mutex was poisoned.
     #[error("lock poisoned: {0}")]
     LockPoisoned(String),
+}
+
+/// Error type for invalid protected path strings.
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+pub enum NormalizeError {
+    /// The path is not absolute (does not start with a drive letter or UNC prefix).
+    #[error("path is not absolute")]
+    NotAbsolute,
+    /// The path contains a `..` traversal segment.
+    #[error("path contains traversal segment")]
+    Traversal,
 }
 
 /// Staging State Machine for Protected Path Removals
@@ -127,7 +141,57 @@ impl StagingRow {
     }
 }
 
-/// Initialize the `protected_paths_staging` table on the given connection.
+/// Canonicalize a protected path string for use as a staging key.
+///
+/// Normalizes the input by:
+/// - Replacing every forward slash (`/`) with a backslash (`\`).
+/// - Converting the entire string to uppercase.
+/// - Appending a trailing backslash if one is not already present.
+///
+/// Rejects relative paths and path traversal attempts so that server-pushed
+/// strings cannot escape the intended protection root.
+///
+/// # Arguments
+///
+/// * `path` — The raw path string received from the server or config.
+///
+/// # Returns
+///
+/// The canonicalized path string on success.
+///
+/// # Errors
+///
+/// Returns `NormalizeError::NotAbsolute` if the path does not start with a
+/// Windows drive letter (`X:`) or a UNC backslash sequence (`\\`).
+/// Returns `NormalizeError::Traversal` if any path segment equals `..`.
+pub fn normalize_protected_path(path: &str) -> Result<String, NormalizeError> {
+    if path.is_empty() {
+        return Err(NormalizeError::NotAbsolute);
+    }
+
+    // Reject traversal segments first: any path containing `..` is a traversal
+    // attempt regardless of whether it also looks absolute.
+    for segment in path.split(['\\', '/']) {
+        if segment == ".." {
+            return Err(NormalizeError::Traversal);
+        }
+    }
+
+    let bytes = path.as_bytes();
+    let is_drive_letter = bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic();
+    let is_unc = path.starts_with(r"\\");
+    if !is_drive_letter && !is_unc {
+        return Err(NormalizeError::NotAbsolute);
+    }
+
+    let mut normalized = path.replace('/', r"\");
+    normalized = normalized.to_ascii_uppercase();
+    if !normalized.ends_with('\\') {
+        normalized.push('\\');
+    }
+
+    Ok(normalized)
+}
 ///
 /// Creates the table with:
 /// - `path TEXT PRIMARY KEY`
@@ -184,10 +248,12 @@ impl DaclStaging {
     pub fn new(db_path: &Path) -> Result<Self, DaclStagingError> {
         let conn = Connection::open(db_path)?;
         init_staging_table(&conn)?;
-        Ok(Self {
+        let staging = Self {
             conn: std::sync::Mutex::new(conn),
             path_locks: DashMap::new(),
-        })
+        };
+        staging.migrate_staging_keys()?;
+        Ok(staging)
     }
 
     /// Create a `DaclStaging` from an existing in-memory or open connection.
@@ -242,14 +308,17 @@ impl DaclStaging {
     /// Returns `DaclStagingError::LockPoisoned` if the connection mutex is poisoned.
     /// Returns `DaclStagingError::Sqlite` on database errors.
     pub fn stage_removal(&self, path: &str) -> Result<(), DaclStagingError> {
-        self.with_path_lock(path, || {
+        let normalized = normalize_protected_path(path).map_err(|_| {
+            DaclStagingError::InvalidPath(format!("cannot stage removal for invalid path: {path}"))
+        })?;
+        self.with_path_lock(&normalized, || {
             let conn = self.conn.lock().map_err(|_| {
                 DaclStagingError::LockPoisoned("connection mutex poisoned".to_string())
             })?;
             conn.execute(
                 "INSERT OR REPLACE INTO protected_paths_staging (path, operation, staged_at, applied_at)
                  VALUES (?1, 'remove', ?2, NULL)",
-                [path, &Utc::now().to_rfc3339()],
+                [normalized.as_str(), &Utc::now().to_rfc3339()],
             )?;
             Ok(())
         })
@@ -271,14 +340,17 @@ impl DaclStaging {
     /// Returns `DaclStagingError::LockPoisoned` if the connection mutex is poisoned.
     /// Returns `DaclStagingError::Sqlite` on database errors.
     pub fn stage_add(&self, path: &str) -> Result<(), DaclStagingError> {
-        self.with_path_lock(path, || {
+        let normalized = normalize_protected_path(path).map_err(|_| {
+            DaclStagingError::InvalidPath(format!("cannot stage add for invalid path: {path}"))
+        })?;
+        self.with_path_lock(&normalized, || {
             let conn = self.conn.lock().map_err(|_| {
                 DaclStagingError::LockPoisoned("connection mutex poisoned".to_string())
             })?;
             conn.execute(
                 "INSERT OR REPLACE INTO protected_paths_staging (path, operation, staged_at, applied_at)
                  VALUES (?1, 'add', ?2, NULL)",
-                [path, &Utc::now().to_rfc3339()],
+                [normalized.as_str(), &Utc::now().to_rfc3339()],
             )?;
             Ok(())
         })
@@ -298,13 +370,16 @@ impl DaclStaging {
     /// Returns `DaclStagingError::LockPoisoned` if the connection mutex is poisoned.
     /// Returns `DaclStagingError::Sqlite` on database errors.
     pub fn mark_applied(&self, path: &str) -> Result<(), DaclStagingError> {
-        self.with_path_lock(path, || {
+        let normalized = normalize_protected_path(path).map_err(|_| {
+            DaclStagingError::InvalidPath(format!("cannot mark applied for invalid path: {path}"))
+        })?;
+        self.with_path_lock(&normalized, || {
             let conn = self.conn.lock().map_err(|_| {
                 DaclStagingError::LockPoisoned("connection mutex poisoned".to_string())
             })?;
             conn.execute(
                 "UPDATE protected_paths_staging SET applied_at = ?1 WHERE path = ?2",
-                [&Utc::now().to_rfc3339(), path],
+                [&Utc::now().to_rfc3339(), normalized.as_str()],
             )?;
             Ok(())
         })
@@ -325,13 +400,16 @@ impl DaclStaging {
     /// Returns `DaclStagingError::LockPoisoned` if the connection mutex is poisoned.
     /// Returns `DaclStagingError::Sqlite` on database errors.
     pub fn is_staged(&self, path: &str) -> Result<bool, DaclStagingError> {
+        let normalized = normalize_protected_path(path).map_err(|_| {
+            DaclStagingError::InvalidPath(format!("cannot query staged state for invalid path: {path}"))
+        })?;
         let conn = self
             .conn
             .lock()
             .map_err(|_| DaclStagingError::LockPoisoned("connection mutex poisoned".to_string()))?;
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM protected_paths_staging WHERE path = ?1",
-            [path],
+            [normalized.as_str()],
             |row| row.get(0),
         )?;
         Ok(count > 0)
@@ -350,13 +428,16 @@ impl DaclStaging {
     /// Returns `DaclStagingError::LockPoisoned` if the connection mutex is poisoned.
     /// Returns `DaclStagingError::Sqlite` on database errors.
     pub fn is_staged_and_applied(&self, path: &str) -> Result<bool, DaclStagingError> {
+        let normalized = normalize_protected_path(path).map_err(|_| {
+            DaclStagingError::InvalidPath(format!("cannot query applied state for invalid path: {path}"))
+        })?;
         let conn = self
             .conn
             .lock()
             .map_err(|_| DaclStagingError::LockPoisoned("connection mutex poisoned".to_string()))?;
         let count: i64 = conn.query_row(
             "SELECT COUNT(*) FROM protected_paths_staging WHERE path = ?1 AND applied_at IS NOT NULL",
-            [path],
+            [normalized.as_str()],
             |row| row.get(0),
         )?;
         Ok(count > 0)
@@ -375,7 +456,10 @@ impl DaclStaging {
     /// Returns `DaclStagingError::LockPoisoned` if the connection mutex is poisoned.
     /// Returns `DaclStagingError::Sqlite` on database errors.
     pub fn get_state(&self, path: &str) -> Result<Option<StagingState>, DaclStagingError> {
-        match self.get_row(path)? {
+        let normalized = normalize_protected_path(path).map_err(|_| {
+            DaclStagingError::InvalidPath(format!("cannot query state for invalid path: {path}"))
+        })?;
+        match self.get_row(&normalized)? {
             Some(row) => Ok(Some(row.state)),
             None => Ok(None),
         }
@@ -395,6 +479,9 @@ impl DaclStaging {
     /// Returns `DaclStagingError::Sqlite` on database errors.
     /// Returns `DaclStagingError::InvalidOperation` if the operation column is invalid.
     pub fn get_row(&self, path: &str) -> Result<Option<StagingRow>, DaclStagingError> {
+        let normalized = normalize_protected_path(path).map_err(|_| {
+            DaclStagingError::InvalidPath(format!("cannot query row for invalid path: {path}"))
+        })?;
         let conn = self
             .conn
             .lock()
@@ -402,7 +489,7 @@ impl DaclStaging {
         let mut stmt = conn.prepare(
             "SELECT path, operation, staged_at, applied_at FROM protected_paths_staging WHERE path = ?1",
         )?;
-        let row = stmt.query_row([path], Self::row_to_staging_row);
+        let row = stmt.query_row([normalized.as_str()], Self::row_to_staging_row);
         match row {
             Ok(r) => Ok(Some(r)),
             Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -461,6 +548,73 @@ impl DaclStaging {
             [ttl_minutes],
         )?;
         Ok(rows_affected)
+    }
+
+    /// Migrate existing staging rows from raw path keys to canonical keys.
+    ///
+    /// On startup, any row keyed by a non-canonical string (e.g., different case
+    /// or missing trailing backslash) is re-keyed so that in-flight removals are
+    /// not orphaned after an agent upgrade that introduces normalization.
+    ///
+    /// Rows whose canonical key already exists are removed as duplicates.
+    ///
+    /// # Returns
+    ///
+    /// The number of rows re-keyed.
+    ///
+    /// # Errors
+    ///
+    /// Returns `DaclStagingError::LockPoisoned` if the connection mutex is poisoned.
+    /// Returns `DaclStagingError::Sqlite` on database errors.
+    pub fn migrate_staging_keys(&self) -> Result<usize, DaclStagingError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| DaclStagingError::LockPoisoned("connection mutex poisoned".to_string()))?;
+        let mut stmt = conn.prepare("SELECT DISTINCT path FROM protected_paths_staging")?;
+        let raw_paths: Vec<String> = stmt
+            .query_map([], |row| row.get::<_, String>(0))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(DaclStagingError::Sqlite)?;
+        drop(stmt);
+
+        let mut migrated = 0;
+        for raw in raw_paths {
+            let canonical = match normalize_protected_path(&raw) {
+                Ok(p) => p,
+                Err(e) => {
+                    warn!(path = %raw, error = ?e, "skipping staging key migration for invalid path");
+                    continue;
+                }
+            };
+            if canonical == raw {
+                continue;
+            }
+
+            let exists: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM protected_paths_staging WHERE path = ?1",
+                [&canonical,
+                ],
+                |row| row.get(0),
+            )?;
+
+            if exists > 0 {
+                conn.execute(
+                    "DELETE FROM protected_paths_staging WHERE path = ?1",
+                    [&raw,
+                    ],
+                )?;
+            } else {
+                conn.execute(
+                    "UPDATE protected_paths_staging SET path = ?1 WHERE path = ?2",
+                    [&canonical, &raw,
+                    ],
+                )?;
+            }
+            migrated += 1;
+        }
+
+        Ok(migrated)
     }
 
     /// Convert a SQLite row to a `StagingRow`.
@@ -536,10 +690,17 @@ pub fn stage_removals(
     let mut count = 0;
     let now = Utc::now().to_rfc3339();
     for path in paths {
+        let normalized = match normalize_protected_path(path) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(path = %path, error = ?e, "skipping invalid protected path removal staging");
+                continue;
+            }
+        };
         conn.execute(
             "INSERT OR REPLACE INTO protected_paths_staging (path, operation, staged_at, applied_at)
              VALUES (?1, 'remove', ?2, NULL)",
-            [path.as_str(), &now],
+            [normalized.as_str(), &now],
         )?;
         count += 1;
     }
@@ -691,7 +852,7 @@ mod tests {
             "INSERT INTO protected_paths_staging (path, operation, staged_at, applied_at)
              VALUES (?1, 'remove', ?2, ?3)",
             [
-                r"C:\test\expired.txt",
+                r"C:\TEST\EXPIRED.TXT\",
                 &six_min_ago.to_rfc3339(),
                 &six_min_ago.to_rfc3339(),
             ],
@@ -701,7 +862,7 @@ mod tests {
 
         let deleted = staging.gc_expired_rows(5).unwrap();
         assert_eq!(deleted, 1);
-        assert!(!staging.is_staged(r"C:\test\expired.txt").unwrap());
+        assert!(!staging.is_staged(r"C:\TEST\EXPIRED.TXT\").unwrap());
     }
 
     // --- Test 5: GC preserves unapplied rows ---
@@ -716,14 +877,14 @@ mod tests {
         conn.execute(
             "INSERT INTO protected_paths_staging (path, operation, staged_at, applied_at)
              VALUES (?1, 'remove', ?2, NULL)",
-            [r"C:\test\unapplied.txt", &ten_min_ago.to_rfc3339()],
+            [r"C:\TEST\UNAPPLIED.TXT\", &ten_min_ago.to_rfc3339()],
         )
         .unwrap();
         drop(conn);
 
         let deleted = staging.gc_expired_rows(5).unwrap();
         assert_eq!(deleted, 0);
-        assert!(staging.is_staged(r"C:\test\unapplied.txt").unwrap());
+        assert!(staging.is_staged(r"C:\TEST\UNAPPLIED.TXT\").unwrap());
     }
 
     // --- Test 6: GC preserves recent applied rows ---
@@ -739,7 +900,7 @@ mod tests {
             "INSERT INTO protected_paths_staging (path, operation, staged_at, applied_at)
              VALUES (?1, 'remove', ?2, ?3)",
             [
-                r"C:\test\recent.txt",
+                r"C:\TEST\RECENT.TXT\",
                 &two_min_ago.to_rfc3339(),
                 &two_min_ago.to_rfc3339(),
             ],
@@ -749,7 +910,7 @@ mod tests {
 
         let deleted = staging.gc_expired_rows(5).unwrap();
         assert_eq!(deleted, 0);
-        assert!(staging.is_staged(r"C:\test\recent.txt").unwrap());
+        assert!(staging.is_staged(r"C:\TEST\RECENT.TXT\").unwrap());
     }
 
     // --- Test 7: Staging add operation ---
@@ -787,11 +948,12 @@ mod tests {
     fn test_staging_row_roundtrip() {
         let staging = in_memory_staging();
         let path = r"C:\test\roundtrip.txt";
+        let expected = r"C:\TEST\ROUNDTRIP.TXT\";
 
         staging.stage_removal(path).unwrap();
         let row = staging.get_row(path).unwrap().unwrap();
 
-        assert_eq!(row.path, path);
+        assert_eq!(row.path, expected);
         assert_eq!(row.operation, "remove");
         assert!(row.applied_at.is_none());
         assert_eq!(row.state, StagingState::AclRemoved);
@@ -845,9 +1007,9 @@ mod tests {
     fn test_list_all() {
         let staging = in_memory_staging();
         let paths = vec![
-            r"C:\test\list1.txt",
-            r"C:\test\list2.txt",
-            r"C:\test\list3.txt",
+            r"C:\TEST\LIST1.TXT\",
+            r"C:\TEST\LIST2.TXT\",
+            r"C:\TEST\LIST3.TXT\",
         ];
 
         for p in &paths {
@@ -911,5 +1073,112 @@ mod tests {
         let row2 = staging.get_row(path).unwrap().unwrap();
         assert_eq!(row2.operation, "remove");
         assert_eq!(row2.state, StagingState::AclRemoved);
+    }
+
+    // --- Test 16-23: normalized protected path keys ---
+
+    #[test]
+    fn test_normalize_protected_path_uppercases_and_adds_trailing_slash() {
+        assert_eq!(normalize_protected_path(r"C:\Data").unwrap(), r"C:\DATA\");
+    }
+
+    #[test]
+    fn test_normalize_protected_path_converts_forward_slashes() {
+        assert_eq!(normalize_protected_path("c:/data/").unwrap(), r"C:\DATA\");
+    }
+
+    #[test]
+    fn test_normalize_protected_path_rejects_traversal() {
+        assert_eq!(
+            normalize_protected_path(r"..\Secret").unwrap_err(),
+            NormalizeError::Traversal
+        );
+    }
+
+    #[test]
+    fn test_normalize_protected_path_rejects_relative() {
+        assert_eq!(
+            normalize_protected_path(r"relative\path").unwrap_err(),
+            NormalizeError::NotAbsolute
+        );
+    }
+
+    #[test]
+    fn test_stage_removal_stores_normalized_key() {
+        let staging = in_memory_staging();
+        staging.stage_removal(r"C:\Data").unwrap();
+        assert!(staging.is_staged(r"C:\DATA\").unwrap());
+        assert!(staging.is_staged(r"C:\Data\").unwrap());
+        assert!(staging.is_staged("c:/data/").unwrap());
+    }
+
+    #[test]
+    fn test_batch_stage_removals_normalizes_keys() {
+        let conn = Connection::open_in_memory().expect("open in-memory db");
+        init_staging_table(&conn).expect("init table");
+        let db = std::sync::Mutex::new(conn);
+
+        let paths = vec![r"C:\test\batch1.txt".to_string()];
+        let count = stage_removals(&db, &paths).unwrap();
+        assert_eq!(count, 1);
+
+        let conn = db.lock().unwrap();
+        let stored: String = conn
+            .query_row(
+                "SELECT path FROM protected_paths_staging LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, r"C:\TEST\BATCH1.TXT\");
+    }
+
+    #[test]
+    fn test_migrate_staging_keys_rekeys_raw_row() {
+        let staging = in_memory_staging();
+
+        // Insert a raw-key row directly to simulate an existing pre-normalization row.
+        let raw_path = r"C:\Data";
+        let applied_at = Utc::now();
+        {
+            let conn = staging.conn.lock().unwrap();
+            conn.execute(
+                "INSERT INTO protected_paths_staging (path, operation, staged_at, applied_at)
+                 VALUES (?1, 'remove', ?2, ?3)",
+                [raw_path, &applied_at.to_rfc3339(), &applied_at.to_rfc3339()],
+            )
+            .unwrap();
+        }
+
+        let count = staging.migrate_staging_keys().unwrap();
+        assert_eq!(count, 1);
+
+        // The raw key must no longer exist as a distinct row.
+        let raw_count: i64 = {
+            let conn = staging.conn.lock().unwrap();
+            conn.query_row(
+                "SELECT COUNT(*) FROM protected_paths_staging WHERE path = ?1",
+                [raw_path],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert_eq!(raw_count, 0);
+
+        assert!(staging.is_staged(r"C:\DATA\").unwrap());
+
+        let row = staging.get_row(r"C:\DATA\").unwrap().unwrap();
+        assert_eq!(row.applied_at, Some(applied_at));
+    }
+
+    #[test]
+    fn test_migrate_staging_keys_keeps_already_canonical_rows() {
+        let staging = in_memory_staging();
+        staging.stage_removal(r"C:\Data\").unwrap();
+
+        let count = staging.migrate_staging_keys().unwrap();
+        assert_eq!(count, 0);
+
+        assert!(staging.is_staged(r"C:\DATA\").unwrap());
     }
 }

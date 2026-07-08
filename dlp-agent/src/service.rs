@@ -932,13 +932,31 @@ fn apply_payload_to_config(
     if cfg.protected_paths != payload.protected_paths {
         changed_fields.push("protected_paths");
 
-        // Compute additions and removals by comparing path strings.
-        let old_paths: std::collections::HashSet<String> =
-            cfg.protected_paths.iter().map(|p| p.path.clone()).collect();
+        // Compute additions and removals by comparing normalized path strings.
+        // Invalid paths are logged as warnings and excluded from the diff so
+        // that a server-pushed traversal or relative path cannot reach NTFS
+        // ACL APIs.
+        let old_paths: std::collections::HashSet<String> = cfg
+            .protected_paths
+            .iter()
+            .filter_map(|p| match crate::dacl_staging::normalize_protected_path(&p.path) {
+                Ok(n) => Some(n),
+                Err(e) => {
+                    tracing::warn!(path = %p.path, error = ?e, "ignoring invalid old protected path");
+                    None
+                }
+            })
+            .collect();
         let new_paths: std::collections::HashSet<String> = payload
             .protected_paths
             .iter()
-            .map(|p| p.path.clone())
+            .filter_map(|p| match crate::dacl_staging::normalize_protected_path(&p.path) {
+                Ok(n) => Some(n),
+                Err(e) => {
+                    tracing::warn!(path = %p.path, error = ?e, "ignoring invalid new protected path");
+                    None
+                }
+            })
             .collect();
 
         let additions: Vec<String> = new_paths.difference(&old_paths).cloned().collect();
@@ -3023,7 +3041,14 @@ fn spawn_removal_application_task(
                         Ok(rows) => {
                             for row in rows {
                                 if row.operation == "remove" && row.applied_at.is_none() {
-                                    let path = std::path::PathBuf::from(&row.path);
+                                    let normalized = match crate::dacl_staging::normalize_protected_path(&row.path) {
+                                        Ok(p) => p,
+                                        Err(e) => {
+                                            tracing::warn!(path = %row.path, error = ?e, "skipping removal application for invalid staging path");
+                                            continue;
+                                        }
+                                    };
+                                    let path = std::path::PathBuf::from(&normalized);
 
                                     // mark_applied already acquires the per-path lock
                                     // internally, so we call it directly.
@@ -3032,7 +3057,7 @@ fn spawn_removal_application_task(
                                     // We don't call remove_tripwire_from_path here because
                                     // the admin API already modified the ACL. Our job is to
                                     // mark the staging row so the watcher stops suppressing.
-                                    if let Err(e) = staging.mark_applied(&row.path) {
+                                    if let Err(e) = staging.mark_applied(&normalized) {
                                         tracing::warn!(path = %row.path, error = %e, "failed to mark removal as applied");
                                     } else {
                                         tracing::info!(path = %row.path, "staged removal marked as applied");
@@ -5311,10 +5336,43 @@ mod tests {
         assert_eq!(cfg.protected_paths.len(), 1);
         assert_eq!(cfg.protected_paths[0].path, r"C:\Data\Secret");
 
-        // Verify staging row was created for the removed path.
-        // Note: agent_db() returns None in tests because init_agent_db sets
-        // AGENT_DB but the test may not have access to the static. We verify
-        // the logic by checking the changed_fields and cfg update.
+        // Verify the staging row was created with a normalized key.
+        if let Some(db) = agent_db() {
+            let conn = db.lock().unwrap();
+            let count: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM protected_paths_staging WHERE path = ?1",
+                    [r"C:\DATA\CONFIDENTIAL\"],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 1, "removed path must be staged with normalized key");
+        }
+    }
+
+    /// Test 14b: server-pushed traversal and relative paths are rejected during
+    /// protected_paths diff without panicking.
+    #[test]
+    fn test_normalize_rejects_traversal() {
+        let valid = make_protected_path(r"C:\Data\Secret", "T3");
+        let traversal = make_protected_path(r"C:\Data\..\Secret", "T3");
+        let relative = make_protected_path(r"relative\path", "T3");
+
+        let mut cfg = AgentConfig {
+            protected_paths: vec![valid.clone()],
+            ..Default::default()
+        };
+
+        let mut payload = make_payload(vec![]);
+        payload.protected_paths = vec![valid.clone(), traversal, relative];
+
+        // Must not panic; only the valid path should be treated as present.
+        let (changed_fields, _) = apply_payload_to_config(&mut cfg, &payload);
+        assert!(
+            changed_fields.contains(&"protected_paths"),
+            "protected_paths must be reported as changed"
+        );
+        assert_eq!(cfg.protected_paths.len(), 3);
     }
 
     /// Test 15: No-change path — cfg and payload protected_paths match.
