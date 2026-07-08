@@ -2775,8 +2775,7 @@ type DaclWatcherInitResult = (
 
 /// Initialises the DACL repair watcher for protected path ACL tamper detection.
 ///
-/// For each path in `agent_config.monitored_paths` (temporary until dedicated
-/// `protected_paths` field is added in Plan 04):
+/// For each path in `agent_config.protected_paths`:
 /// 1. Calls `apply_tripwire_recursive()` to establish the canonical ACL.
 /// 2. Registers a `ReadDirectoryChangesW` watcher with the returned snapshot.
 /// 3. Starts the debounced repair task and the 60-second polling backstop.
@@ -2787,13 +2786,13 @@ type DaclWatcherInitResult = (
 /// The DLP-Admin SID is resolved from the AD client if available.
 ///
 /// Returns `(watcher, shutdown_tx, repair_handle, poll_handle, staging, gc_handle, removal_handle)`
-/// where all are `None` when no monitored paths are configured or the watcher is disabled.
+/// where all are `None` when no protected paths are configured or the watcher is disabled.
 async fn init_dacl_watcher(
     agent_config: &crate::config::AgentConfig,
     ad_client: Option<&dlp_common::AdClient>,
 ) -> DaclWatcherInitResult {
-    if agent_config.monitored_paths.is_empty() {
-        info!("no monitored paths configured — skipping DaclWatcher");
+    if agent_config.protected_paths.is_empty() {
+        info!("no protected paths configured — skipping DaclWatcher");
         return (None, None, None, None, None, None, None, None, None);
     }
 
@@ -2825,12 +2824,26 @@ async fn init_dacl_watcher(
     let global_mode = agent_config.enforcement.global_mode;
     let should_apply = crate::dacl_tripwire::should_apply_tripwire_for_global_mode(global_mode);
 
+    // Normalize the server-pushed protected paths once, filtering out invalid
+    // paths so traversal or relative strings never reach SetFileSecurityW.
+    let protected_paths: Vec<String> = agent_config
+        .protected_paths
+        .iter()
+        .filter_map(|p| match crate::dacl_staging::normalize_protected_path(&p.path) {
+            Ok(n) => Some(n),
+            Err(e) => {
+                warn!(path = %p.path, error = ?e, "ignoring invalid protected path for DACL watcher");
+                None
+            }
+        })
+        .collect();
+
     if should_apply {
         // Block / PerPolicy / AuditAndBlock: apply tripwire to all protected paths.
-        for path_str in &agent_config.monitored_paths {
+        for path_str in &protected_paths {
             let path = std::path::PathBuf::from(path_str);
             if !path.exists() {
-                warn!(path = %path.display(), "monitored path does not exist — skipping");
+                warn!(path = %path.display(), "protected path does not exist — skipping");
                 continue;
             }
 
@@ -2869,7 +2882,7 @@ async fn init_dacl_watcher(
             global_mode = ?global_mode,
             "global mode is Audit — removing all tripwire Deny ACEs"
         );
-        for path_str in &agent_config.monitored_paths {
+        for path_str in &protected_paths {
             let path = std::path::PathBuf::from(path_str);
             if !path.exists() {
                 continue;
@@ -2942,7 +2955,8 @@ async fn init_dacl_watcher_without_staging(
     agent_config: &crate::config::AgentConfig,
     ad_client: Option<&dlp_common::AdClient>,
 ) -> DaclWatcherInitResult {
-    if agent_config.monitored_paths.is_empty() {
+    if agent_config.protected_paths.is_empty() {
+        info!("no protected paths configured — skipping DaclWatcher without staging");
         return (None, None, None, None, None, None, None, None, None);
     }
 
@@ -2956,8 +2970,21 @@ async fn init_dacl_watcher_without_staging(
     let global_mode = agent_config.enforcement.global_mode;
     let should_apply = crate::dacl_tripwire::should_apply_tripwire_for_global_mode(global_mode);
 
+    // Normalize the server-pushed protected paths, filtering invalid entries.
+    let protected_paths: Vec<String> = agent_config
+        .protected_paths
+        .iter()
+        .filter_map(|p| match crate::dacl_staging::normalize_protected_path(&p.path) {
+            Ok(n) => Some(n),
+            Err(e) => {
+                warn!(path = %p.path, error = ?e, "ignoring invalid protected path for DACL watcher");
+                None
+            }
+        })
+        .collect();
+
     if should_apply {
-        for path_str in &agent_config.monitored_paths {
+        for path_str in &protected_paths {
             let path = std::path::PathBuf::from(path_str);
             if !path.exists() {
                 continue;
@@ -2972,7 +2999,7 @@ async fn init_dacl_watcher_without_staging(
         }
     } else {
         // Audit mode: register watcher with no-deny snapshots.
-        for path_str in &agent_config.monitored_paths {
+        for path_str in &protected_paths {
             let path = std::path::PathBuf::from(path_str);
             if !path.exists() {
                 continue;
@@ -5571,6 +5598,61 @@ mod tests {
             block_config.enforcement_mode,
             dlp_common::abac::EnforcementMode::Block,
             "Block mode must propagate to CorrelatorConfig"
+        );
+    }
+
+    // --- Phase 58.7: DACL watcher reads from protected_paths ---
+
+    /// Test that `init_dacl_watcher` returns early when `protected_paths` is empty,
+    /// even if `monitored_paths` is non-empty.
+    #[tokio::test]
+    async fn test_dacl_watcher_uses_protected_paths_empty_guard() {
+        let cfg = AgentConfig {
+            monitored_paths: vec![r"C:\Monitored".to_string()],
+            ..Default::default()
+        };
+
+        let result = init_dacl_watcher(&cfg, None).await;
+        assert!(
+            result.0.is_none(),
+            "watcher must be None when protected_paths is empty"
+        );
+    }
+
+    /// Test that `init_dacl_watcher` initialises the watcher subsystem from
+    /// `protected_paths`, not `monitored_paths`.
+    #[tokio::test]
+    async fn test_dacl_watcher_uses_protected_paths() {
+        let cfg = AgentConfig {
+            monitored_paths: vec![r"C:\Monitored".to_string()],
+            protected_paths: vec![make_protected_path(r"C:\Protected", "T3")],
+            ..Default::default()
+        };
+
+        let result = init_dacl_watcher(&cfg, None).await;
+        assert!(
+            result.0.is_some(),
+            "watcher must be created from protected_paths"
+        );
+    }
+
+    /// Test that a protected path containing `..` is filtered out before the
+    /// watcher reaches NTFS ACL APIs.
+    #[tokio::test]
+    async fn test_dacl_watcher_rejects_traversal() {
+        let cfg = AgentConfig {
+            protected_paths: vec![
+                make_protected_path(r"C:\Data\..\Secret", "T3"),
+                make_protected_path(r"C:\Valid", "T3"),
+            ],
+            ..Default::default()
+        };
+
+        // Must not panic; the valid path keeps the watcher subsystem alive.
+        let result = init_dacl_watcher(&cfg, None).await;
+        assert!(
+            result.0.is_some(),
+            "watcher must be created when at least one valid protected path exists"
         );
     }
 }
