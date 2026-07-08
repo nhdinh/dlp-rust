@@ -8,6 +8,14 @@
 //! - Emits `BypassAlert` when no matching journal entry is found.
 //! - Batches alerts (max 100) with UUID batch_id and flushes every 5 seconds.
 //!
+//! ## Concurrency choice for `protected_paths`
+//!
+//! `protected_paths` is written only on policy sync (rare) and read on every
+//! ETW file event (hot path). The implementation uses
+//! `parking_lot::RwLock<Vec<String>>` rather than `arc-swap` to avoid adding a
+//! new dependency. If future profiling shows reader contention, migrate to
+//! `arc-swap::ArcSwapAny`.
+//!
 //! ## Threat Mitigations
 //!
 //! - **T-53-13 (DoS)**: Allowlist pre-filter reduces correlation load; batching
@@ -340,7 +348,11 @@ pub struct BypassCorrelator {
     /// Pending alert batch (protected by Mutex for async flush).
     alert_batch: Arc<Mutex<Vec<PendingAlert>>>,
     /// Protected paths from config (for severity mapping).
-    protected_paths: Vec<String>,
+    ///
+    /// Stored under a `parking_lot::RwLock` so the list can be replaced at
+    /// runtime when the server pushes a new `protected_paths` configuration
+    /// without restarting the correlator task.
+    protected_paths: parking_lot::RwLock<Vec<String>>,
     /// Agent ID for alert attribution.
     agent_id: String,
 }
@@ -375,15 +387,32 @@ impl BypassCorrelator {
             qpc_freq,
             qpc_delta,
             alert_batch: Arc::new(Mutex::new(Vec::with_capacity(DEFAULT_BATCH_SIZE))),
-            protected_paths: Vec::new(),
+            protected_paths: parking_lot::RwLock::new(Vec::new()),
             agent_id,
         }
     }
 
     /// Sets the protected paths for severity mapping.
-    pub fn with_protected_paths(mut self, paths: Vec<String>) -> Self {
-        self.protected_paths = paths;
+    pub fn with_protected_paths(self, paths: Vec<String>) -> Self {
+        *self.protected_paths.write() = paths;
         self
+    }
+
+    /// Replace the protected-path list used for bypass alert severity mapping.
+    ///
+    /// # Arguments
+    ///
+    /// * `paths` - New list of protected path strings.
+    ///
+    /// # Behavior
+    ///
+    /// This method is called by the DACL watcher manager after a runtime reinit
+    /// so the correlator's severity mapping stays in sync with the server-pushed
+    /// `protected_paths` configuration without restarting the correlator task.
+    /// The replacement takes a write lock briefly; concurrent readers continue
+    /// to observe a consistent snapshot.
+    pub fn set_protected_paths(&self, paths: Vec<String>) {
+        *self.protected_paths.write() = paths;
     }
 
     /// Release per-PID resources held by the correlator.
@@ -544,6 +573,7 @@ impl BypassCorrelator {
     fn is_protected_path(&self, file_path: &str) -> bool {
         let upper = file_path.to_ascii_uppercase();
         self.protected_paths
+            .read()
             .iter()
             .any(|p| upper.starts_with(&p.to_ascii_uppercase()))
     }
@@ -1047,14 +1077,14 @@ impl BypassCorrelator {
     /// 5. Lifecycle exit handler (releases per-PID resources when a process
     ///    exits or unhooks)
     pub async fn run(
-        self,
+        self: Arc<Self>,
         etw_rx: Receiver<EtwFileEvent>,
         process_rx: Receiver<ProcessEvent>,
         bypass_rx: Receiver<BypassAlert>,
         server_client: ServerClient,
         lifecycle_rx: Receiver<ProcessKey>,
     ) {
-        let correlator = Arc::new(self);
+        let correlator = self;
 
         // Task 1: Process event handler.
         let proc_corr = Arc::clone(&correlator);
@@ -2068,6 +2098,106 @@ mod tests {
             batch.len(),
             1,
             "bypass alert must be emitted in PerPolicy mode (default production config)"
+        );
+    }
+
+    // --- Phase 58.7-03: dynamic protected_paths update ---
+
+    /// Verify that `set_protected_paths` changes the severity mapping for a
+    /// path without restarting the correlator task.
+    #[test]
+    fn test_set_protected_paths_updates_severity() {
+        let config = CorrelatorConfig::default();
+        let correlator = BypassCorrelator::new(config);
+
+        // Before update: a path under C:\\Data is non-protected.
+        let sev_before =
+            correlator.severity_for_alert(BypassReason::NoHookJournal, r"C:\\Data\\secret.docx");
+        assert_eq!(sev_before, "warn");
+
+        // Update the protected-path list at runtime.
+        correlator.set_protected_paths(vec![r"C:\\Data".to_string()]);
+
+        // After update: the same event is now on a protected path.
+        let sev_after =
+            correlator.severity_for_alert(BypassReason::NoHookJournal, r"C:\\Data\\secret.docx");
+        assert_eq!(sev_after, "crit");
+    }
+
+    /// Micro-benchmark for `is_protected_path` read latency under concurrent
+    /// readers. The acceptance criterion is p99 below 10 microseconds on the
+    /// test Windows host.
+    ///
+    /// Marked `#[ignore]` because it is timing-sensitive and may be noisy on
+    /// CI runners. Run locally with:
+    /// `cargo test -p dlp-agent --lib bypass_correlator::tests::test_is_protected_path_concurrent_latency -- --ignored --test-threads=1`
+    #[test]
+    #[ignore]
+    fn test_is_protected_path_concurrent_latency() {
+        use std::sync::Barrier;
+        use std::thread;
+
+        let config = CorrelatorConfig::default();
+        let correlator = Arc::new(BypassCorrelator::new(config).with_protected_paths(vec![
+            r"C:\\Data".to_string(),
+            r"C:\\Secret".to_string(),
+            r"D:\\Share".to_string(),
+        ]));
+
+        const ITERATIONS: usize = 10_000;
+        const READERS: usize = 8;
+
+        let barrier = Arc::new(Barrier::new(READERS));
+        let mut handles = Vec::with_capacity(READERS);
+        let latencies = Arc::new(parking_lot::Mutex::new(Vec::with_capacity(
+            ITERATIONS * READERS,
+        )));
+
+        for _ in 0..READERS {
+            let corr = Arc::clone(&correlator);
+            let bar = Arc::clone(&barrier);
+            let lats = Arc::clone(&latencies);
+            handles.push(thread::spawn(move || {
+                let test_paths = [
+                    r"C:\\Data\\file.txt",
+                    r"C:\\Secret\\doc.docx",
+                    r"D:\\Share\\image.png",
+                    r"C:\\Temp\\other.txt",
+                ];
+                let mut local_lats = Vec::with_capacity(ITERATIONS);
+
+                // Wait for all readers to be ready so they contend simultaneously.
+                bar.wait();
+
+                for i in 0..ITERATIONS {
+                    let path = test_paths[i % test_paths.len()];
+                    let start = Instant::now();
+                    let _ = corr.severity_for_alert(BypassReason::NoHookJournal, path);
+                    local_lats.push(start.elapsed());
+                }
+
+                lats.lock().extend(local_lats);
+            }));
+        }
+
+        for h in handles {
+            h.join().expect("reader thread must not panic");
+        }
+
+        let mut lats = latencies.lock();
+        assert!(!lats.is_empty(), "latency samples must not be empty");
+        lats.sort();
+
+        let p99_index = (lats.len() * 99) / 100;
+        let p99 = lats[p99_index.saturating_sub(1)];
+        let p99_us = p99.as_nanos() as f64 / 1_000.0;
+
+        // Best-effort acceptance: p99 below 10 microseconds on the Windows test host.
+        // The assertion is informational rather than blocking because thread
+        // scheduling and test machine load can affect results.
+        assert!(
+            p99_us < 10.0,
+            "p99 is_protected_path latency {p99_us:.2} us exceeds 10 us acceptance criterion"
         );
     }
 }
