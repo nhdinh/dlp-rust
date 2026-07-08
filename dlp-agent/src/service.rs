@@ -1073,6 +1073,28 @@ pub enum ConfigCommand {
     RefreshNow,
 }
 
+/// Signals the DACL watcher manager to reinitialise when `protected_paths` changed.
+///
+/// Extracted from [`config_poll_loop`] so the signalling logic can be unit tested
+/// without constructing a real [`crate::server_client::ServerClient`].
+fn signal_dacl_reinit_if_needed(
+    changed_fields: &[&str],
+    dacl_manager_tx: &Option<tokio::sync::mpsc::Sender<DaclManagerCommand>>,
+) {
+    if changed_fields.contains(&"protected_paths") {
+        if let Some(ref tx) = dacl_manager_tx {
+            if let Err(e) = tx.try_send(DaclManagerCommand::Reinit) {
+                warn!(
+                    error = %e,
+                    "failed to signal DACL watcher reinit from config poll"
+                );
+            } else {
+                info!("signalled DACL watcher reinit from config poll");
+            }
+        }
+    }
+}
+
 /// Periodically polls the server for updated agent config.
 ///
 /// Runs on a separate timer independent of heartbeat. On each tick:
@@ -1094,6 +1116,7 @@ async fn config_poll_loop(
     config: Arc<parking_lot::Mutex<crate::config::AgentConfig>>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     mut cmd_rx: tokio::sync::mpsc::Receiver<ConfigCommand>,
+    dacl_manager_tx: Option<tokio::sync::mpsc::Sender<DaclManagerCommand>>,
 ) {
     // Perform an immediate first fetch so the agent reflects server-pushed
     // config as soon as possible after startup. This also ensures that tests
@@ -1132,6 +1155,11 @@ async fn config_poll_loop(
                     }
 
                     if !changed_fields.is_empty() {
+                        // Phase 58.7-02: signal the DACL watcher manager to reinitialise
+                        // when the server pushes a new protected_paths list.
+                        signal_dacl_reinit_if_needed(&changed_fields,
+                            &dacl_manager_tx);
+
                         // Log field names only — never log path values (T-06-09 info disclosure).
                         info!(
                             fields = ?changed_fields,
@@ -1313,26 +1341,11 @@ struct RunLoopContext {
     /// Phase 50: Cache pusher background thread handle.
     #[allow(dead_code)]
     cache_pusher_handle: Option<std::thread::JoinHandle<()>>,
-    /// Phase 52: DACL repair watcher for protected path ACL tamper detection.
+    /// Phase 58.7-02: Sender to the DACL watcher lifecycle manager.
     #[allow(dead_code)]
-    dacl_watcher: Option<std::sync::Arc<crate::dacl_repair_watcher::DaclWatcher>>,
-    /// Phase 52: Shutdown signal for the DACL repair task.
-    dacl_watcher_shutdown: Option<tokio::sync::watch::Sender<bool>>,
-    /// Phase 52: Handle for the DACL repair task.
-    dacl_watcher_handle: Option<tokio::task::JoinHandle<()>>,
-    /// Phase 52: Handle for the DACL polling backstop task.
-    dacl_poll_handle: Option<tokio::task::JoinHandle<()>>,
-    /// Phase 52-07: Staging layer for two-phase removal protocol.
-    #[allow(dead_code)]
-    dacl_staging: Option<Arc<crate::dacl_staging::DaclStaging>>,
-    /// Phase 52-07: Shutdown signal for the staging GC task.
-    dacl_gc_shutdown: Option<tokio::sync::watch::Sender<bool>>,
-    /// Phase 52-07: Handle for the staging GC task.
-    dacl_gc_handle: Option<tokio::task::JoinHandle<()>>,
-    /// Phase 52-07: Shutdown signal for the removal application task.
-    dacl_removal_shutdown: Option<tokio::sync::watch::Sender<bool>>,
-    /// Phase 52-07: Handle for the removal application task.
-    dacl_removal_handle: Option<tokio::task::JoinHandle<()>>,
+    dacl_manager_tx: Option<tokio::sync::mpsc::Sender<DaclManagerCommand>>,
+    /// Phase 58.7-02: Handle for the DACL watcher lifecycle manager task.
+    dacl_manager_handle: Option<tokio::task::JoinHandle<()>>,
     /// Phase 53: ETW Kernel-File consumer.
     #[allow(dead_code)]
     etw_consumer: Option<crate::etw_kernel_file::EtwKernelFileConsumer>,
@@ -2061,8 +2074,15 @@ async fn run_loop_init(
     let (pipe1_shutdown_tx, pipe1_hb_handle) = spawn_pipe1_heartbeat_task();
 
     // ── Start the config poll loop ─────────────────────────────────────────
-    let (config_shutdown_tx, _config_cmd_tx, config_poll_handle) =
-        spawn_config_poll_task(server_client.clone(), Arc::clone(&config_arc));
+    // Phase 58.7-02: create the DACL manager channel early so the config poll
+    // task can signal reinit when protected_paths changes.
+    let (dacl_manager_tx, dacl_manager_rx) =
+        tokio::sync::mpsc::channel::<DaclManagerCommand>(4);
+    let (config_shutdown_tx, _config_cmd_tx, config_poll_handle) = spawn_config_poll_task(
+        server_client.clone(),
+        Arc::clone(&config_arc),
+        Some(dacl_manager_tx.clone()),
+    );
 
     // ── Start the file system monitor pipeline ─────────────────────────
     let recheck_interval = agent_config.resolved_recheck_interval();
@@ -2227,6 +2247,10 @@ async fn run_loop_init(
     // Wfp network filters must be active before file ACLs are modified.
     let dacl_bundle = init_dacl_watcher(&agent_config, ad_client.as_ref().as_ref()).await;
 
+    // Phase 58.7-02: spawn the DACL watcher lifecycle manager and hand it the
+    // bundle. The config poll loop holds a clone of the command sender.
+    let dacl_manager_handle = spawn_dacl_watcher_manager(dacl_bundle, dacl_manager_rx);
+
     // ── PrintEnforcer (M017/S04) ──────────────────────────────────────────
     let print_enforcer_opt: Option<crate::print_enforcer::PrintEnforcer> = {
         let watcher_config = crate::print_watcher::PrintWatcherConfig {
@@ -2379,15 +2403,8 @@ async fn run_loop_init(
         retry_handle,
         classification_cache,
         cache_pusher_handle: Some(_cache_pusher_handle),
-        dacl_watcher: dacl_bundle.watcher,
-        dacl_watcher_shutdown: dacl_bundle.watcher_shutdown,
-        dacl_watcher_handle: dacl_bundle.watcher_handle,
-        dacl_poll_handle: dacl_bundle.poll_handle,
-        dacl_staging: dacl_bundle.staging,
-        dacl_gc_shutdown: dacl_bundle.gc_shutdown,
-        dacl_gc_handle: dacl_bundle.gc_handle,
-        dacl_removal_shutdown: dacl_bundle.removal_shutdown,
-        dacl_removal_handle: dacl_bundle.removal_handle,
+        dacl_manager_tx: Some(dacl_manager_tx),
+        dacl_manager_handle: Some(dacl_manager_handle),
         // Phase 53: ETW Kernel-File consumer.
         etw_consumer: Some(etw_consumer),
         // Phase 53: Bypass correlator shutdown signal.
@@ -4025,6 +4042,7 @@ fn get_process_user_sid(pid: u32) -> Option<String> {
 fn spawn_config_poll_task(
     server_client: Option<crate::server_client::ServerClient>,
     config: Arc<parking_lot::Mutex<crate::config::AgentConfig>>,
+    dacl_manager_tx: Option<tokio::sync::mpsc::Sender<DaclManagerCommand>>,
 ) -> (
     tokio::sync::watch::Sender<bool>,
     tokio::sync::mpsc::Sender<ConfigCommand>,
@@ -4034,7 +4052,7 @@ fn spawn_config_poll_task(
     let (cmd_tx, cmd_rx) = tokio::sync::mpsc::channel::<ConfigCommand>(4);
     let handle = server_client.map(|sc| {
         tokio::spawn(async move {
-            config_poll_loop(sc, config, shutdown_rx, cmd_rx).await;
+            config_poll_loop(sc, config, shutdown_rx, cmd_rx, dacl_manager_tx).await;
         })
     });
     (shutdown_tx, cmd_tx, handle)
@@ -4445,57 +4463,23 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
     #[cfg(windows)]
     reenable_usb_devices(&ctx.detector_arc);
 
-    // Stop DaclWatcher BEFORE WfpManager unregister (ACLs still protected during WFP teardown).
-    // Phase 52-07: Stop removal application task first (so it stops modifying state).
-    if let Some(shutdown_tx) = ctx.dacl_removal_shutdown {
-        crate::password_stop::debug_log("run_loop: signalling DACL removal application shutdown");
-        let _ = shutdown_tx.send(true);
-    }
-    if let Some(handle) = ctx.dacl_removal_handle {
-        match tokio::time::timeout(Duration::from_secs(5), handle).await {
-            Ok(Ok(())) => debug!("DACL removal application task shut down cleanly"),
-            Ok(Err(e)) => warn!(error = %e, "DACL removal application task panicked"),
-            Err(_) => warn!("DACL removal application task did not shut down within 5s"),
+    // Phase 58.7-02: Shut down the DACL watcher lifecycle manager. The manager
+    // owns the bundle and will gracefully stop removal, GC, repair, and poll
+    // subsystems in the correct order.
+    if let Some(tx) = ctx.dacl_manager_tx {
+        crate::password_stop::debug_log("run_loop: signalling DACL watcher manager shutdown");
+        if let Err(e) = tx.try_send(DaclManagerCommand::Shutdown) {
+            warn!(error = %e, "failed to send shutdown to DACL watcher manager");
         }
     }
-
-    // Phase 52-07: Stop GC task next.
-    if let Some(shutdown_tx) = ctx.dacl_gc_shutdown {
-        crate::password_stop::debug_log("run_loop: signalling DACL staging GC shutdown");
-        let _ = shutdown_tx.send(true);
-    }
-    if let Some(handle) = ctx.dacl_gc_handle {
+    if let Some(handle) = ctx.dacl_manager_handle {
         match tokio::time::timeout(Duration::from_secs(5), handle).await {
-            Ok(Ok(())) => debug!("DACL staging GC task shut down cleanly"),
-            Ok(Err(e)) => warn!(error = %e, "DACL staging GC task panicked"),
-            Err(_) => warn!("DACL staging GC task did not shut down within 5s"),
+            Ok(Ok(())) => debug!("DACL watcher manager shut down cleanly"),
+            Ok(Err(e)) => warn!(error = %e, "DACL watcher manager panicked"),
+            Err(_) => warn!("DACL watcher manager did not shut down within 5s"),
         }
     }
-
-    if let Some(shutdown_tx) = ctx.dacl_watcher_shutdown {
-        crate::password_stop::debug_log("run_loop: signalling DACL watcher shutdown");
-        let _ = shutdown_tx.send(true);
-    }
-    if let Some(handle) = ctx.dacl_watcher_handle {
-        match tokio::time::timeout(Duration::from_secs(5), handle).await {
-            Ok(Ok(())) => debug!("DACL repair task shut down cleanly"),
-            Ok(Err(e)) => warn!(error = %e, "DACL repair task panicked"),
-            Err(_) => warn!("DACL repair task did not shut down within 5s"),
-        }
-    }
-    if let Some(handle) = ctx.dacl_poll_handle {
-        match tokio::time::timeout(Duration::from_secs(5), handle).await {
-            Ok(Ok(())) => debug!("DACL polling backstop shut down cleanly"),
-            Ok(Err(e)) => warn!(error = %e, "DACL polling backstop panicked"),
-            Err(_) => warn!("DACL polling backstop did not shut down within 5s"),
-        }
-    }
-    if let Some(ref watcher) = ctx.dacl_watcher {
-        crate::password_stop::debug_log("run_loop: unregistering all DACL watchers");
-        watcher.unregister_all();
-        crate::password_stop::debug_log("run_loop: all DACL watchers unregistered");
-        info!("DACL watcher stopped");
-    }
+    crate::password_stop::debug_log("run_loop: DACL watcher manager stopped");
 
     // Unregister WFP filters and close engine (M017/S01).
     if let Some(manager) = ctx.wfp_manager {
@@ -5902,6 +5886,121 @@ mod tests {
         // Do not call shutdown here: the spawned watcher subsystem contains
         // Windows file-system handles that can block the test runtime. Plan
         // 58.7-02 validates the return-type contract only.
+    }
+
+    // --- Phase 58.7-02: run-loop DACL manager wiring ---
+
+    /// Test that `signal_dacl_reinit_if_needed` sends `Reinit` when
+    /// `changed_fields` contains `"protected_paths"`.
+    #[tokio::test]
+    async fn test_config_poll_reinit_signal() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<DaclManagerCommand>(4);
+        signal_dacl_reinit_if_needed(&["protected_paths", "disk_allowlist"], &Some(tx));
+
+        let cmd = rx.recv().await.expect("Reinit command must be sent");
+        assert!(
+            matches!(cmd, DaclManagerCommand::Reinit),
+            "command must be Reinit"
+        );
+    }
+
+    /// Test that `signal_dacl_reinit_if_needed` does nothing when
+    /// `changed_fields` does not contain `"protected_paths"`.
+    #[tokio::test]
+    async fn test_config_poll_reinit_signal_unchanged() {
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<DaclManagerCommand>(4);
+        signal_dacl_reinit_if_needed(&["allowlist_entries"], &Some(tx));
+
+        assert!(
+            rx.try_recv().is_err(),
+            "no Reinit command must be sent when protected_paths did not change"
+        );
+    }
+
+    /// Test that `RunLoopContext` carries the DACL manager sender and handle
+    /// instead of the nine individual watcher fields.
+    #[tokio::test]
+    async fn test_run_loop_context_manager_fields() {
+        let (tx, rx) = tokio::sync::mpsc::channel::<DaclManagerCommand>(4);
+        let handle = spawn_dacl_watcher_manager(DaclWatcherBundle::empty(), rx);
+
+        let ctx = RunLoopContext {
+            dacl_manager_tx: Some(tx),
+            dacl_manager_handle: Some(handle),
+            // Remaining fields are populated with safe no-op placeholders.
+            file_handle: tokio::spawn(async {}),
+            file_monitor: crate::interception::InterceptionEngine::default(),
+            event_loop_handle: tokio::spawn(async {}),
+            heartbeat_handle: tokio::spawn(async {}),
+            heartbeat_shutdown_tx: tokio::sync::watch::channel(false).0,
+            pipe1_hb_handle: tokio::spawn(async {}),
+            pipe1_shutdown_tx: tokio::sync::watch::channel(false).0,
+            config_poll_handle: None,
+            config_shutdown_tx: tokio::sync::watch::channel(false).0,
+            config_cmd_tx: tokio::sync::mpsc::channel::<ConfigCommand>(1).0,
+            registry_poll_handle: None,
+            registry_shutdown_tx: tokio::sync::watch::channel(false).0,
+            origins_poll_handle: None,
+            origins_shutdown_tx: tokio::sync::watch::channel(false).0,
+            disk_enum_handle: tokio::spawn(async {}),
+            disk_shutdown_tx: tokio::sync::watch::channel(false).0,
+            enc_handle: tokio::spawn(async {}),
+            enc_shutdown_tx: tokio::sync::watch::channel(false).0,
+            audit_flush_handle: None,
+            audit_shutdown_tx: tokio::sync::watch::channel(false).0,
+            device_watcher_cleanup: None,
+            detector_arc: Arc::new(crate::detection::VolumeDetector::new()),
+            hook_injector: None,
+            sync_watcher_shutdown: None,
+            sync_watcher_handle: None,
+            wfp_manager: None,
+            print_enforcer: None,
+            approval_cache: Arc::new(crate::approval_cache::ApprovalCache::new()),
+            approval_poll_handle: None,
+            approval_shutdown_tx: tokio::sync::watch::channel(false).0,
+            process_watcher: None,
+            universal_injector: None,
+            process_registry: Arc::new(crate::process_registry::ProcessRegistry::new()),
+            allowlist_matcher: Arc::new(crate::allowlist::AllowlistMatcher::new(
+                vec![],
+                String::new(),
+                0,
+            )),
+            backstop_shutdown: None,
+            backstop_handle: None,
+            retry_shutdown: None,
+            retry_handle: None,
+            classification_cache: Arc::new(crate::classification_cache::ClassificationCache::new_with_name(
+                &format!("dlp-test-classification-cache-{}", std::process::id())
+            ).expect("classification cache must construct in test")),
+            cache_pusher_handle: None,
+            etw_consumer: None,
+            correlator_shutdown: None,
+            correlator_handle: None,
+            diagnostic_aggregator: Arc::new(crate::diagnostic_aggregator::DiagnosticAggregator::new()),
+            health_aggregator: Arc::new(crate::health_aggregator::HealthAggregator::new()),
+            hook_ipc_handle: None,
+            diagnostic_push_shutdown: None,
+            diagnostic_push_handle: None,
+            health_push_shutdown: None,
+            health_push_handle: None,
+            override_handle: None,
+            audit_ctx: crate::audit_emitter::EmitContext::default(),
+        };
+
+        assert!(ctx.dacl_manager_tx.is_some(), "manager tx must be present");
+        assert!(
+            ctx.dacl_manager_handle.is_some(),
+            "manager handle must be present"
+        );
+
+        // Clean up the manager task so the test exits promptly.
+        if let Some(tx) = ctx.dacl_manager_tx {
+            let _ = tx.try_send(DaclManagerCommand::Shutdown);
+        }
+        if let Some(handle) = ctx.dacl_manager_handle {
+            let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
+        }
     }
 
     // --- Phase 58.7: bypass correlator and classification cache wiring ---
