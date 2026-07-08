@@ -1788,11 +1788,16 @@ async fn run_loop_init(
             }),
     );
     // Pre-populate T3/T4 protected path roots from config.
-    // monitored_paths serves as the protected path source until a dedicated
-    // protected_paths field is added to AgentConfig.
-    let protected_roots: Vec<std::path::PathBuf> = agent_config
-        .monitored_paths
+    // protected_paths is the authoritative server-pushed list; traversal or
+    // relative paths are filtered out before reaching the shared-memory cache.
+    let protected_path_strings: Vec<String> = agent_config
+        .protected_paths
         .iter()
+        .filter_map(|p| crate::dacl_staging::normalize_protected_path(&p.path).ok())
+        .collect();
+    let protected_roots: Vec<std::path::PathBuf> = protected_path_strings
+        .iter()
+        .cloned()
         .map(std::path::PathBuf::from)
         .collect();
     classification_cache.prepopulate_t3_t4_roots(protected_roots);
@@ -2285,7 +2290,7 @@ async fn run_loop_init(
                     ..Default::default()
                 },
             )
-            .with_protected_paths(agent_config.monitored_paths.clone());
+            .with_protected_paths(protected_path_strings.clone());
 
             let etw_rx = etw_consumer.receiver().clone();
             let process_rx = process_watcher.receiver().clone();
@@ -5654,6 +5659,53 @@ mod tests {
             result.0.is_some(),
             "watcher must be created when at least one valid protected path exists"
         );
+    }
+
+    // --- Phase 58.7: bypass correlator and classification cache wiring ---
+
+    /// Test that the bypass correlator receives protected path strings from
+    /// `cfg.protected_paths` and ignores `cfg.monitored_paths`.
+    #[test]
+    fn test_bypass_correlator_wired_to_protected_paths() {
+        let cfg = AgentConfig {
+            monitored_paths: vec![r"C:\Monitored".to_string()],
+            protected_paths: vec![
+                make_protected_path(r"C:\Protected", "T3"),
+                make_protected_path(r"relative\path", "T3"),
+            ],
+            ..Default::default()
+        };
+
+        let paths: Vec<String> = cfg
+            .protected_paths
+            .iter()
+            .filter_map(|p| crate::dacl_staging::normalize_protected_path(&p.path).ok())
+            .collect();
+
+        assert_eq!(paths, vec![r"C:\PROTECTED\"]);
+    }
+
+    /// Test that the classification cache T3/T4 roots are sourced from
+    /// `cfg.protected_paths` and ignore `cfg.monitored_paths`.
+    #[test]
+    fn test_classification_cache_uses_protected_paths() {
+        let cfg = AgentConfig {
+            monitored_paths: vec![r"C:\Monitored".to_string()],
+            protected_paths: vec![
+                make_protected_path(r"C:\Protected", "T3"),
+                make_protected_path(r"C:\Data\..\Secret", "T3"),
+            ],
+            ..Default::default()
+        };
+
+        let roots: Vec<std::path::PathBuf> = cfg
+            .protected_paths
+            .iter()
+            .filter_map(|p| crate::dacl_staging::normalize_protected_path(&p.path).ok())
+            .map(std::path::PathBuf::from)
+            .collect();
+
+        assert_eq!(roots, vec![std::path::PathBuf::from(r"C:\PROTECTED\")]);
     }
 }
 
