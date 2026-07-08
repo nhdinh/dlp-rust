@@ -586,7 +586,7 @@ Plans:
 **Goal:** Close the agent-side wiring gap so all consumers of the protected-path list read from the server-pushed `AgentConfig.protected_paths` field, and enable runtime reinitialization of the DACL watcher and classification cache when `protected_paths` changes without requiring an agent service restart.
 **Requirements**: DACL-01, DACL-02, DACL-03, DACL-04, DACL-05, CACHE-04
 **Depends on:** Phase 58
-**Plans:** 4 plans
+**Plans:** 1/4 plans executed
 
 **Wave 1** *(no dependencies)*
 
@@ -859,6 +859,11 @@ Standard patterns (likely skip phase research): Phases 48, 49, 50, 52, 54, 55, 5
 **Depends on:** Phase 67
 **Plans:** 2/6 plans complete (Plans 01-02 implemented; Plans 03-06 are gap closure for UAT)
 Plans:
+
+- [x] 58.7-01-PLAN.md
+- [ ] 58.7-02-PLAN.md
+- [ ] 58.7-03-PLAN.md
+- [ ] 58.7-04-PLAN.md
 
 - [x] `67.1-01-PLAN.md` — XPS Page Geometry + Text Metrics: WatermarkGeometry, FontMetrics trait, TestFontMetrics, DirectWriteFontMetrics with ComGuard RAII
 - [x] `67.1-02-PLAN.md` — XPS ZIP Watermark Injection: streaming XML reader-writer, namespace propagation, ZIP archive rewrite with compression preservation

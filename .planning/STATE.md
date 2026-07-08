@@ -3,17 +3,17 @@ gsd_state_version: 1.0
 milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
 current_phase: 58.7
-current_phase_name: INSERTED
-status: inserted
+current_phase_name: close-gap-dacl-protected_paths-wiring
+status: executing
 stopped_at: Inserted 58.7 for urgent DACL protected_paths wiring
-last_updated: "2026-07-08T05:19:30.570Z"
+last_updated: "2026-07-08T10:53:16.392Z"
 last_activity: 2026-07-08
-last_activity_desc: Inserted Phase 58.7 into ROADMAP.md and STATE.md
+last_activity_desc: Phase 58.7 execution started
 progress:
   total_phases: 50
   completed_phases: 38
-  total_plans: 210
-  completed_plans: 179
+  total_plans: 214
+  completed_plans: 180
   percent: 76
 ---
 
@@ -23,17 +23,17 @@ progress:
 
 **Project:** DLP-RUST — Enterprise DLP System (NTFS + Active Directory + ABAC)
 **Core Value:** Prevent data exfiltration via a layered enforcement stack (NTFS + ABAC + AD identity)
-**Current Focus:** Phase 58.7 — close-gap-dacl-protected_paths-wiring (INSERTED — urgent gap closure)
+**Current Focus:** Phase 58.7 — close-gap-dacl-protected_paths-wiring
 
 ---
 
 ## Current Position
 
-Phase: 58.7 — INSERTED
-Plan: 0 of 0
-Status: Phase 58.7 inserted after Phase 58; urgent gap closure for DACL protected_paths wiring.
+Phase: 58.7 (close-gap-dacl-protected_paths-wiring) — EXECUTING
+Plan: 2 of 4
+Status: Ready to execute
 Verification: TBD
-Last activity: 2026-07-08 — Inserted Phase 58.7 into ROADMAP.md and STATE.md
+Last activity: 2026-07-08 — Phase 58.7 execution started
 
 ### Previous: Phase 58.5 — COMPLETE
 
@@ -194,7 +194,7 @@ Phase 59 and later are complete and shipped as part of v0.11.0.
 
 ## Session Continuity
 
-Last session: 2026-07-06T05:37:11Z
+Last session: 2026-07-08T10:51:22.191Z
 Stopped at: Completed quick plan 20260706-isolate-dlp-hook-tests
 Resume file: None
 
@@ -246,6 +246,7 @@ Resume file: None
 | Phase 58.5 P05 | 8min | 3 tasks | 9 files |
 | Phase 58.5 P06 | 25min | 3 tasks | 6 files |
 | Phase 58.5 P07 | 55 | 3 tasks | 2 files |
+| Phase 58.7 P01 | 12min | 3 tasks | 2 files |
 
 ## Quick Tasks Completed
 
@@ -291,3 +292,6 @@ Resume file: None
 - [Phase ?]: Fixed 5-second CLEANUP_RESERVE guarantees remaining teardown steps cannot push service past SHUTDOWN_TIMEOUT.
 - [Phase ?]: Reset UNHOOK_ALL_REQUESTED before hook IPC server stop so accept_loop observes normal shutdown and exits cleanly.
 - [Phase ?]: Tests asserting on audit events from async code use current-thread tokio runtime to preserve thread-local capture tokens.
+- [Phase 58.7]: Introduced a single canonical normalization helper and applied it at every trust boundary rather than letting each consumer canonicalize differently — Prevents case/trailing-slash mismatches between staging table, watcher, and cache
+- [Phase 58.7]: Staging table migration runs automatically on DaclStaging::new so in-flight removals are not orphaned by the new key format — Backward-compatible upgrade path for existing staging rows
+- [Phase 58.7]: Invalid or traversal paths are filtered with tracing::warn! audit logs rather than failing the entire service startup — Defense-in-depth: reject malicious server payloads without denying service
