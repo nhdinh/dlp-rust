@@ -5,15 +5,15 @@ milestone_name: Real-Time File Access Prevention
 current_phase: 58.7
 current_phase_name: close-gap-dacl-protected_paths-wiring
 status: executing
-stopped_at: Inserted 58.7 for urgent DACL protected_paths wiring
-last_updated: "2026-07-08T10:53:16.392Z"
+stopped_at: Completed 58.7-02-PLAN.md
+last_updated: "2026-07-08T11:51:15.313Z"
 last_activity: 2026-07-08
 last_activity_desc: Phase 58.7 execution started
 progress:
   total_phases: 50
   completed_phases: 38
   total_plans: 214
-  completed_plans: 180
+  completed_plans: 181
   percent: 76
 ---
 
@@ -30,7 +30,7 @@ progress:
 ## Current Position
 
 Phase: 58.7 (close-gap-dacl-protected_paths-wiring) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
 Verification: TBD
 Last activity: 2026-07-08 — Phase 58.7 execution started
@@ -194,8 +194,8 @@ Phase 59 and later are complete and shipped as part of v0.11.0.
 
 ## Session Continuity
 
-Last session: 2026-07-08T10:51:22.191Z
-Stopped at: Completed quick plan 20260706-isolate-dlp-hook-tests
+Last session: 2026-07-08T11:51:15.290Z
+Stopped at: Completed 58.7-02-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
@@ -247,6 +247,7 @@ Resume file: None
 | Phase 58.5 P06 | 25min | 3 tasks | 6 files |
 | Phase 58.5 P07 | 55 | 3 tasks | 2 files |
 | Phase 58.7 P01 | 12min | 3 tasks | 2 files |
+| Phase 58.7-close-gap-dacl-protected_paths-wiring P02 | 48min | 3 tasks | 1 files |
 
 ## Quick Tasks Completed
 
@@ -295,3 +296,6 @@ Resume file: None
 - [Phase 58.7]: Introduced a single canonical normalization helper and applied it at every trust boundary rather than letting each consumer canonicalize differently — Prevents case/trailing-slash mismatches between staging table, watcher, and cache
 - [Phase 58.7]: Staging table migration runs automatically on DaclStaging::new so in-flight removals are not orphaned by the new key format — Backward-compatible upgrade path for existing staging rows
 - [Phase 58.7]: Invalid or traversal paths are filtered with tracing::warn! audit logs rather than failing the entire service startup — Defense-in-depth: reject malicious server payloads without denying service
+- [Phase 58.7-close-gap-dacl-protected_paths-wiring]: Grouped all DACL watcher handles into DaclWatcherBundle so the manager can atomically own and replace the entire subsystem — Replaces the previous nine-element tuple, enabling atomic runtime reinitialization in Plan 58.7-03.
+- [Phase 58.7-close-gap-dacl-protected_paths-wiring]: Used try_send for Reinit and Shutdown commands to keep config polling and service shutdown non-blocking — Mitigates T-58.7-06 Denial of Service: a stuck manager cannot block config polling or service shutdown.
+- [Phase 58.7-close-gap-dacl-protected_paths-wiring]: Retained the poll backstop shutdown sender inside the bundle instead of discarding it — The previous 9-tuple discarded the poll shutdown sender with _poll_shutdown_tx; the bundle now enables full graceful shutdown.

@@ -586,7 +586,7 @@ Plans:
 **Goal:** Close the agent-side wiring gap so all consumers of the protected-path list read from the server-pushed `AgentConfig.protected_paths` field, and enable runtime reinitialization of the DACL watcher and classification cache when `protected_paths` changes without requiring an agent service restart.
 **Requirements**: DACL-01, DACL-02, DACL-03, DACL-04, DACL-05, CACHE-04
 **Depends on:** Phase 58
-**Plans:** 1/4 plans executed
+**Plans:** 2/4 plans executed
 
 **Wave 1** *(no dependencies)*
 
@@ -861,7 +861,7 @@ Standard patterns (likely skip phase research): Phases 48, 49, 50, 52, 54, 55, 5
 Plans:
 
 - [x] 58.7-01-PLAN.md
-- [ ] 58.7-02-PLAN.md
+- [x] 58.7-02-PLAN.md
 - [ ] 58.7-03-PLAN.md
 - [ ] 58.7-04-PLAN.md
 
