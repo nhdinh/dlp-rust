@@ -103,6 +103,8 @@ v0.12.0 [Phases 65–70 planned] (planned — Scanner + Screenshot + Watermark +
 | 58 | Differentiators Bundle (cuttable to v0.10.1) | DIFF-01..04 |
 | 58.1 | Close v0.10.0 ship-gap verification items (INSERTED) | OPS-04, ETW-03, DIFF-04 |
 | 58.2 | Fix double HookIpcServer and wire volume classes (INSERTED) | TBD |
+| 58.7 | Close gap: DACL protected_paths wiring (INSERTED) | DACL-01..05 |
+| 58.8 | Fix DIFF-01 and DIFF-04 (INSERTED) | DIFF-01, DIFF-04 |
 | **v0.11.0** | | |
 | 59 | Label Service — DB Schema + API + Folder Inheritance + Manual Assignment | LABEL-01..07 |
 | 60 | Data Owner Review Queue + Admin TUI Screen | LABEL-04 |
