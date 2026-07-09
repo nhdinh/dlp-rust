@@ -3385,25 +3385,26 @@ fn spawn_removal_application_task(
                                         staging_clone.with_path_lock(&normalized_clone, || {
                                             match watcher_clone.get_snapshot(&path_clone) {
                                                 Some(snapshot) => {
-                                                    if let Err(e) = crate::dacl_tripwire::remove_tripwire_from_path(&path_clone, &snapshot) {
-                                                        tracing::warn!(path = %row_path, error = %e, "failed to remove DLP tripwire from path");
-                                                    } else {
-                                                        tracing::info!(path = %row_path, "DLP tripwire removed from path");
+                                                    match crate::dacl_tripwire::remove_tripwire_from_path(&path_clone, &snapshot) {
+                                                        Ok(()) => {
+                                                            tracing::info!(path = %row_path, "DLP tripwire removed from path");
+                                                            if let Err(e) = staging_clone.mark_applied_locked(&normalized_clone) {
+                                                                tracing::warn!(path = %row_path, error = %e, "failed to mark removal as applied");
+                                                            } else {
+                                                                tracing::info!(path = %row_path, "staged removal marked as applied");
+                                                            }
+                                                            if let Err(e) = watcher_clone.unregister(&path_clone) {
+                                                                tracing::warn!(path = %row_path, error = %e, "failed to unregister watcher for removed path");
+                                                            }
+                                                        }
+                                                        Err(e) => {
+                                                            tracing::warn!(path = %row_path, error = %e, "failed to remove DLP tripwire; will retry");
+                                                        }
                                                     }
                                                 }
                                                 None => {
                                                     tracing::warn!(path = %row_path, "no canonical snapshot found for removed path — tripwire removal skipped");
                                                 }
-                                            }
-
-                                            if let Err(e) = staging_clone.mark_applied_locked(&normalized_clone) {
-                                                tracing::warn!(path = %row_path, error = %e, "failed to mark removal as applied");
-                                            } else {
-                                                tracing::info!(path = %row_path, "staged removal marked as applied");
-                                            }
-
-                                            if let Err(e) = watcher_clone.unregister(&path_clone) {
-                                                tracing::warn!(path = %row_path, error = %e, "failed to unregister watcher for removed path");
                                             }
                                         });
                                     }).await {
