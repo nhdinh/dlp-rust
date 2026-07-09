@@ -78,7 +78,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 58.5: Unhook dlp_hook_dll.dll when dlp-agent is killed/exited (INSERTED)** — Core unhook protocol complete 2026-07-02; test-isolation quick plan `20260706-isolate-dlp-hook-tests` completed 2026-07-06.
 - [ ] **Phase 58.6: Targeted hook injection — only processes that perform file operations (INSERTED)** — investigate and implement selective hook injection based on process file-operation behavior instead of universal injection.
 - [x] **Phase 58.7: Close gap: DACL protected_paths wiring (INSERTED)** — wire the protected_paths configuration from policy sync through the DACL tripwire repair watcher and agent enforcement path. (completed 2026-07-09)
-- [ ] **Phase 58.8: Fix DIFF-01 and DIFF-04 (INSERTED)** — wire user-initiated override from hook DLL deny paths (`IpcPayloadV1::RequestOverride`) and add the missing server-side self-health endpoint (`GET /admin/health`) plus production `diagnostic_store` initialization. **Plans:** 3/3 planned.
+- [ ] **Phase 58.8: Fix DIFF-01 and DIFF-04 (INSERTED)** — wire user-initiated override from hook DLL deny paths (`IpcPayloadV1::RequestOverride`) and add the missing server-side self-health endpoint (`GET /admin/health`) plus production `diagnostic_store` initialization. **Plans:** 4/4 planned.
 
 ---
 
@@ -617,7 +617,7 @@ Plans:
   3. `GET /admin/diagnostics` returns real snapshots when diagnostics have been ingested.
   4. Full workspace tests, clippy, formatting, and sonar-scanner Quality Gate pass (where environmental tooling permits).
 
-**Plans:** 3/3 planned
+**Plans:** 4/4 planned
 
 **Wave 1** *(no dependencies)*
 
@@ -626,7 +626,8 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 server-side completion)*
 
-- [ ] `58.8-03-PLAN.md` — Agent health push + integration tests: add `ServerClient::submit_health_snapshot`, a periodic agent push task, a health API integration test, and update all `dlp-server/tests/` `AppState` literals for the new field.
+- [ ] `58.8-03-PLAN.md` — Agent health push + health API round-trip test: add `ServerClient::submit_health_snapshot`, a periodic agent push task, and a focused `dlp-server/tests/health_api_integration.rs` round-trip test.
+- [ ] `58.8-04-PLAN.md` — Integration-test compilation fixes + admin CLI self-health verification: update all existing `dlp-server/tests/` `AppState` literals for the new field and add a `dlp-admin-cli` `EngineClient::get_self_health()` test that proves a non-empty snapshot is returned.
 
 ### Phase 59: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 
