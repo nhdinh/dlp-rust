@@ -78,7 +78,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 58.5: Unhook dlp_hook_dll.dll when dlp-agent is killed/exited (INSERTED)** — Core unhook protocol complete 2026-07-02; test-isolation quick plan `20260706-isolate-dlp-hook-tests` completed 2026-07-06.
 - [ ] **Phase 58.6: Targeted hook injection — only processes that perform file operations (INSERTED)** — investigate and implement selective hook injection based on process file-operation behavior instead of universal injection.
 - [x] **Phase 58.7: Close gap: DACL protected_paths wiring (INSERTED)** — wire the protected_paths configuration from policy sync through the DACL tripwire repair watcher and agent enforcement path. (completed 2026-07-09)
-- [ ] **Phase 58.8: Fix DIFF-01 and DIFF-04 (INSERTED)** — wire user-initiated override from hook DLL deny paths (`IpcPayloadV1::RequestOverride`) and add the missing server-side self-health endpoint (`GET /admin/health`) plus production `diagnostic_store` initialization. **Plans:** 4/4 planned.
+- [ ] **Phase 58.8: Fix DIFF-01 and DIFF-04 (INSERTED)** — wire automatic override prompt requests from hook DLL deny paths (`IpcPayloadV1::RequestOverride`) with fire-and-forget agent handling, close DIFF-01 by deferring server approval submission until the UI confirms with justification, and close DIFF-04 by adding authenticated `POST /agents/{id}/health` and `POST /agents/{id}/diagnostics`, `GET /admin/health`, production store initialization, and `dlp-admin-cli` verification. **Plans:** 4/4 planned.
 
 ---
 
@@ -607,27 +607,28 @@ Plans:
 
 ### Phase 58.8: Fix DIFF-01 and DIFF-04 (INSERTED)
 
-**Goal**: Close the two remaining cross-phase wiring blockers identified in the v0.10.0 milestone re-audit: wire user-initiated override from hook DLL deny paths (`IpcPayloadV1::RequestOverride`) and add the missing server-side self-health endpoint (`GET /admin/health`) plus production `diagnostic_store` initialization.
+**Goal**: Close the two remaining cross-phase wiring blockers identified in the v0.10.0 milestone re-audit: wire automatic override prompt requests from hook DLL deny paths (`IpcPayloadV1::RequestOverride`) with fire-and-forget agent handling, defer server approval submission until the UI confirms with justification, and add the missing server-side self-health and diagnostics endpoints (`GET /admin/health`, authenticated `POST /agents/{id}/health`, authenticated `POST /agents/{id}/diagnostics`) plus production `diagnostic_store` and `health_snapshot_store` initialization.
 **Depends on**: Phase 58.4 (DIFF differentiator infrastructure)
 **Requirements**: DIFF-01, DIFF-04
 **Success Criteria** (what must be TRUE):
 
-  1. Hook DLL unit/integration tests prove `RequestOverride` is sent on the deny path with correct metadata and a per-path cooldown prevents UI flooding.
-  2. `dlp-admin-cli get_self_health()` succeeds against a running server and returns a non-empty dashboard snapshot plus recent history.
-  3. `GET /admin/diagnostics` returns real snapshots when diagnostics have been ingested.
-  4. Full workspace tests, clippy, formatting, and sonar-scanner Quality Gate pass (where environmental tooling permits).
+  1. Hook DLL unit/integration tests prove `RequestOverride` is sent on the deny path with correct metadata, a per-path cooldown prevents UI flooding, approved-override caching suppresses repeated prompts, and the agent handler treats the frame as fire-and-forget.
+  2. The agent defers approval submission until the UI sends `Pipe1UiMsg::UserConfirmed { request_id, justification }` and forwards the user's justification to the server approval API via a channel-based async handoff.
+  3. `dlp-admin-cli get_self_health()` succeeds against a running server and returns a non-empty dashboard snapshot plus recent history.
+  4. `GET /admin/diagnostics` returns real snapshots when diagnostics have been ingested via authenticated `POST /agents/{id}/diagnostics`.
+  5. Full workspace tests, clippy, formatting, and sonar-scanner Quality Gate pass (where environmental tooling permits).
 
 **Plans:** 4/4 planned
 
 **Wave 1** *(no dependencies)*
 
-- [ ] `58.8-01-PLAN.md` — Hook DLL override trigger: emit `IpcPayloadV1::RequestOverride` from `classify_and_log_path` / `classify_and_log_handle` deny paths with a 30-second per-path cooldown and an integration test.
-- [ ] `58.8-02-PLAN.md` — Server-side health infrastructure: add `HealthSnapshotStore`, `DashboardHealthSnapshot`, `GET /admin/health`, public per-agent rate-limited `POST /agents/{id}/health`, and initialize `diagnostic_store` and `health_snapshot_store` in production `AppState`.
+- [ ] `58.8-01-PLAN.md` — Hook DLL override trigger: emit `IpcPayloadV1::RequestOverride` from `classify_and_log_path` / `classify_and_log_handle` deny paths with a 30-second per-path cooldown, make the agent `HookIpcServer` fire-and-forget for override frames, and prove behavior with a `HookIpcServer::with_override_handler` integration test covering cooldown and approved-override suppression.
+- [ ] `58.8-02-PLAN.md` — Server-side health and diagnostics infrastructure: add `HealthSnapshotStore`, `DashboardHealthSnapshot`, authenticated `GET /admin/health`, agent-authenticated and per-agent rate-limited `POST /agents/{id}/health` and `POST /agents/{id}/diagnostics` (rate-limit key keyed on authenticated agent identity), and initialize `diagnostic_store` and `health_snapshot_store` in production `AppState`; update `AppState` literals in `dlp-server/src` and `dlp-server/src/admin_api.rs`.
 
 **Wave 2** *(blocked on Wave 1 server-side completion)*
 
-- [ ] `58.8-03-PLAN.md` — DIFF-01 semantics + agent health push: defer server approval submission until the UI confirms with justification, add `ServerClient::submit_health_snapshot`, a periodic agent push task with shutdown wiring, and a focused `dlp-server/tests/health_api_integration.rs` round-trip test.
-- [ ] `58.8-04-PLAN.md` — Integration-test compilation fixes + admin CLI self-health verification: discover and update every `AppState` literal in `dlp-server/src` and `dlp-server/tests`, add a `dlp-admin-cli` `EngineClient::get_self_health()` test asserting the admin bearer token is sent, and add a server 401 test for unauthenticated `GET /admin/health`.
+- [ ] `58.8-03-PLAN.md` — DIFF-01 semantics + agent health push: store full `PendingOverride` context keyed by `request_id`, update both agent and UI copies of `Pipe1UiMsg::UserConfirmed` to carry justification, use a `tokio::mpsc` channel to submit the approval from the synchronous Pipe 1 dispatcher to an async service task, add `ServerClient::submit_health_snapshot`, a periodic agent health push task with shutdown wiring and lifecycle test, and a `dlp-server/tests/health_api_integration.rs` round-trip test.
+- [ ] `58.8-04-PLAN.md` — Integration-test compilation fixes + admin CLI self-health verification: discover and update every `AppState` literal in `dlp-server/tests`, add a `dlp-admin-cli` `EngineClient::get_self_health()` test asserting the exact dashboard snapshot fields consumed by the TUI and that the admin bearer token is sent, and add a server 401 test for unauthenticated `GET /admin/health`.
 
 ### Phase 59: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 
