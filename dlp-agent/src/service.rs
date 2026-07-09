@@ -1100,11 +1100,11 @@ pub enum ConfigCommand {
 /// without constructing a real [`crate::server_client::ServerClient`].
 fn signal_dacl_reinit_if_needed(
     changed_fields: &[&str],
-    dacl_manager_tx: &Option<tokio::sync::mpsc::Sender<DaclManagerCommand>>,
+    dacl_manager_tx: &Option<tokio::sync::mpsc::UnboundedSender<DaclManagerCommand>>,
 ) {
     if changed_fields.contains(&"protected_paths") || changed_fields.contains(&"global_enforcement_mode") {
         if let Some(ref tx) = dacl_manager_tx {
-            if let Err(e) = tx.try_send(DaclManagerCommand::Reinit) {
+            if let Err(e) = tx.send(DaclManagerCommand::Reinit) {
                 warn!(
                     error = %e,
                     "failed to signal DACL watcher reinit from config poll"
@@ -1137,7 +1137,7 @@ async fn config_poll_loop(
     config: Arc<parking_lot::Mutex<crate::config::AgentConfig>>,
     mut shutdown_rx: tokio::sync::watch::Receiver<bool>,
     mut cmd_rx: tokio::sync::mpsc::Receiver<ConfigCommand>,
-    dacl_manager_tx: Option<tokio::sync::mpsc::Sender<DaclManagerCommand>>,
+    dacl_manager_tx: Option<tokio::sync::mpsc::UnboundedSender<DaclManagerCommand>>,
 ) {
     // Perform an immediate first fetch so the agent reflects server-pushed
     // config as soon as possible after startup. This also ensures that tests
@@ -1364,7 +1364,7 @@ struct RunLoopContext {
     cache_pusher_handle: Option<std::thread::JoinHandle<()>>,
     /// Phase 58.7-02: Sender to the DACL watcher lifecycle manager.
     #[allow(dead_code)]
-    dacl_manager_tx: Option<tokio::sync::mpsc::Sender<DaclManagerCommand>>,
+    dacl_manager_tx: Option<tokio::sync::mpsc::UnboundedSender<DaclManagerCommand>>,
     /// Phase 58.7-02: Handle for the DACL watcher lifecycle manager task.
     dacl_manager_handle: Option<tokio::task::JoinHandle<()>>,
     /// Phase 53: ETW Kernel-File consumer.
@@ -2097,7 +2097,7 @@ async fn run_loop_init(
     // ── Start the config poll loop ─────────────────────────────────────────
     // Phase 58.7-02: create the DACL manager channel early so the config poll
     // task can signal reinit when protected_paths changes.
-    let (dacl_manager_tx, dacl_manager_rx) = tokio::sync::mpsc::channel::<DaclManagerCommand>(4);
+    let (dacl_manager_tx, dacl_manager_rx) = tokio::sync::mpsc::unbounded_channel::<DaclManagerCommand>();
     let (config_shutdown_tx, _config_cmd_tx, config_poll_handle) = spawn_config_poll_task(
         server_client.clone(),
         Arc::clone(&config_arc),
@@ -2937,7 +2937,7 @@ impl DaclWatcherManager {
     ///   configuration.
     pub async fn run(
         mut bundle: DaclWatcherBundle,
-        mut cmd_rx: tokio::sync::mpsc::Receiver<DaclManagerCommand>,
+        mut cmd_rx: tokio::sync::mpsc::UnboundedReceiver<DaclManagerCommand>,
         ad_client: Arc<Option<dlp_common::AdClient>>,
         classification_cache: Arc<crate::classification_cache::ClassificationCache>,
         correlator: Option<Arc<crate::bypass_correlator::BypassCorrelator>>,
@@ -3048,7 +3048,7 @@ async fn reinit_dacl_bundle(
 /// A `JoinHandle` for the spawned manager task.
 pub fn spawn_dacl_watcher_manager(
     bundle: DaclWatcherBundle,
-    cmd_rx: tokio::sync::mpsc::Receiver<DaclManagerCommand>,
+    cmd_rx: tokio::sync::mpsc::UnboundedReceiver<DaclManagerCommand>,
     ad_client: Arc<Option<dlp_common::AdClient>>,
     classification_cache: Arc<crate::classification_cache::ClassificationCache>,
     correlator: Option<Arc<crate::bypass_correlator::BypassCorrelator>>,
@@ -4190,7 +4190,7 @@ fn get_process_user_sid(pid: u32) -> Option<String> {
 fn spawn_config_poll_task(
     server_client: Option<crate::server_client::ServerClient>,
     config: Arc<parking_lot::Mutex<crate::config::AgentConfig>>,
-    dacl_manager_tx: Option<tokio::sync::mpsc::Sender<DaclManagerCommand>>,
+    dacl_manager_tx: Option<tokio::sync::mpsc::UnboundedSender<DaclManagerCommand>>,
 ) -> (
     tokio::sync::watch::Sender<bool>,
     tokio::sync::mpsc::Sender<ConfigCommand>,
@@ -4616,7 +4616,7 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
     // subsystems in the correct order.
     if let Some(tx) = ctx.dacl_manager_tx {
         crate::password_stop::debug_log("run_loop: signalling DACL watcher manager shutdown");
-        if let Err(e) = tx.try_send(DaclManagerCommand::Shutdown) {
+        if let Err(e) = tx.send(DaclManagerCommand::Shutdown) {
             warn!(error = %e, "failed to send shutdown to DACL watcher manager");
         }
     }
@@ -6043,7 +6043,7 @@ mod tests {
     /// `changed_fields` contains `"protected_paths"`.
     #[tokio::test]
     async fn test_config_poll_reinit_signal() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<DaclManagerCommand>(4);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<DaclManagerCommand>();
         signal_dacl_reinit_if_needed(&["protected_paths", "disk_allowlist"], &Some(tx));
 
         let cmd = rx.recv().await.expect("Reinit command must be sent");
@@ -6057,7 +6057,7 @@ mod tests {
     /// `changed_fields` does not contain `"protected_paths"`.
     #[tokio::test]
     async fn test_config_poll_reinit_signal_unchanged() {
-        let (tx, mut rx) = tokio::sync::mpsc::channel::<DaclManagerCommand>(4);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<DaclManagerCommand>();
         signal_dacl_reinit_if_needed(&["allowlist_entries"], &Some(tx));
 
         assert!(
@@ -6082,7 +6082,7 @@ mod tests {
             ..Default::default()
         }));
 
-        let (tx, rx) = tokio::sync::mpsc::channel::<DaclManagerCommand>(4);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<DaclManagerCommand>();
         let handle = spawn_dacl_watcher_manager(
             DaclWatcherBundle::empty(),
             rx,
@@ -6164,7 +6164,7 @@ mod tests {
 
         // Clean up the manager task so the test exits promptly.
         if let Some(tx) = ctx.dacl_manager_tx {
-            let _ = tx.try_send(DaclManagerCommand::Shutdown);
+            let _ = tx.send(DaclManagerCommand::Shutdown);
         }
         if let Some(handle) = ctx.dacl_manager_handle {
             let _ = tokio::time::timeout(Duration::from_secs(1), handle).await;
@@ -6188,7 +6188,7 @@ mod tests {
             ..Default::default()
         }));
 
-        let (tx, rx) = tokio::sync::mpsc::channel::<DaclManagerCommand>(4);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<DaclManagerCommand>();
         let handle = spawn_dacl_watcher_manager(
             DaclWatcherBundle::empty(),
             rx,
@@ -6198,7 +6198,7 @@ mod tests {
             config_arc,
         );
 
-        tx.try_send(DaclManagerCommand::Shutdown)
+        tx.send(DaclManagerCommand::Shutdown)
             .expect("Shutdown command must be accepted");
 
         let result = tokio::time::timeout(Duration::from_secs(2), handle).await;
@@ -6227,7 +6227,7 @@ mod tests {
         }));
         let correlator = Arc::new(BypassCorrelator::new(CorrelatorConfig::default()));
 
-        let (tx, rx) = tokio::sync::mpsc::channel::<DaclManagerCommand>(4);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<DaclManagerCommand>();
         let handle = spawn_dacl_watcher_manager(
             DaclWatcherBundle::empty(),
             rx,
@@ -6237,9 +6237,9 @@ mod tests {
             config_arc,
         );
 
-        tx.try_send(DaclManagerCommand::Reinit)
+        tx.send(DaclManagerCommand::Reinit)
             .expect("Reinit command must be accepted");
-        tx.try_send(DaclManagerCommand::Shutdown)
+        tx.send(DaclManagerCommand::Shutdown)
             .expect("Shutdown command must be accepted");
 
         let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
@@ -6271,7 +6271,7 @@ mod tests {
         }));
         let correlator = Arc::new(BypassCorrelator::new(CorrelatorConfig::default()));
 
-        let (tx, rx) = tokio::sync::mpsc::channel::<DaclManagerCommand>(4);
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel::<DaclManagerCommand>();
         let handle = spawn_dacl_watcher_manager(
             DaclWatcherBundle::empty(),
             rx,
@@ -6288,9 +6288,9 @@ mod tests {
                 .push(make_protected_path(r"C:\ReinitData", "T3"));
         }
 
-        tx.try_send(DaclManagerCommand::Reinit)
+        tx.send(DaclManagerCommand::Reinit)
             .expect("Reinit command must be accepted");
-        tx.try_send(DaclManagerCommand::Shutdown)
+        tx.send(DaclManagerCommand::Shutdown)
             .expect("Shutdown command must be accepted");
 
         let result = tokio::time::timeout(Duration::from_secs(5), handle).await;
