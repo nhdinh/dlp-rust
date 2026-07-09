@@ -2863,6 +2863,12 @@ impl DaclWatcherBundle {
         if let Some(h) = self.poll_handle.take() {
             let _ = h.await;
         }
+
+        // CR-01: stop the ReadDirectoryChangesW OS threads and close directory
+        // handles so they are not leaked across runtime reinitialisations.
+        if let Some(w) = self.watcher.take() {
+            w.unregister_all();
+        }
     }
 }
 
