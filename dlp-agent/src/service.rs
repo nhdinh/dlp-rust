@@ -1093,7 +1093,8 @@ pub enum ConfigCommand {
     RefreshNow,
 }
 
-/// Signals the DACL watcher manager to reinitialise when `protected_paths` changed.
+/// Signals the DACL watcher manager to reinitialise when `protected_paths` or
+/// `global_enforcement_mode` changed.
 ///
 /// Extracted from [`config_poll_loop`] so the signalling logic can be unit tested
 /// without constructing a real [`crate::server_client::ServerClient`].
@@ -1101,7 +1102,7 @@ fn signal_dacl_reinit_if_needed(
     changed_fields: &[&str],
     dacl_manager_tx: &Option<tokio::sync::mpsc::Sender<DaclManagerCommand>>,
 ) {
-    if changed_fields.contains(&"protected_paths") {
+    if changed_fields.contains(&"protected_paths") || changed_fields.contains(&"global_enforcement_mode") {
         if let Some(ref tx) = dacl_manager_tx {
             if let Err(e) = tx.try_send(DaclManagerCommand::Reinit) {
                 warn!(
