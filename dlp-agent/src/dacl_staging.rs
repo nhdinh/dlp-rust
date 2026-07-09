@@ -177,14 +177,15 @@ pub fn normalize_protected_path(path: &str) -> Result<String, NormalizeError> {
         }
     }
 
-    let bytes = path.as_bytes();
+    let mut normalized = path.replace('/', r"\");
+
+    let bytes = normalized.as_bytes();
     let is_drive_letter = bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic();
-    let is_unc = path.starts_with(r"\\");
+    let is_unc = normalized.starts_with(r"\\");
     if !is_drive_letter && !is_unc {
         return Err(NormalizeError::NotAbsolute);
     }
 
-    let mut normalized = path.replace('/', r"\");
     normalized = normalized.to_ascii_uppercase();
     if !normalized.ends_with('\\') {
         normalized.push('\\');
