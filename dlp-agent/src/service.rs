@@ -962,6 +962,26 @@ fn apply_payload_to_config(
         let additions: Vec<String> = new_paths.difference(&old_paths).cloned().collect();
         let removals: Vec<String> = old_paths.difference(&new_paths).cloned().collect();
 
+        // CR-02: clear stale staged removal rows for paths that are being
+        // re-added. Without this, the removal application task could later
+        // read an old row and unprotect a path that is currently configured.
+        if !additions.is_empty() {
+            if let Some(db) = agent_db() {
+                match crate::dacl_staging::clear_staged_removals(db, &additions) {
+                    Ok(cleared) => {
+                        if cleared > 0 {
+                            tracing::info!(count = cleared, "cleared stale staged removals for re-added paths");
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!(error = %e, "failed to clear stale staged removals for re-added paths");
+                    }
+                }
+            } else {
+                tracing::warn!("agent DB not initialised — cannot clear stale staged removals");
+            }
+        }
+
         // Stage removals in the local SQLite database.
         // The staging rows tell the repair watcher to suppress tamper alerts
         // when these paths' ACLs change.

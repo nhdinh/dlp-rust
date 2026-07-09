@@ -734,6 +734,52 @@ pub fn stage_removals(
     Ok(count)
 }
 
+/// Clear staged removal rows for paths that are being re-added to the config.
+///
+/// When a path leaves `protected_paths`, a removal row is staged so the
+/// repair watcher can suppress tamper alerts while the Deny ACE is removed.
+/// If the same path is later pushed again, the stale removal row must be
+/// deleted; otherwise the removal application task would read it and
+/// unprotect a path that is currently configured.
+///
+/// # Arguments
+///
+/// * `db` — The global agent SQLite connection.
+/// * `paths` — Slice of normalized paths that are being added back.
+///
+/// # Returns
+///
+/// The number of rows deleted.
+///
+/// # Errors
+///
+/// Returns `DaclStagingError::LockPoisoned` if the mutex is poisoned.
+/// Returns `DaclStagingError::Sqlite` on database errors.
+pub fn clear_staged_removals(
+    db: &std::sync::Mutex<Connection>,
+    paths: &[String],
+) -> Result<usize, DaclStagingError> {
+    let conn = db
+        .lock()
+        .map_err(|_| DaclStagingError::LockPoisoned("connection mutex poisoned".to_string()))?;
+    let mut count = 0;
+    for path in paths {
+        let normalized = match normalize_protected_path(path) {
+            Ok(p) => p,
+            Err(e) => {
+                warn!(path = %path, error = ?e, "skipping invalid path when clearing staged removals");
+                continue;
+            }
+        };
+        let rows_affected = conn.execute(
+            "DELETE FROM protected_paths_staging WHERE path = ?1 AND operation = 'remove'",
+            [normalized.as_str()],
+        )?;
+        count += rows_affected;
+    }
+    Ok(count)
+}
+
 /// Spawn a background GC task that periodically removes expired staging rows.
 ///
 /// Uses an adaptive interval: if no rows were deleted, the interval is unchanged.
