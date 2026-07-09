@@ -402,7 +402,9 @@ impl BypassCorrelator {
     ///
     /// # Arguments
     ///
-    /// * `paths` - New list of protected path strings.
+    /// * `paths` - New list of protected path strings. Each entry is normalised
+    ///   with [`crate::dacl_staging::normalize_protected_path`]; invalid paths
+    ///   are silently dropped so the severity mapping only uses canonical forms.
     ///
     /// # Behavior
     ///
@@ -412,7 +414,11 @@ impl BypassCorrelator {
     /// The replacement takes a write lock briefly; concurrent readers continue
     /// to observe a consistent snapshot.
     pub fn set_protected_paths(&self, paths: Vec<String>) {
-        *self.protected_paths.write() = paths;
+        let normalized: Vec<String> = paths
+            .into_iter()
+            .filter_map(|p| crate::dacl_staging::normalize_protected_path(&p).ok())
+            .collect();
+        *self.protected_paths.write() = normalized;
     }
 
     /// Release per-PID resources held by the correlator.
