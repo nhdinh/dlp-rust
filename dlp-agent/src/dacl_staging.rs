@@ -271,15 +271,19 @@ impl DaclStaging {
         }
     }
 
-    /// Acquire the per-path lock for the given path.
-    ///
-    /// Returns a guard that holds the lock. The guard must be dropped before
-    /// the next operation on the same path can proceed.
     /// Execute a closure while holding the per-path lock.
     ///
     /// Serializes concurrent operations on the same path while allowing
-    /// concurrent operations on different paths.
-    fn with_path_lock<F, R>(&self, path: &str, f: F) -> R
+    /// concurrent operations on different paths. The lock is identified by the
+    /// normalized path string, so callers must already have normalized the path
+    /// with [`normalize_protected_path`] when cross-method coordination is
+    /// required.
+    ///
+    /// # Arguments
+    ///
+    /// * `path` — Normalized path whose per-path lock should be acquired.
+    /// * `f` — Closure to execute while holding the lock.
+    pub fn with_path_lock<F, R>(&self, path: &str, f: F) -> R
     where
         F: FnOnce() -> R,
     {
@@ -373,16 +377,38 @@ impl DaclStaging {
         let normalized = normalize_protected_path(path).map_err(|_| {
             DaclStagingError::InvalidPath(format!("cannot mark applied for invalid path: {path}"))
         })?;
-        self.with_path_lock(&normalized, || {
-            let conn = self.conn.lock().map_err(|_| {
-                DaclStagingError::LockPoisoned("connection mutex poisoned".to_string())
-            })?;
-            conn.execute(
-                "UPDATE protected_paths_staging SET applied_at = ?1 WHERE path = ?2",
-                [&Utc::now().to_rfc3339(), normalized.as_str()],
-            )?;
-            Ok(())
-        })
+        self.with_path_lock(&normalized, || self.mark_applied_locked(&normalized))
+    }
+
+    /// Mark a staging row as applied without acquiring the per-path lock.
+    ///
+    /// This is the lock-free core of [`mark_applied`]. Callers that already hold
+    /// the per-path lock (for example, the staged removal application task that
+    /// must serialize snapshot retrieval, tripwire removal, and row marking)
+    /// should use this method to avoid reentrant lock acquisition.
+    ///
+    /// # Arguments
+    ///
+    /// * `normalized_path` — A path that has already been normalized by
+    ///   [`normalize_protected_path`].
+    ///
+    /// # Errors
+    ///
+    /// Returns `DaclStagingError::LockPoisoned` if the connection mutex is poisoned.
+    /// Returns `DaclStagingError::Sqlite` on database errors.
+    pub(crate) fn mark_applied_locked(
+        &self,
+        normalized_path: &str,
+    ) -> Result<(), DaclStagingError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| DaclStagingError::LockPoisoned("connection mutex poisoned".to_string()))?;
+        conn.execute(
+            "UPDATE protected_paths_staging SET applied_at = ?1 WHERE path = ?2",
+            [&Utc::now().to_rfc3339(), normalized_path],
+        )?;
+        Ok(())
     }
 
     /// Check if a path has any active staging row (regardless of `applied_at`).

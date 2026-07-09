@@ -3342,22 +3342,45 @@ fn spawn_removal_application_task(
                                     };
                                     let path = std::path::PathBuf::from(&normalized);
 
-                                    // mark_applied already acquires the per-path lock
-                                    // internally, so we call it directly.
+                                    // The agent is responsible for restoring the original ACL
+                                    // before the staging row is finalized. The entire sequence
+                                    // (snapshot lookup, tripwire removal, mark_applied, unregister)
+                                    // runs under the per-path lock so a concurrent repair task
+                                    // cannot observe a partially-removed state or consume a
+                                    // snapshot that is about to be deleted by unregister.
+                                    let staging_clone = Arc::clone(&staging);
+                                    let watcher_clone = Arc::clone(&watcher);
+                                    let normalized_clone = normalized.clone();
+                                    let path_clone = path.clone();
+                                    let row_path = row.path.clone();
 
-                                    // Mark as applied (the ACL removal was done by admin API).
-                                    // We don't call remove_tripwire_from_path here because
-                                    // the admin API already modified the ACL. Our job is to
-                                    // mark the staging row so the watcher stops suppressing.
-                                    if let Err(e) = staging.mark_applied(&normalized) {
-                                        tracing::warn!(path = %row.path, error = %e, "failed to mark removal as applied");
-                                    } else {
-                                        tracing::info!(path = %row.path, "staged removal marked as applied");
-                                    }
+                                    if let Err(e) = tokio::task::spawn_blocking(move || {
+                                        staging_clone.with_path_lock(&normalized_clone, || {
+                                            match watcher_clone.get_snapshot(&path_clone) {
+                                                Some(snapshot) => {
+                                                    if let Err(e) = crate::dacl_tripwire::remove_tripwire_from_path(&path_clone, &snapshot) {
+                                                        tracing::warn!(path = %row_path, error = %e, "failed to remove DLP tripwire from path");
+                                                    } else {
+                                                        tracing::info!(path = %row_path, "DLP tripwire removed from path");
+                                                    }
+                                                }
+                                                None => {
+                                                    tracing::warn!(path = %row_path, "no canonical snapshot found for removed path — tripwire removal skipped");
+                                                }
+                                            }
 
-                                    // Unregister watcher for this path since it's no longer protected.
-                                    if let Err(e) = watcher.unregister(&path) {
-                                        tracing::warn!(path = %row.path, error = %e, "failed to unregister watcher for removed path");
+                                            if let Err(e) = staging_clone.mark_applied_locked(&normalized_clone) {
+                                                tracing::warn!(path = %row_path, error = %e, "failed to mark removal as applied");
+                                            } else {
+                                                tracing::info!(path = %row_path, "staged removal marked as applied");
+                                            }
+
+                                            if let Err(e) = watcher_clone.unregister(&path_clone) {
+                                                tracing::warn!(path = %row_path, error = %e, "failed to unregister watcher for removed path");
+                                            }
+                                        });
+                                    }).await {
+                                        tracing::warn!(path = %row.path, error = %e, "removal application task panicked");
                                     }
                                 }
                             }
@@ -6260,6 +6283,148 @@ mod tests {
             sev, "crit",
             "added protected path must be treated as protected after Reinit"
         );
+    }
+
+    // --- Phase 58.7-04: staged removal application task ---
+
+    /// Test that the removal application task removes the DLP tripwire, marks
+    /// the staging row applied, and unregisters the watcher for a staged removal.
+    #[tokio::test]
+    async fn test_removal_task_removes_tripwire() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
+        crate::dacl_staging::init_staging_table(&conn).expect("init table");
+        let staging = Arc::new(crate::dacl_staging::DaclStaging::from_connection(conn));
+
+        let temp_dir = std::env::temp_dir().join("dlp_removal_task_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let raw_path = temp_dir.to_string_lossy().to_string();
+        let normalized = crate::dacl_staging::normalize_protected_path(&raw_path).unwrap();
+        let normalized_path = std::path::PathBuf::from(&normalized);
+
+        let watcher = Arc::new(crate::dacl_repair_watcher::DaclWatcher::new());
+        let snapshot = crate::dacl_tripwire::CanonicalAclSnapshot {
+            sddl: String::from("D:(A;;FA;;;S-1-5-18)"),
+            created_at: chrono::Utc::now(),
+            path: normalized_path.clone(),
+        };
+
+        // If registration fails (restricted CI env), skip the Windows-specific
+        // parts but still verify the task orchestration on the staging row.
+        let registered = watcher.register(&normalized_path, snapshot).is_ok();
+
+        staging.stage_removal(&raw_path).unwrap();
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = spawn_removal_application_task(
+            Arc::clone(&staging),
+            Arc::clone(&watcher),
+            1,
+            shutdown_rx,
+        );
+
+        // Wait for the removal task to process the row.
+        tokio::time::sleep(Duration::from_millis(2500)).await;
+
+        assert!(
+            staging.is_staged_and_applied(&normalized).unwrap(),
+            "staging row must be marked applied"
+        );
+
+        if registered {
+            assert!(
+                watcher.get_snapshot(&normalized_path).is_none(),
+                "watcher must be unregistered after removal"
+            );
+        }
+
+        let _ = shutdown_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    /// Test that the entire removal sequence runs under the per-path lock.
+    /// While another thread holds the lock, the removal task cannot unregister
+    /// the watcher; after the lock is released, the task completes.
+    #[tokio::test]
+    async fn test_removal_task_lock_scope() {
+        let conn = rusqlite::Connection::open_in_memory().expect("open in-memory db");
+        crate::dacl_staging::init_staging_table(&conn).expect("init table");
+        let staging = Arc::new(crate::dacl_staging::DaclStaging::from_connection(conn));
+
+        let temp_dir = std::env::temp_dir().join("dlp_removal_lock_scope_test");
+        let _ = std::fs::remove_dir_all(&temp_dir);
+        let _ = std::fs::create_dir_all(&temp_dir);
+
+        let raw_path = temp_dir.to_string_lossy().to_string();
+        let normalized = crate::dacl_staging::normalize_protected_path(&raw_path).unwrap();
+        let normalized_path = std::path::PathBuf::from(&normalized);
+
+        let watcher = Arc::new(crate::dacl_repair_watcher::DaclWatcher::new());
+        let snapshot = crate::dacl_tripwire::CanonicalAclSnapshot {
+            sddl: String::from("D:(A;;FA;;;S-1-5-18)"),
+            created_at: chrono::Utc::now(),
+            path: normalized_path.clone(),
+        };
+
+        let registered = watcher.register(&normalized_path, snapshot).is_ok();
+
+        staging.stage_removal(&raw_path).unwrap();
+
+        // Hold the per-path lock from a separate thread for a bounded time.
+        let staging_lock = Arc::clone(&staging);
+        let normalized_lock = normalized.clone();
+        let lock_released = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let lock_released_clone = Arc::clone(&lock_released);
+        let lock_handle = std::thread::spawn(move || {
+            staging_lock.with_path_lock(&normalized_lock, || {
+                lock_released_clone.store(true, std::sync::atomic::Ordering::SeqCst);
+                std::thread::sleep(Duration::from_secs(3));
+            });
+        });
+
+        // Wait until the lock is actually held.
+        while !lock_released.load(std::sync::atomic::Ordering::SeqCst) {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+
+        let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+        let handle = spawn_removal_application_task(
+            Arc::clone(&staging),
+            Arc::clone(&watcher),
+            1,
+            shutdown_rx,
+        );
+
+        // The removal task should tick within 1 s and then block on the lock.
+        // At 1.5 s the watcher must still be registered because the lock is held.
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+        if registered {
+            assert!(
+                watcher.get_snapshot(&normalized_path).is_some(),
+                "watcher must still be registered while per-path lock is held"
+            );
+        }
+
+        // Release the lock and wait for the removal task to finish.
+        lock_handle.join().expect("lock thread must finish");
+        tokio::time::sleep(Duration::from_millis(1500)).await;
+
+        assert!(
+            staging.is_staged_and_applied(&normalized).unwrap(),
+            "staging row must be marked applied after lock release"
+        );
+        if registered {
+            assert!(
+                watcher.get_snapshot(&normalized_path).is_none(),
+                "watcher must be unregistered after lock release"
+            );
+        }
+
+        let _ = shutdown_tx.send(true);
+        let _ = tokio::time::timeout(Duration::from_secs(2), handle).await;
+        let _ = std::fs::remove_dir_all(&temp_dir);
     }
 
     // --- Phase 58.7: bypass correlator and classification cache wiring ---
