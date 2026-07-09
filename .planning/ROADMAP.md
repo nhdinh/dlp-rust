@@ -622,12 +622,12 @@ Plans:
 **Wave 1** *(no dependencies)*
 
 - [ ] `58.8-01-PLAN.md` — Hook DLL override trigger: emit `IpcPayloadV1::RequestOverride` from `classify_and_log_path` / `classify_and_log_handle` deny paths with a 30-second per-path cooldown and an integration test.
-- [ ] `58.8-02-PLAN.md` — Server-side health infrastructure: add `HealthSnapshotStore`, `DashboardHealthSnapshot`, `GET /admin/health`, `POST /agent/health`, and initialize `diagnostic_store` and `health_snapshot_store` in production `AppState`.
+- [ ] `58.8-02-PLAN.md` — Server-side health infrastructure: add `HealthSnapshotStore`, `DashboardHealthSnapshot`, `GET /admin/health`, public per-agent rate-limited `POST /agents/{id}/health`, and initialize `diagnostic_store` and `health_snapshot_store` in production `AppState`.
 
 **Wave 2** *(blocked on Wave 1 server-side completion)*
 
-- [ ] `58.8-03-PLAN.md` — Agent health push + health API round-trip test: add `ServerClient::submit_health_snapshot`, a periodic agent push task, and a focused `dlp-server/tests/health_api_integration.rs` round-trip test.
-- [ ] `58.8-04-PLAN.md` — Integration-test compilation fixes + admin CLI self-health verification: update all existing `dlp-server/tests/` `AppState` literals for the new field and add a `dlp-admin-cli` `EngineClient::get_self_health()` test that proves a non-empty snapshot is returned.
+- [ ] `58.8-03-PLAN.md` — DIFF-01 semantics + agent health push: defer server approval submission until the UI confirms with justification, add `ServerClient::submit_health_snapshot`, a periodic agent push task with shutdown wiring, and a focused `dlp-server/tests/health_api_integration.rs` round-trip test.
+- [ ] `58.8-04-PLAN.md` — Integration-test compilation fixes + admin CLI self-health verification: discover and update every `AppState` literal in `dlp-server/src` and `dlp-server/tests`, add a `dlp-admin-cli` `EngineClient::get_self_health()` test asserting the admin bearer token is sent, and add a server 401 test for unauthenticated `GET /admin/health`.
 
 ### Phase 59: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 
