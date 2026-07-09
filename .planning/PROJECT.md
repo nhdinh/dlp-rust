@@ -1,7 +1,7 @@
 ---
 name: DLP-RUST
 version: v0.11.0-shipped
-last_updated: 2026-06-23
+last_updated: 2026-07-09
 status: in_progress
 shipped: v0.2.0, v0.3.0, v0.4.0, v0.5.0, v0.6.0, v0.7.0, v0.7.1, v0.8.0, v0.8.1, v0.9.0, v0.11.0
 active_milestone: v0.10.0
@@ -155,6 +155,7 @@ If NTFS ALLOW and ABAC DENY → FINAL RESULT = DENY. ABAC always tightens, never
 - ✓ **Hook DLL Surface Expansion + Crash Hardening + Build Harness** (v0.10.0 Phase 48, completed 2026-06-21) — unified dual-arch hook DLL with 12 file-I/O trampolines, catch_unwind + SEH wrappers, zero-allocation pipe buffers, x86 sibling DLL, CI matrix, and Authenticode release signing pipeline (BLOCK-01..04, BLOCK-10)
 
 - ✓ **Close v0.10.0 ship-gap verification items** (Phase 58.1, completed 2026-06-23) — hook DLL journal writes for all mutating trampolines, bypass correlator bypass_rx routing, missing VERIFICATION.md artifacts for phases 48–58, OPS-04 UAT execution handoff PowerShell script and companion guide (SC-58.1-01..04)
+- ✓ **DACL protected_paths wiring gap closure** (Phase 58.7, completed 2026-07-09) — agent-side consumers (`init_dacl_watcher`, `BypassCorrelator`, classification cache) read from `AgentConfig.protected_paths`; path normalization/validation rejects traversal and relative paths; staging keys migrated to canonical form; runtime reinit applies new protected paths without service restart; agent removes DLP Deny ACE when paths are deleted (DACL-01..05, CACHE-04)
 
 ### Active (v0.10.0 — Real-Time File Access Prevention)
 
