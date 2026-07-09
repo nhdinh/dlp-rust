@@ -77,7 +77,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 58.4: Close gap: DIFF-02/03/04 — wire differentiators into hook DLL deny paths (INSERTED)** — invoke diagnostic snapshot capture, content SHA-256 hashing, and health snapshot ingestion from the hook DLL deny paths. (completed 2026-06-29)
 - [x] **Phase 58.5: Unhook dlp_hook_dll.dll when dlp-agent is killed/exited (INSERTED)** — Core unhook protocol complete 2026-07-02; test-isolation quick plan `20260706-isolate-dlp-hook-tests` completed 2026-07-06.
 - [ ] **Phase 58.6: Targeted hook injection — only processes that perform file operations (INSERTED)** — investigate and implement selective hook injection based on process file-operation behavior instead of universal injection.
-- [ ] **Phase 58.7: Close gap: DACL protected_paths wiring (INSERTED)** — wire the protected_paths configuration from policy sync through the DACL tripwire repair watcher and agent enforcement path.
+- [x] **Phase 58.7: Close gap: DACL protected_paths wiring (INSERTED)** — wire the protected_paths configuration from policy sync through the DACL tripwire repair watcher and agent enforcement path. (completed 2026-07-09)
 
 ---
 
@@ -586,7 +586,7 @@ Plans:
 **Goal:** Close the agent-side wiring gap so all consumers of the protected-path list read from the server-pushed `AgentConfig.protected_paths` field, and enable runtime reinitialization of the DACL watcher and classification cache when `protected_paths` changes without requiring an agent service restart.
 **Requirements**: DACL-01, DACL-02, DACL-03, DACL-04, DACL-05, CACHE-04
 **Depends on:** Phase 58
-**Plans:** 3/4 plans executed
+**Plans:** 4/4 plans complete
 
 **Wave 1** *(no dependencies)*
 
@@ -863,7 +863,7 @@ Plans:
 - [x] 58.7-01-PLAN.md
 - [x] 58.7-02-PLAN.md
 - [x] 58.7-03-PLAN.md
-- [ ] 58.7-04-PLAN.md
+- [x] 58.7-04-PLAN.md
 
 - [x] `67.1-01-PLAN.md` — XPS Page Geometry + Text Metrics: WatermarkGeometry, FontMetrics trait, TestFontMetrics, DirectWriteFontMetrics with ComGuard RAII
 - [x] `67.1-02-PLAN.md` — XPS ZIP Watermark Injection: streaming XML reader-writer, namespace propagation, ZIP archive rewrite with compression preservation

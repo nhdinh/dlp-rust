@@ -4,17 +4,17 @@ milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
 current_phase: 58.7
 current_phase_name: close-gap-dacl-protected_paths-wiring
-status: executing
-stopped_at: Completed 58.7-02-PLAN.md
-last_updated: "2026-07-08T12:31:19.217Z"
+status: verifying
+stopped_at: Completed 58.7-04-PLAN.md
+last_updated: "2026-07-09T01:46:55.636Z"
 last_activity: 2026-07-08
 last_activity_desc: Phase 58.7 execution started
 progress:
   total_phases: 50
-  completed_phases: 38
+  completed_phases: 39
   total_plans: 214
-  completed_plans: 182
-  percent: 76
+  completed_plans: 183
+  percent: 78
 ---
 
 # Project State
@@ -31,7 +31,7 @@ progress:
 
 Phase: 58.7 (close-gap-dacl-protected_paths-wiring) — EXECUTING
 Plan: 4 of 4
-Status: Ready to execute
+Status: Phase complete — ready for verification
 Verification: TBD
 Last activity: 2026-07-08 — Phase 58.7 execution started
 
@@ -194,8 +194,8 @@ Phase 59 and later are complete and shipped as part of v0.11.0.
 
 ## Session Continuity
 
-Last session: 2026-07-08T12:29:27.535Z
-Stopped at: Completed 58.7-02-PLAN.md
+Last session: 2026-07-09T01:46:55.621Z
+Stopped at: Completed 58.7-04-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
@@ -249,6 +249,7 @@ Resume file: None
 | Phase 58.7 P01 | 12min | 3 tasks | 2 files |
 | Phase 58.7-close-gap-dacl-protected_paths-wiring P02 | 48min | 3 tasks | 1 files |
 | Phase 58.7-close-gap-dacl-protected_paths-wiring P03 | 35min | 2 tasks | 2 files |
+| Phase 58.7 P04 | 10min | 2 tasks | 3 files |
 
 ## Quick Tasks Completed
 
@@ -303,3 +304,4 @@ Resume file: None
 - [Phase 58.7-close-gap-dacl-protected_paths-wiring]: Kept parking_lot::RwLock instead of arc-swap to avoid a new dependency; migration to arc-swap is reserved for proven reader contention — The correlator reads protected_paths on every ETW event and writes only on policy sync. RwLock satisfies the hot path without adding a dependency; the ignored latency test documents the acceptance criterion.
 - [Phase 58.7-close-gap-dacl-protected_paths-wiring]: Reordered run_loop_init so the bypass correlator is built before the DACL manager — The manager must hold a clone of the Arc<BypassCorrelator> to call set_protected_paths during Reinit without restarting the correlator task.
 - [Phase 58.7-close-gap-dacl-protected_paths-wiring]: Reinit reads a fresh AgentConfig snapshot each time so global_mode cannot become stale — Threat T-58.7-08 requires that Reinit use current global_mode. Building the minimal reinit config inside the command handler from the shared config Arc guarantees a fresh snapshot.
+- [Phase 58.7]: Phase 58.7: The per-path removal sequence (get_snapshot -> remove_tripwire_from_path -> mark_applied -> unregister) runs under DaclStaging::with_path_lock to prevent races with the repair task. — Prevents concurrent repair task from observing partial removal state or consuming a snapshot that unregister is about to delete.
