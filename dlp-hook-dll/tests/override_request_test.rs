@@ -142,6 +142,11 @@ fn request_override_is_emitted_on_deny() {
     assert_eq!(req.resource_path, test_path);
     assert_eq!(req.data_object_id, test_path);
     assert!(!req.requester_sid.is_empty());
+    // WR-01: the override classification must be sourced from the resolved
+    // data tier, never from the deny-return enum's `Debug` (previously this
+    // yielded `"BoolFalse"`). This deny is a cache-miss pipe round-trip, so no
+    // tier is resolved locally and the honest fallback is `"Unknown"`.
+    assert_eq!(req.classification, "Unknown");
 
     drop(server);
 }

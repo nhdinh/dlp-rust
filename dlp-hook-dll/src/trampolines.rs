@@ -417,6 +417,13 @@ pub(crate) fn classify_and_log_path(
     // Wrap entire decision logic with QPC latency measurement.
     // Track classification source for diagnostic snapshots (DIFF-02).
     let mut classification_source = ClassificationSource::Pipe;
+    // WR-01: mirror the resolved data tier out of the closure so the override
+    // prompt/audit records the real classification instead of the deny-return
+    // enum's `Debug` (previously `format!("{c:?}")` on `DenyReturn` yielded
+    // `"BoolFalse"` etc.). Refreshed from `cache_classification` on every call;
+    // `None` when the deny came from a cache-miss pipe round-trip (no local
+    // tier), in which case the override reports an honest `"Unknown"`.
+    let mut override_tier: Option<Classification> = None;
     let (decision, elapsed_qpc) = crate::perf_telemetry::measure(|| {
         // 1. Check allowlist first (fastest path).
         // Get cache header for operator-extended allowlist.
@@ -477,6 +484,11 @@ pub(crate) fn classify_and_log_path(
                 }
             }
         }
+
+        // WR-01: mirror the resolved tier to the outer scope for the override
+        // prompt/audit. `Classification` is `Copy`, so this leaves
+        // `cache_classification` intact for the fail-mode decisions below.
+        override_tier = cache_classification;
 
         // DIFF-04: Record cache hit/miss counters.
         if is_cache_hit {
@@ -736,7 +748,15 @@ pub(crate) fn classify_and_log_path(
 
     // DIFF-01: Prompt the user to request an override on every deny branch.
     if decision.is_some() {
-        let classification = decision.map(|c| format!("{c:?}")).unwrap_or_default();
+        // WR-01: source the classification from the resolved data tier, never
+        // from the deny-return enum's `Debug`. Debug yields the tier code
+        // (`"T3"`) that `audit_classification_for_override` recognises; a
+        // cache-miss pipe deny has no local tier and reports an honest
+        // `"Unknown"` (kept non-empty so the prompt is still offered and the
+        // audit default of `T3` applies).
+        let classification = override_tier
+            .map(|c| format!("{c:?}"))
+            .unwrap_or_else(|| "Unknown".to_string());
         emit_override_request(path, action, handle_value, &classification);
     }
 
@@ -1091,7 +1111,13 @@ fn classify_and_log_handle(
 
     // DIFF-01: Prompt the user to request an override on every deny branch.
     if result.is_some() {
-        let classification = result.map(|c| format!("{c:?}")).unwrap_or_default();
+        // WR-01: the handle path does not resolve a data tier locally — the
+        // agent classifies by handle from its own tracker — so report an
+        // honest `"Unknown"` rather than the deny-return enum's `Debug`
+        // (previously `"BoolFalse"`). The string stays non-empty so the
+        // override prompt is still offered and the audit default of `T3`
+        // applies.
+        let classification = "Unknown".to_string();
         emit_override_request(path, action, handle_value, &classification);
     }
 
