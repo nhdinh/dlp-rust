@@ -1704,6 +1704,9 @@ async fn confirmed_override_loop(
 /// Default interval between health snapshot pushes to the server.
 const HEALTH_PUSH_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Default interval between diagnostic snapshot batch pushes to the server (DIFF-04).
+const DIAGNOSTIC_PUSH_INTERVAL: Duration = Duration::from_secs(60);
+
 /// Periodic health snapshot push loop.
 ///
 /// Reads the latest aggregated health snapshot from [`HealthAggregator`] and
@@ -1744,6 +1747,115 @@ async fn health_push_loop(
                 return;
             }
         }
+    }
+}
+
+/// Periodic diagnostic snapshot push loop (DIFF-04).
+///
+/// Drains every buffered [`DiagnosticSnapshot`] from the aggregator via
+/// [`DiagnosticAggregator::drain_all`] and forwards the batch to the server with
+/// [`ServerClient::submit_diagnostic_snapshot`] every `interval`. `drain_all`
+/// returns an owned `Vec` (all `DashMap` guards dropped before the `.await`), so
+/// no non-`Send` guard is ever held across the HTTP call (T-58.9-14). Push
+/// failures — including `429 Too Many Requests` (per-agent rate limit) and any
+/// `5xx` — are logged and retried on the next interval (RESEARCH A4); the 60 s
+/// cadence is the backoff, there is no spin-retry. On `shutdown` the loop performs
+/// one final drain + best-effort submit (flush-and-stop, T-58.9-15) before
+/// returning.
+///
+/// The batch is attributed to `pid = 0` (aggregate multi-pid drain); per-snapshot
+/// attribution lives inside each snapshot's own fields (RESEARCH A3). Snapshot
+/// contents (paths/SIDs) are never logged — only counts and the `agent_id` are
+/// emitted (CLAUDE.md 9.13).
+///
+/// # Arguments
+///
+/// * `server_client` — the HTTP client for the central server (owned; cloned at
+///   the spawn site).
+/// * `diagnostic_aggregator` — the aggregator buffering hook DLL snapshots.
+/// * `agent_id` — the agent identifier for the URL and auth header.
+/// * `interval` — the period between pushes.
+/// * `shutdown` — watch channel that signals the loop to flush and exit.
+async fn diagnostic_push_loop(
+    server_client: crate::server_client::ServerClient,
+    diagnostic_aggregator: Arc<crate::diagnostic_aggregator::DiagnosticAggregator>,
+    agent_id: String,
+    interval: Duration,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    let mut interval = tokio::time::interval(interval);
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                // drain_all returns an owned Vec; all DashMap guards are dropped
+                // before the await below (T-58.9-14).
+                let snapshots = diagnostic_aggregator.drain_all();
+                if snapshots.is_empty() {
+                    debug!("no diagnostic snapshots to push");
+                    continue;
+                }
+                if let Err(e) = server_client
+                    .submit_diagnostic_snapshot(&agent_id, 0, &snapshots)
+                    .await
+                {
+                    warn!(error = %e, count = snapshots.len(), "failed to submit diagnostics");
+                }
+            }
+            _ = shutdown.changed() => {
+                // Flush-and-stop (T-58.9-15): forward whatever is buffered before
+                // exiting. Best-effort — the service is shutting down.
+                let snapshots = diagnostic_aggregator.drain_all();
+                if !snapshots.is_empty() {
+                    let _ = server_client
+                        .submit_diagnostic_snapshot(&agent_id, 0, &snapshots)
+                        .await;
+                }
+                debug!("diagnostic push loop shutting down");
+                return;
+            }
+        }
+    }
+}
+
+/// Spawns the periodic diagnostic push task when a server client is available.
+///
+/// Mirrors the inline health-push spawn in [`run_loop_init`]. Returns
+/// `(Some(shutdown_tx), Some(handle))` when `server_client` is `Some` (the agent
+/// talks to a central server), or `(None, None)` in agent-only mode. The returned
+/// pair populates the existing [`RunLoopContext::diagnostic_push_shutdown`] and
+/// [`RunLoopContext::diagnostic_push_handle`] fields (DIFF-04) — no new
+/// [`RunLoopContext`] fields are added.
+///
+/// Extracted as a helper so the spawn wiring (which fills the `RunLoopContext`
+/// fields) can be unit-tested directly without booting the whole service.
+///
+/// # Arguments
+///
+/// * `server_client` — optional HTTP client; `None` in agent-only mode.
+/// * `diagnostic_aggregator` — the aggregator buffering hook DLL snapshots.
+/// * `interval` — the period between pushes (normally [`DIAGNOSTIC_PUSH_INTERVAL`]).
+///
+/// # Returns
+///
+/// `(Some(shutdown_tx), Some(handle))` when a client is present, else
+/// `(None, None)`.
+fn spawn_diagnostic_push_loop(
+    server_client: Option<crate::server_client::ServerClient>,
+    diagnostic_aggregator: Arc<crate::diagnostic_aggregator::DiagnosticAggregator>,
+    interval: Duration,
+) -> (
+    Option<tokio::sync::watch::Sender<bool>>,
+    Option<tokio::task::JoinHandle<()>>,
+) {
+    if let Some(sc) = server_client {
+        let agent_id = sc.agent_id().to_string();
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(async move {
+            diagnostic_push_loop(sc, diagnostic_aggregator, agent_id, interval, rx).await;
+        });
+        (Some(tx), Some(handle))
+    } else {
+        (None, None)
     }
 }
 
@@ -1863,6 +1975,10 @@ pub struct HookIpcServerConfig {
     pub bypass_tx: crossbeam_channel::Sender<BypassAlert>,
     /// Diagnostic snapshot aggregator for `PullDiagnostics` requests.
     pub diagnostic_aggregator: Arc<crate::diagnostic_aggregator::DiagnosticAggregator>,
+    /// Agent identity used to key one-way `DiagnosticsResponse` ingestion
+    /// (`{pid}_{agent_id}`). MUST equal the identity used for the periodic server
+    /// push so local keys and the remote identity stay consistent (DIFF-04 A3).
+    pub agent_id: Arc<str>,
     /// Health snapshot aggregator for `PullHealth` requests.
     pub health_aggregator: Arc<crate::health_aggregator::HealthAggregator>,
     /// Async sender for override requests (DIFF-01).
@@ -1951,6 +2067,10 @@ pub fn hook_request_to_evaluate_request(
 /// during service shutdown.
 fn spawn_hook_ipc_server(config: HookIpcServerConfig) -> Option<std::thread::JoinHandle<()>> {
     let diag = Arc::clone(&config.diagnostic_aggregator);
+    // Phase 58.9: clone survives the move of `diag` into `diag_handler` below so
+    // the one-way DiagnosticsResponse ingest arm can feed the same aggregator.
+    let diag_for_ingest = Arc::clone(&diag);
+    let agent_id_for_ipc = Arc::clone(&config.agent_id);
     let health = Arc::clone(&config.health_aggregator);
     let health_for_handler = Arc::clone(&health);
     let override_tx = config.override_tx.clone();
@@ -2097,6 +2217,7 @@ fn spawn_hook_ipc_server(config: HookIpcServerConfig) -> Option<std::thread::Joi
     .with_override_handler(override_handler)
     .with_hash_cache(hash_cache)
     .with_health_aggregator(health)
+    .with_diagnostic_aggregator(agent_id_for_ipc, diag_for_ingest)
     .with_registry(config.process_registry)
     .with_audit_ctx(config.audit_ctx);
 
@@ -2321,6 +2442,13 @@ async fn run_loop_init(
         (None, None)
     };
 
+    // ── Phase 58.9: Periodic diagnostic snapshot push to server (DIFF-04) ───
+    let (diagnostic_push_shutdown, diagnostic_push_handle) = spawn_diagnostic_push_loop(
+        server_client.clone(),
+        Arc::clone(&diagnostic_aggregator),
+        DIAGNOSTIC_PUSH_INTERVAL,
+    );
+
     let override_handle = tokio::spawn(async move {
         while let Some(req) = override_rx.recv().await {
             let request_id = format!("ovr-{}", uuid::Uuid::new_v4());
@@ -2465,12 +2593,24 @@ async fn run_loop_init(
     // hook IPC server for unhook failure events.
     let audit_ctx = build_audit_ctx(machine_name);
 
+    // Phase 58.9: agent identity for one-way `DiagnosticsResponse` ingestion.
+    // Source it from the server client when present so the aggregator keys match
+    // the identity used by the periodic server push (DIFF-04 A3); fall back to the
+    // audit-context identity in agent-only mode (no push runs in that case, so
+    // there is no remote identity to stay consistent with).
+    let ipc_agent_id: Arc<str> = server_client
+        .as_ref()
+        .map(|sc| sc.agent_id())
+        .unwrap_or_else(|| audit_ctx.agent_id.as_str())
+        .into();
+
     let hook_ipc_config = HookIpcServerConfig {
         pipe_name: crate::hook_ipc::DEFAULT_PIPE_NAME.to_string(),
         cache: classification_cache_dyn,
         offline: Arc::clone(&offline),
         bypass_tx,
         diagnostic_aggregator: Arc::clone(&diagnostic_aggregator),
+        agent_id: Arc::clone(&ipc_agent_id),
         health_aggregator: Arc::clone(&health_aggregator),
         override_tx: override_tx.clone(),
         approval_cache: Arc::clone(&approval_cache),
@@ -2867,10 +3007,10 @@ async fn run_loop_init(
         health_aggregator,
         // Phase 58: Hook IPC server thread handle.
         hook_ipc_handle,
-        // Phase 58: Diagnostic push task shutdown signal (reserved for future server push).
-        diagnostic_push_shutdown: None,
-        // Phase 58: Diagnostic push task handle (reserved for future server push).
-        diagnostic_push_handle: None,
+        // Phase 58.9: Diagnostic push task shutdown signal (DIFF-04).
+        diagnostic_push_shutdown,
+        // Phase 58.9: Diagnostic push task handle (DIFF-04).
+        diagnostic_push_handle,
         // Phase 58.8-03: Health push task shutdown signal (DIFF-04).
         health_push_shutdown,
         // Phase 58.8-03: Health push task handle (DIFF-04).
@@ -5137,6 +5277,20 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
     }
     crate::password_stop::debug_log("run_loop: health push stopped");
 
+    // Phase 58.9: Stop the diagnostic snapshot push task (DIFF-04).
+    if let Some(tx) = ctx.diagnostic_push_shutdown {
+        crate::password_stop::debug_log("run_loop: signalling diagnostic push shutdown");
+        let _ = tx.send(true);
+    }
+    if let Some(handle) = ctx.diagnostic_push_handle {
+        match tokio::time::timeout(Duration::from_secs(5), handle).await {
+            Ok(Ok(())) => debug!("diagnostic push task shut down cleanly"),
+            Ok(Err(e)) => warn!(error = %e, "diagnostic push task panicked"),
+            Err(_) => warn!("diagnostic push task did not shut down within 5s"),
+        }
+    }
+    crate::password_stop::debug_log("run_loop: diagnostic push stopped");
+
     // Phase 53: Stop bypass correlator.
     if let Some(shutdown_tx) = ctx.correlator_shutdown {
         crate::password_stop::debug_log("run_loop: signalling bypass correlator shutdown");
@@ -7253,6 +7407,7 @@ fn test_hook_ipc_config(pipe_name: &str) -> HookIpcServerConfig {
         offline,
         bypass_tx,
         diagnostic_aggregator: diag,
+        agent_id: Arc::from("AGENT-TEST"),
         health_aggregator: health,
         override_tx,
         approval_cache: approval,
@@ -8603,4 +8758,152 @@ async fn health_push_loop_starts_pushes_and_shuts_down() {
         count >= 1,
         "expected at least one health snapshot push, got {count}"
     );
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn diagnostic_push_loop_drains_pushes_and_shuts_down() {
+    use axum::{extract::Json, http::StatusCode, response::IntoResponse, routing::post, Router};
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    let received_count = Arc::new(Mutex::new(0u32));
+    let received_count_clone = Arc::clone(&received_count);
+
+    let app = Router::new().route(
+        "/agents/:id/diagnostics",
+        post(move |Json(_body): Json<serde_json::Value>| async move {
+            *received_count_clone.lock().await += 1;
+            StatusCode::OK.into_response()
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+
+    let mut client =
+        crate::server_client::ServerClient::from_env_with_config(Some(&format!("http://{addr}")))
+            .expect("client creation");
+    client.set_agent_auth_hash("hash-789".to_string());
+
+    let aggregator = Arc::new(crate::diagnostic_aggregator::DiagnosticAggregator::new());
+
+    let make_snapshot = |qpc: u64| dlp_common::hook_ipc::DiagnosticSnapshot {
+        hook_function: "WriteFile".to_string(),
+        classification_source: dlp_common::hook_ipc::ClassificationSource::Pipe,
+        classification_age_ms: 0,
+        abac_resource: r"C:\test\secret.doc".to_string(),
+        abac_action: "WRITE".to_string(),
+        abac_environment: "LocalNTFS".to_string(),
+        matched_policy_id: Some("POL-001".to_string()),
+        enforcement_mode: Some("DENY".to_string()),
+        decision_latency_us: 1234,
+        timestamp_qpc: qpc,
+        timestamp_secs: 1_700_000_000 + qpc,
+        user_sid: "S-1-5-21-123".to_string(),
+    };
+
+    // Pre-seed one snapshot so the first periodic tick has something to push.
+    aggregator.ingest("agent-test", 1234, vec![make_snapshot(1)]);
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let agent_id = client.agent_id().to_string();
+    let handle = tokio::spawn(diagnostic_push_loop(
+        client,
+        Arc::clone(&aggregator),
+        agent_id,
+        Duration::from_millis(50),
+        shutdown_rx,
+    ));
+
+    // Wait long enough for at least one periodic push (tick drains the seed).
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    let after_tick = *received_count.lock().await;
+    assert!(
+        after_tick >= 1,
+        "expected at least one diagnostic push, got {after_tick}"
+    );
+    assert_eq!(
+        aggregator.total_snapshot_count(),
+        0,
+        "periodic push should have drained the seeded snapshot"
+    );
+
+    // Buffer a fresh snapshot, then signal shutdown immediately so the
+    // `shutdown.changed()` arm (not a later tick) performs the final submit.
+    aggregator.ingest("agent-test", 1234, vec![make_snapshot(2)]);
+    let _ = shutdown_tx.send(true);
+
+    match tokio::time::timeout(Duration::from_secs(2), handle).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => panic!("diagnostic push task panicked: {e}"),
+        Err(_) => panic!("diagnostic push task did not shut down within 2s"),
+    }
+
+    // Flush-on-shutdown (T-58.9-15): the buffered snapshot was forwarded exactly
+    // once by the shutdown arm and the aggregator is empty afterward.
+    let final_count = *received_count.lock().await;
+    assert_eq!(
+        final_count,
+        after_tick + 1,
+        "shutdown arm must flush the buffered snapshot exactly once (before={after_tick}, after={final_count})"
+    );
+    assert_eq!(
+        aggregator.total_snapshot_count(),
+        0,
+        "flush-on-shutdown should drain the aggregator"
+    );
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn diagnostic_push_spawn_populates_handles_when_server_present() {
+    use std::sync::Arc;
+
+    let aggregator = Arc::new(crate::diagnostic_aggregator::DiagnosticAggregator::new());
+
+    // Agent-only mode (no server): the spawn helper must return (None, None) so
+    // the RunLoopContext diagnostic_push_* fields stay unpopulated.
+    let (tx_none, handle_none) =
+        spawn_diagnostic_push_loop(None, Arc::clone(&aggregator), Duration::from_secs(60));
+    assert!(
+        tx_none.is_none(),
+        "no shutdown sender without a server client"
+    );
+    assert!(
+        handle_none.is_none(),
+        "no push handle without a server client"
+    );
+
+    // Server mode: a client is enough to exercise the spawn wiring. No request is
+    // made because we signal shutdown before the 60 s interval elapses.
+    let client =
+        crate::server_client::ServerClient::from_env_with_config(Some("http://127.0.0.1:1"))
+            .expect("client creation");
+    let (tx_some, handle_some) = spawn_diagnostic_push_loop(
+        Some(client),
+        Arc::clone(&aggregator),
+        Duration::from_secs(60),
+    );
+    assert!(
+        tx_some.is_some(),
+        "shutdown sender populated when server present"
+    );
+    assert!(
+        handle_some.is_some(),
+        "push handle populated when server present"
+    );
+
+    // Clean shutdown: signal and join — the loop must exit promptly.
+    let _ = tx_some.unwrap().send(true);
+    match tokio::time::timeout(Duration::from_secs(2), handle_some.unwrap()).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => panic!("diagnostic push task panicked: {e}"),
+        Err(_) => panic!("diagnostic push task did not shut down within 2s"),
+    }
 }
