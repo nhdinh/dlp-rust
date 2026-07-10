@@ -112,20 +112,32 @@ impl HealthSnapshotStore {
     /// * `snapshot` — health snapshot to ingest.
     pub fn ingest(&self, agent_id: &str, snapshot: HookHealthSnapshot) {
         let key = agent_id.to_owned();
-        let is_new_key = !self.snapshots.contains_key(&key);
-
+        // Determine newness atomically from the insert itself. DashMap's entry
+        // API holds the shard lock for the duration of the match, so the
+        // `Vacant` branch runs exactly once per key even under concurrent first
+        // ingests. This keeps `key_queue` (and therefore global LRU eviction)
+        // consistent with the map — the previous `contains_key` + `entry` pair
+        // was a TOCTOU race that could push duplicate keys (WR-03).
+        let mut is_new_key = false;
         {
-            let mut entry =
-                self.snapshots
-                    .entry(key.clone())
-                    .or_insert_with(|| AgentHealthRecord {
-                        latest: snapshot.clone(),
-                        history: VecDeque::with_capacity(self.max_history),
+            match self.snapshots.entry(key.clone()) {
+                dashmap::mapref::entry::Entry::Vacant(vacant) => {
+                    let mut history = VecDeque::with_capacity(self.max_history);
+                    history.push_back(snapshot.clone());
+                    vacant.insert(AgentHealthRecord {
+                        latest: snapshot,
+                        history,
                     });
-            entry.latest = snapshot.clone();
-            entry.history.push_back(snapshot);
-            while entry.history.len() > self.max_history {
-                entry.history.pop_front();
+                    is_new_key = true;
+                }
+                dashmap::mapref::entry::Entry::Occupied(mut occupied) => {
+                    let record = occupied.get_mut();
+                    record.latest = snapshot.clone();
+                    record.history.push_back(snapshot);
+                    while record.history.len() > self.max_history {
+                        record.history.pop_front();
+                    }
+                }
             }
         }
 
@@ -174,9 +186,16 @@ impl HealthSnapshotStore {
             0.0
         };
 
-        let overall_status = if max_fail_state == 2 || total_pipe_round_trips == 0 {
+        // Reserve `critical` for an actual isolation event (`fail_state == 2`).
+        // A healthy-but-idle agent reports zero pipe round-trips (no blocked
+        // file ops in the window) and must NOT be paged as critical (WR-04).
+        // Only flag a low cache-hit rate as degraded when there is real volume
+        // to measure against; otherwise an idle agent would read as degraded.
+        let overall_status = if max_fail_state == 2 {
             "critical"
-        } else if max_fail_state == 1 || avg_cache_hit_rate < 0.80 {
+        } else if max_fail_state == 1 {
+            "degraded"
+        } else if total_pipe_round_trips > 0 && avg_cache_hit_rate < 0.80 {
             "degraded"
         } else {
             "healthy"
@@ -319,14 +338,58 @@ mod tests {
     }
 
     #[test]
-    fn test_zero_pipe_trips_critical() {
+    fn test_zero_pipe_trips_is_healthy() {
+        // An idle agent (no blocked file ops in the window) is healthy, not
+        // critical. Regression guard for WR-04.
         let store = HealthSnapshotStore::new();
         store.ingest("agent-1", make_snapshot(1, 1, 0, 0.95, 0, 100));
 
         let dashboard = store
             .get_dashboard_snapshot()
             .expect("should have snapshot");
-        assert_eq!(dashboard.overall_status, "critical");
+        assert_eq!(dashboard.overall_status, "healthy");
+    }
+
+    #[test]
+    fn test_low_cache_hit_under_load_is_degraded() {
+        // Low cache-hit rate only degrades when there is real volume.
+        let store = HealthSnapshotStore::new();
+        store.ingest("agent-1", make_snapshot(1, 1, 100, 0.50, 0, 100));
+
+        let dashboard = store
+            .get_dashboard_snapshot()
+            .expect("should have snapshot");
+        assert_eq!(dashboard.overall_status, "degraded");
+    }
+
+    #[test]
+    fn test_concurrent_first_ingest_does_not_duplicate_keys() {
+        // WR-03 regression guard: many concurrent first ingests of the same
+        // agent must produce exactly one map entry and exactly one key_queue
+        // entry, so global LRU eviction stays accurate.
+        let store = Arc::new(HealthSnapshotStore::with_caps(16, 10_000));
+        let mut handles = Vec::new();
+        for i in 0..16 {
+            let store = Arc::clone(&store);
+            handles.push(std::thread::spawn(move || {
+                store.ingest("shared-agent", make_snapshot(1, 1, 1, 0.9, 0, 100 + i));
+            }));
+        }
+        for handle in handles {
+            handle.join().expect("ingest thread panicked");
+        }
+
+        assert_eq!(
+            store.agent_count(),
+            1,
+            "concurrent first ingest must not duplicate the map key"
+        );
+        let queue = store.key_queue.lock().expect("key_queue lock poisoned");
+        let occurrences = queue.iter().filter(|k| k.as_str() == "shared-agent").count();
+        assert_eq!(
+            occurrences, 1,
+            "key_queue must contain the new key exactly once"
+        );
     }
 
     #[test]
