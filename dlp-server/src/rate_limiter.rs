@@ -16,9 +16,10 @@ use tower_governor::{
     GovernorError, GovernorLayer,
 };
 
-/// Custom key extractor that derives the rate-limit key from the `agent_id`
-/// path segment for agent routes, or falls back to the peer's socket address
-/// for all other routes.
+/// Custom key extractor that derives the rate-limit key from the authenticated
+/// `agent_id` in request extensions (set by `agent_auth_middleware`), then from
+/// the `agent_id` path segment for agent routes, and finally falls back to the
+/// peer's socket address for all other routes.
 ///
 /// This allows the heartbeat and event-ingestion endpoints to be rate-limited
 /// **per agent** rather than per IP, preventing one misbehaving agent from
@@ -30,10 +31,13 @@ impl KeyExtractor for AgentIdOrIpKeyExtractor {
     type Key = String;
 
     fn extract<T>(&self, req: &Request<T>) -> Result<Self::Key, GovernorError> {
-        let path = req.uri().path();
+        // Prefer authenticated agent identity set by middleware.
+        if let Some(agent_id) = req.extensions().get::<String>() {
+            return Ok(agent_id.clone());
+        }
 
         // Agent-specific routes — key by the :id path segment.
-        if let Some(id) = extract_agent_id_from_path(path) {
+        if let Some(id) = extract_agent_id_from_path(req.uri().path()) {
             return Ok(id);
         }
 
@@ -189,5 +193,32 @@ mod tests {
         assert_eq!(extract_agent_id_from_path("/policies"), None);
         assert_eq!(extract_agent_id_from_path("/health"), None);
         assert_eq!(extract_agent_id_from_path("/agents/"), None);
+    }
+
+    #[test]
+    fn test_extract_authenticated_agent_id_from_extensions() {
+        let mut req = Request::builder()
+            .uri("/agents/abc-123/health")
+            .body(())
+            .expect("build request");
+        req.extensions_mut().insert("auth-agent-1".to_string());
+
+        assert_eq!(
+            AgentIdOrIpKeyExtractor.extract(&req).expect("extract"),
+            "auth-agent-1".to_owned()
+        );
+    }
+
+    #[test]
+    fn test_extract_agent_id_from_path_when_no_extension() {
+        let req = Request::builder()
+            .uri("/agents/abc-123/heartbeat")
+            .body(())
+            .expect("build request");
+
+        assert_eq!(
+            AgentIdOrIpKeyExtractor.extract(&req).expect("extract"),
+            "abc-123".to_owned()
+        );
     }
 }

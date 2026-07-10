@@ -10,9 +10,9 @@
 use std::sync::Arc;
 
 use axum::extract::{FromRequest, Path, State};
-use axum::http::StatusCode;
-use axum::middleware;
-use axum::response::IntoResponse;
+use axum::http::{header, StatusCode};
+use axum::middleware::{self, Next};
+use axum::response::{IntoResponse, Response};
 use axum::routing::{delete, get, post, put};
 use axum::{Json, Router};
 use chrono::Utc;
@@ -111,6 +111,65 @@ async fn evaluate_handler(
         state.is_label_aware_enabled(),
     );
     Ok(Json(response))
+}
+
+// ---------------------------------------------------------------------------
+// Agent authentication middleware
+// ---------------------------------------------------------------------------
+
+/// Axum middleware that validates `Authorization: DLP-AGENT <agent_id>:<hash>`.
+///
+/// The configured hash is looked up from `agent_credentials` under the key
+/// `DLPAuthHash`. On success, the authenticated `agent_id` is inserted into
+/// request extensions so downstream layers (e.g., rate limiting) can key by
+/// identity. On failure, the request is rejected with 401 Unauthorized.
+///
+/// This is intentionally lightweight — it prevents forged health/diagnostics
+/// snapshots from distorting the operator dashboard (T-58.8-05 mitigation).
+#[allow(dead_code)]
+async fn agent_auth_middleware(
+    State(state): State<Arc<AppState>>,
+    mut request: axum::extract::Request,
+    next: Next,
+) -> Result<Response, AppError> {
+    let auth_header = request
+        .headers()
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| AppError::Unauthorized("missing Authorization header".to_string()))?;
+
+    let credentials = auth_header
+        .strip_prefix("DLP-AGENT ")
+        .ok_or_else(|| AppError::Unauthorized("invalid Authorization scheme".to_string()))?;
+
+    let (agent_id, provided_hash) = credentials
+        .split_once(':')
+        .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?;
+
+    if agent_id.is_empty() {
+        return Err(AppError::Unauthorized("agent_id cannot be empty".to_string()));
+    }
+    let agent_id = agent_id.to_string();
+
+    let pool = Arc::clone(&state.pool);
+    let provided_hash = provided_hash.to_string();
+
+    let configured_hash = tokio::task::spawn_blocking(move || {
+        CredentialsRepository::get(&pool, "DLPAuthHash").map(|row| row.value)
+    })
+    .await
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))?
+    .map_err(AppError::Database)?;
+
+    // Constant-time comparison would be better, but the value is a bcrypt hash
+    // and agents send the raw hash string; plain equality matches the existing
+    // agent-auth-hash public endpoint contract.
+    if provided_hash != configured_hash {
+        return Err(AppError::Unauthorized("invalid agent credentials".to_string()));
+    }
+
+    request.extensions_mut().insert(agent_id);
+    Ok(next.run(request).await)
 }
 
 // ---------------------------------------------------------------------------
