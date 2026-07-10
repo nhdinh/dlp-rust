@@ -546,19 +546,12 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            // Exponential backoff on failure.
+            // Exponential backoff on failure. The helper bounds the total sleep
+            // to `[delay, delay + 0.5s)` with `delay <= 60`, so a single
+            // transient syslog/TLS error can never schedule a multi-year sleep
+            // (CR-01).
             if consecutive_failures > 0 {
-                let base = 1u64;
-                let max = 60u64;
-                let exp = std::cmp::min(consecutive_failures, 6);
-                let delay = std::cmp::min(base * 2u64.pow(exp), max);
-                // Deterministic jitter based on time (no rand dependency needed).
-                let jitter = (std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_nanos()
-                    % (delay as u128 * 500_000_000 + 1)) as u64;
-                let backoff = std::time::Duration::from_secs(delay + jitter);
+                let backoff = syslog_backoff(consecutive_failures);
                 tracing::info!(
                     backoff_secs = backoff.as_secs(),
                     "syslog drain: backing off"
@@ -593,21 +586,120 @@ async fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Compute the next retry attempt timestamp based on consecutive failures.
+/// Compute the bounded exponential-backoff sleep for the syslog drain.
 ///
-/// Uses exponential backoff capped at 60 seconds with deterministic jitter.
-fn compute_next_attempt(consecutive_failures: u32) -> String {
+/// Returns a base delay in `{1, 2, 4, 8, 16, 32, 60}` seconds (doubling per
+/// consecutive failure, capped at 60) plus a deterministic sub-second jitter in
+/// `[0, 0.5s)`. The result is therefore always within `[delay, delay + 0.5s)`,
+/// so a transient syslog/TLS failure can never schedule a multi-year sleep.
+///
+/// # CR-01 history
+///
+/// The previous implementation computed jitter with
+/// `SystemTime::now().duration_since(UNIX_EPOCH).as_nanos() % (...)`, a
+/// *nanosecond-magnitude* value (~1.7e18), and then added it to `delay` and
+/// passed the sum to `Duration::from_secs` — interpreting nanoseconds as whole
+/// seconds. That produced backoffs up to ~3e10 s (~951 years). This helper
+/// instead sources jitter from `subsec_nanos()` (bounded to `[0, 1e9)`) and
+/// builds it via `Duration::from_nanos`, so it can never be mis-read as seconds.
+fn syslog_backoff(consecutive_failures: u32) -> std::time::Duration {
     let base = 1u64;
     let max = 60u64;
     let exp = std::cmp::min(consecutive_failures, 6);
+    // `exp <= 6` keeps `2^exp <= 64`, so the multiply cannot overflow u64.
     let delay = std::cmp::min(base * 2u64.pow(exp), max);
-    let jitter = (std::time::SystemTime::now()
+    // Bounded sub-second jitter: `subsec_nanos()` is in `[0, 1e9)`; the modulus
+    // keeps it in `[0, 5e8)` == `[0, 0.5s)`. Constructed as a `Duration` so the
+    // unit is explicit and cannot be confused with whole seconds.
+    let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
-        .as_nanos()
-        % (delay as u128 * 500_000_000 + 1)) as u64;
-    let backoff = std::time::Duration::from_secs(delay + jitter);
+        .subsec_nanos() as u64;
+    let jitter = std::time::Duration::from_nanos(nanos % 500_000_000);
+    std::time::Duration::from_secs(delay) + jitter
+}
+
+/// Compute the next retry attempt timestamp based on consecutive failures.
+///
+/// Uses the same bounded exponential backoff as the drain sleep
+/// (`syslog_backoff`), so the persisted retry timestamp stays within
+/// `[delay, delay + 0.5s)` of now (CR-01).
+fn compute_next_attempt(consecutive_failures: u32) -> String {
+    let backoff = syslog_backoff(consecutive_failures);
+    // `backoff` is bounded to <= ~60.5s, so `from_std` never overflows and the
+    // `unwrap_or_default()` fallback is unreachable in practice.
     (chrono::Utc::now() + chrono::Duration::from_std(backoff).unwrap_or_default()).to_rfc3339()
+}
+
+#[cfg(test)]
+mod syslog_backoff_tests {
+    use super::{compute_next_attempt, syslog_backoff};
+
+    /// Mirror of the base-delay schedule the helper implements, used to assert
+    /// the observed sleep stays within `[delay, delay + 0.5s)`.
+    fn expected_base_delay_secs(consecutive_failures: u32) -> u64 {
+        let exp = std::cmp::min(consecutive_failures, 6);
+        std::cmp::min(2u64.pow(exp), 60)
+    }
+
+    #[test]
+    fn backoff_is_bounded_within_delay_plus_half_second() {
+        // Cover the documented schedule {1,2,4,8,16,32,60} plus the 0-failure
+        // and beyond-cap cases.
+        for failures in 0..=10u32 {
+            let delay = expected_base_delay_secs(failures);
+            // Sample repeatedly to exercise the time-derived jitter across many
+            // `subsec_nanos()` values.
+            for _ in 0..256 {
+                let backoff = syslog_backoff(failures);
+                let secs = backoff.as_secs_f64();
+                assert!(
+                    secs >= delay as f64,
+                    "backoff {secs}s fell below base delay {delay}s (failures={failures})"
+                );
+                assert!(
+                    secs < delay as f64 + 0.5,
+                    "backoff {secs}s exceeded delay+0.5s bound (failures={failures})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn backoff_never_exceeds_sixty_and_a_half_seconds() {
+        // Even at the cap, the total sleep must remain far below the ~951-year
+        // magnitudes the CR-01 bug produced.
+        for _ in 0..512 {
+            let backoff = syslog_backoff(99);
+            assert!(
+                backoff.as_secs_f64() < 60.5,
+                "capped backoff exceeded 60.5s: {:?}",
+                backoff
+            );
+        }
+    }
+
+    #[test]
+    fn compute_next_attempt_is_within_bound_of_now() {
+        let before = chrono::Utc::now();
+        let ts = compute_next_attempt(99);
+        let after = chrono::Utc::now();
+        let parsed = chrono::DateTime::parse_from_rfc3339(&ts)
+            .expect("compute_next_attempt must return RFC3339")
+            .with_timezone(&chrono::Utc);
+        // With delay capped at 60 and jitter < 0.5s, the scheduled retry must
+        // land within ~60.5s of the call window.
+        assert!(
+            parsed >= before,
+            "retry timestamp {ts} is before the call started"
+        );
+        let upper = after + chrono::Duration::milliseconds(60_600);
+        assert!(
+            parsed <= upper,
+            "retry timestamp {ts} is too far in the future (>{:?})",
+            upper
+        );
+    }
 }
 
 /// Ensures at least one admin user exists in the database.
