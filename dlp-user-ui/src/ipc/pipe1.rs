@@ -185,7 +185,7 @@ fn handle_block_notify(
         &reason,
     );
     let msg = match dialog_result {
-        crate::dialogs::BlockDialogResult::Confirmed => Pipe1UiMsg::UserConfirmed { request_id },
+        crate::dialogs::BlockDialogResult::Confirmed => Pipe1UiMsg::UserConfirmed { request_id, justification: String::new() },
         crate::dialogs::BlockDialogResult::Close => Pipe1UiMsg::UserCancelled { request_id },
     };
     serialize_response(&msg, session_id, "BlockNotify response")
@@ -197,6 +197,11 @@ fn handle_override_request(
     reason: String,
     classification: String,
     resource_path: String,
+    _requester_sid: String,
+    _data_object_id: String,
+    _action: String,
+    _destination_scope: Option<String>,
+    _justification: String,
     session_id: u32,
 ) -> Option<Vec<u8>> {
     info!(session_id, request_id, "Pipe 1: OverrideRequest received");
@@ -213,7 +218,7 @@ fn handle_override_request(
                 justification = %justification,
                 "override approved by user"
             );
-            Pipe1UiMsg::UserConfirmed { request_id }
+            Pipe1UiMsg::UserConfirmed { request_id, justification }
         }
         crate::dialogs::override_request::OverrideDialogResult::Cancelled => {
             info!(session_id, request_id, "override cancelled by user");
@@ -261,11 +266,21 @@ fn handle_agent_msg(msg: Pipe1AgentMsg, session_id: u32, pipe: HANDLE) -> Option
             reason,
             classification,
             resource_path,
+            requester_sid,
+            data_object_id,
+            action,
+            destination_scope,
+            justification,
         } => handle_override_request(
             request_id,
             reason,
             classification,
             resource_path,
+            requester_sid,
+            data_object_id,
+            action,
+            destination_scope,
+            justification,
             session_id,
         ),
         Pipe1AgentMsg::ClipboardRead { request_id } => {

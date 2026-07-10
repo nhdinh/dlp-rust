@@ -27,6 +27,7 @@ use windows::Win32::System::Pipes::{
 
 use super::frame::{read_frame, write_frame};
 use super::messages::{Pipe1AgentMsg, Pipe1UiMsg};
+use crate::service::{ConfirmedOverride, OVERRIDE_PENDING};
 
 /// Pending clipboard-read request IDs awaiting data from the UI.
 ///
@@ -35,23 +36,6 @@ use super::messages::{Pipe1AgentMsg, Pipe1UiMsg};
 /// `ClipboardData`, the data is stored here and the interception handler wakes up.
 static CLIPBOARD_CACHE: Lazy<Arc<RwLock<HashMap<String, String>>>> =
     Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
-
-/// Pending override requests awaiting user confirmation or cancellation.
-///
-/// When the agent needs user override confirmation, it stores the request context
-/// here.  `UserConfirmed` clears the entry and proceeds; `UserCancelled` clears
-/// and aborts the operation.
-static OVERRIDE_PENDING: Lazy<Arc<RwLock<HashMap<String, OverrideContext>>>> =
-    Lazy::new(|| Arc::new(RwLock::new(HashMap::new())));
-
-/// Context stored for a pending override request.
-#[derive(Debug)]
-struct OverrideContext {
-    /// The session ID of the requesting session.
-    session_id: u32,
-    /// When the request was created (for timeout detection).
-    created_at: std::time::Instant,
-}
 
 /// Returns a snapshot of all pending clipboard request IDs.
 pub fn get_pending_clipboard_requests() -> Vec<String> {
@@ -107,22 +91,28 @@ fn pipe_mode() -> NAMED_PIPE_MODE {
 ///
 /// `on_ready` is called after the first `CreateNamedPipeW` succeeds,
 /// signalling that the pipe exists and clients can connect.
-pub fn serve_with_ready(on_ready: impl FnOnce()) -> Result<()> {
+pub fn serve_with_ready(
+    on_ready: impl FnOnce(),
+    confirmed_override_tx: tokio::sync::mpsc::Sender<ConfirmedOverride>,
+) -> Result<()> {
     info!(pipe = PIPE_NAME, "Pipe 1 server starting");
     let first_pipe = create_pipe()?;
     on_ready();
-    accept_loop(first_pipe)
+    accept_loop(first_pipe, confirmed_override_tx)
 }
 
 /// Serves Pipe 1 without a readiness callback.
-pub fn serve() -> Result<()> {
+pub fn serve(confirmed_override_tx: tokio::sync::mpsc::Sender<ConfirmedOverride>) -> Result<()> {
     info!(pipe = PIPE_NAME, "Pipe 1 server starting");
-    accept_loop(create_pipe()?)
+    accept_loop(create_pipe()?, confirmed_override_tx)
 }
 
 /// Accept loop: waits for clients, handles them, then creates a new
 /// pipe instance for the next client.
-fn accept_loop(first_pipe: HANDLE) -> Result<()> {
+fn accept_loop(
+    first_pipe: HANDLE,
+    confirmed_override_tx: tokio::sync::mpsc::Sender<ConfirmedOverride>,
+) -> Result<()> {
     let mut pipe = first_pipe;
     loop {
         if crate::service::shutdown_requested() {
@@ -149,7 +139,8 @@ fn accept_loop(first_pipe: HANDLE) -> Result<()> {
         }
 
         info!(pipe = PIPE_NAME, "client connected to Pipe 1");
-        let _ = handle_client(pipe);
+        let sender_clone = confirmed_override_tx.clone();
+        let _ = handle_client(pipe, sender_clone);
 
         // Create a new pipe instance for the next client.
         pipe = create_pipe()?;
@@ -188,7 +179,10 @@ fn create_pipe() -> Result<HANDLE> {
 }
 
 /// Handles a single client connection.
-fn handle_client(pipe: HANDLE) -> Result<()> {
+fn handle_client(
+    pipe: HANDLE,
+    confirmed_override_tx: tokio::sync::mpsc::Sender<ConfirmedOverride>,
+) -> Result<()> {
     // The first message MUST be RegisterSession so we know which session owns this pipe.
     let frame = match read_frame(pipe) {
         Ok(f) => f,
@@ -217,7 +211,7 @@ fn handle_client(pipe: HANDLE) -> Result<()> {
         .write()
         .insert(session_id, SendableHandle::new(pipe));
 
-    let result = client_loop(session_id, pipe);
+    let result = client_loop(session_id, pipe, confirmed_override_tx);
 
     // Remove from client map on disconnect.
     CLIENTS.write().remove(&session_id);
@@ -227,7 +221,11 @@ fn handle_client(pipe: HANDLE) -> Result<()> {
 }
 
 /// The read loop for a connected Pipe 1 client.
-fn client_loop(session_id: u32, pipe: HANDLE) -> Result<()> {
+fn client_loop(
+    session_id: u32,
+    pipe: HANDLE,
+    confirmed_override_tx: tokio::sync::mpsc::Sender<ConfirmedOverride>,
+) -> Result<()> {
     loop {
         let frame = match read_frame(pipe) {
             Ok(f) => f,
@@ -249,7 +247,7 @@ fn client_loop(session_id: u32, pipe: HANDLE) -> Result<()> {
 
         // Dispatch the message (skip RegisterSession — already handled).
         if !matches!(msg, Pipe1UiMsg::RegisterSession { .. }) {
-            let response = dispatch(msg);
+            let response = dispatch(msg, &confirmed_override_tx);
             if let Some(resp) = response {
                 if let Err(e) = write_frame(pipe, &resp) {
                     error!(session_id, error = %e, "Pipe 1: failed to write response");
@@ -272,29 +270,47 @@ fn cleanup_pipe(pipe: HANDLE) -> Result<()> {
 }
 
 /// Dispatches an incoming UI message and returns an optional JSON response.
-fn dispatch(msg: Pipe1UiMsg) -> Option<Vec<u8>> {
+fn dispatch(
+    msg: Pipe1UiMsg,
+    confirmed_override_tx: &tokio::sync::mpsc::Sender<ConfirmedOverride>,
+) -> Option<Vec<u8>> {
     match msg {
         Pipe1UiMsg::RegisterSession { .. } => {
             // Already handled in handle_client — should not reach dispatch.
             None
         }
-        Pipe1UiMsg::UserConfirmed { request_id } => {
+        Pipe1UiMsg::UserConfirmed {
+            request_id,
+            justification,
+        } => {
             info!(request_id, "Pipe 1: UI confirmed action");
             // Remove any pending clipboard data associated with this request.
             let _ = CLIPBOARD_CACHE.write().remove(&request_id);
 
-            // If this was an override confirmation, emit an override-granted
-            // audit event for the compliance trail.  The file operation itself
-            // is not retried (notify watcher is observe-only; actual blocking
-            // requires a kernel-level minifilter in a future phase).
-            let removed = OVERRIDE_PENDING.write().remove(&request_id);
+            // If this was an override confirmation, enqueue the deferred
+            // submission so the async service task can submit it with the
+            // user-provided justification.
+            let removed = OVERRIDE_PENDING
+                .get()
+                .and_then(|store| store.lock().remove(&request_id));
             if let Some(ctx) = removed {
                 warn!(
                     request_id,
                     session_id = ctx.session_id,
                     elapsed_ms = ctx.created_at.elapsed().as_millis() as u64,
-                    "Pipe 1: override confirmed — audit event emitted"
+                    "Pipe 1: override confirmed — deferred submission enqueued"
                 );
+                let confirmed = ConfirmedOverride {
+                    request_id: request_id.clone(),
+                    justification,
+                };
+                if let Err(e) = confirmed_override_tx.try_send(confirmed) {
+                    warn!(
+                        request_id,
+                        error = %e,
+                        "Pipe 1: confirmed override channel saturated — dropping"
+                    );
+                }
                 // Emit an override-granted audit event.
                 let event = dlp_common::AuditEvent::new(
                     dlp_common::EventType::Access,
@@ -328,7 +344,10 @@ fn dispatch(msg: Pipe1UiMsg) -> Option<Vec<u8>> {
             info!(request_id, "Pipe 1: UI cancelled action");
             // Remove pending clipboard data and override context.
             let _ = CLIPBOARD_CACHE.write().remove(&request_id);
-            if let Some(ctx) = OVERRIDE_PENDING.write().remove(&request_id) {
+            if let Some(ctx) = OVERRIDE_PENDING
+                .get()
+                .and_then(|store| store.lock().remove(&request_id))
+            {
                 warn!(
                     request_id,
                     session_id = ctx.session_id,

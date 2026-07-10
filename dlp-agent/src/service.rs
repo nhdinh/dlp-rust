@@ -22,6 +22,7 @@
 //! 3 failures or cancellation aborts the stop.  On success the service
 //! transitions to `StopPending` and exits cleanly.
 
+use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
@@ -45,6 +46,38 @@ use dlp_common::usb::{
 /// must not hold the lock across `.await` points.
 static CONFIG: std::sync::OnceLock<std::sync::Arc<parking_lot::Mutex<crate::config::AgentConfig>>> =
     std::sync::OnceLock::new();
+
+// ── Phase 58.8-03: Deferred override submission context (DIFF-01) ───────────
+
+/// Context stored for a pending override request awaiting user confirmation.
+#[derive(Debug, Clone)]
+pub struct PendingOverride {
+    /// The original override request from the hook DLL.
+    pub request: dlp_common::hook_ipc::OverrideRequest,
+    /// The UI session ID that should confirm/cancel the request.
+    pub session_id: u32,
+    /// When the request was created (for timeout/aging if needed).
+    pub created_at: Instant,
+}
+
+/// Message sent from the synchronous Pipe 1 dispatcher to the async service
+/// task when the user confirms an override request.
+#[derive(Debug, Clone)]
+pub struct ConfirmedOverride {
+    /// The request ID of the confirmed override.
+    pub request_id: String,
+    /// The justification text entered by the user.
+    pub justification: String,
+}
+
+/// Pending override requests keyed by request ID.
+///
+/// The hook DLL override handler stores the full request context here and
+/// forwards the request ID to the UI.  When the UI sends `UserConfirmed`,
+/// the Pipe 1 dispatcher removes the context, enqueues a `ConfirmedOverride`,
+/// and the async `confirmed_override_loop` submits the approval request.
+pub(crate) static OVERRIDE_PENDING: OnceLock<Arc<Mutex<HashMap<String, PendingOverride>>>> =
+    OnceLock::new();
 
 /// Executes a closure with a read-lock on the global config.
 ///
@@ -582,12 +615,19 @@ pub fn run_service() -> Result<()> {
         info!(thread_id = ?h.thread().id(), "health monitor started");
     }
 
+    // ── Phase 58.8-03: deferred override confirmation channel (DIFF-01) ─────
+    // Pipe 1 dispatch runs on a std::thread without a tokio runtime.  Confirmed
+    // overrides are forwarded to this channel so an async service task can
+    // submit the approval request with the user's justification.
+    let (confirmed_override_tx, confirmed_override_rx) =
+        tokio::sync::mpsc::channel::<ConfirmedOverride>(100);
+
     // ── Start IPC pipe servers ────────────────────────────────────
     // Each serve() call blocks on a dedicated thread.  Pipe 1, 2, and 3
     // are independent; they communicate via the shared BROADCASTER and ROUTER
     // statics.  Pipe 3's handle_client sets ROUTER.session_sender on each
     // new connection.
-    threads.ipc = crate::ipc::start_all()?;
+    threads.ipc = crate::ipc::start_all(confirmed_override_tx.clone())?;
     info!(count = threads.ipc.len(), "IPC pipe servers started");
 
     // ── Start Chrome Content Analysis pipe server ────────────────
@@ -645,7 +685,12 @@ pub fn run_service() -> Result<()> {
     // so that usb_wndproc can schedule async refreshes on the live tokio runtime via
     // a stored Handle. run_loop also owns USB cleanup on shutdown.
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(run_loop(&status_handle, machine_name, &mut threads))?;
+    rt.block_on(run_loop(
+        &status_handle,
+        machine_name,
+        &mut threads,
+        confirmed_override_rx,
+    ))?;
 
     // Shut down the tokio runtime immediately.  Background tasks (IPC pipe
     // servers, session monitor) use blocking ReadFile calls that never
@@ -1402,8 +1447,108 @@ struct RunLoopContext {
     /// Phase 58-06: Handle for the override request processing task (DIFF-01).
     #[allow(dead_code)]
     override_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Phase 58.8-03: Handle for the deferred override submission task (DIFF-01).
+    #[allow(dead_code)]
+    confirmed_override_handle: Option<tokio::task::JoinHandle<()>>,
     /// Phase 58.5: Audit emit context for unhook orchestration and watchdog evidence.
     audit_ctx: crate::audit_emitter::EmitContext,
+}
+
+/// Builds a server `ApprovalRequest` from a pending override and user justification.
+///
+/// This is a pure helper so the request shape can be unit-tested without an
+/// HTTP round-trip.
+#[must_use]
+pub fn build_approval_request(
+    pending: &PendingOverride,
+    justification: String,
+) -> dlp_common::approval::ApprovalRequest {
+    let req = &pending.request;
+    dlp_common::approval::ApprovalRequest {
+        requester_sid: req.requester_sid.clone(),
+        data_object_id: req.data_object_id.clone(),
+        allowed_action: req.action.clone(),
+        destination_scope: req.destination_scope.clone(),
+        justification,
+        device_fingerprint: None,
+    }
+}
+
+/// Submits a confirmed override to the server as an approval request.
+///
+/// # Arguments
+///
+/// * `server_client` — the HTTP client for the central server.
+/// * `pending` — the pending override context stored when the hook DLL sent the
+///   original `RequestOverride`.
+/// * `justification` — the business justification entered by the user in the UI.
+///
+/// # Errors
+///
+/// Returns `ServerClientError` if the server is unreachable or returns a
+/// non-success status code.
+pub async fn submit_approval_request_with_justification(
+    server_client: &Option<crate::server_client::ServerClient>,
+    pending: &PendingOverride,
+    justification: String,
+) -> Result<String, crate::server_client::ServerClientError> {
+    let approval_req = build_approval_request(pending, justification);
+    if let Some(ref sc) = server_client {
+        sc.submit_approval_request(&approval_req).await
+    } else {
+        warn!(
+            request_id = %pending.request.data_object_id,
+            "No server client available — approval request not submitted"
+        );
+        Err(crate::server_client::ServerClientError::Config(
+            "no server client available".to_string(),
+        ))
+    }
+}
+
+/// Async service task that drains confirmed overrides from the Pipe 1 dispatcher
+/// and submits each one to the server with the user-provided justification.
+///
+/// The loop exits when the channel sender is dropped (e.g. during service shutdown).
+async fn confirmed_override_loop(
+    mut receiver: tokio::sync::mpsc::Receiver<ConfirmedOverride>,
+    server_client: Option<crate::server_client::ServerClient>,
+) {
+    while let Some(confirmed) = receiver.recv().await {
+        let pending = OVERRIDE_PENDING
+            .get()
+            .and_then(|store| store.lock().remove(&confirmed.request_id));
+        if let Some(pending) = pending {
+            match submit_approval_request_with_justification(
+                &server_client,
+                &pending,
+                confirmed.justification,
+            )
+            .await
+            {
+                Ok(server_request_id) => {
+                    info!(
+                        request_id = %pending.request.data_object_id,
+                        server_request_id = %server_request_id,
+                        "Approval request submitted to server"
+                    );
+                }
+                Err(e) => {
+                    warn!(
+                        request_id = %pending.request.data_object_id,
+                        error = %e,
+                        "Failed to submit approval request to server"
+                    );
+                }
+            }
+        } else {
+            warn!(
+                request_id = %confirmed.request_id,
+                "Confirmed override has no pending context — ignoring"
+            );
+        }
+    }
+    debug!("confirmed_override_loop exiting");
 }
 
 /// The main service run loop.
@@ -1420,13 +1565,14 @@ async fn run_loop(
     status_handle: &Arc<Mutex<windows_service::service_control_handler::ServiceStatusHandle>>,
     machine_name: Option<String>,
     blocking_threads: &mut BlockingThreads,
+    confirmed_override_rx: tokio::sync::mpsc::Receiver<ConfirmedOverride>,
 ) -> Result<()> {
     // ── Open the audit log ────────────────────────────────────────────────
     let _log_path = crate::audit_emitter::log_path();
     info!(audit_log = %_log_path.display(), "audit subsystem initialised");
 
     // Initialise all subsystems and collect handles into a single context.
-    let ctx = run_loop_init(machine_name, blocking_threads).await;
+    let ctx = run_loop_init(machine_name, blocking_threads, confirmed_override_rx).await;
 
     // ── Service control loop ─────────────────────────────────────────────
     let poll_interval = Duration::from_millis(500);
@@ -1796,7 +1942,10 @@ fn get_caller_sid(_pid: u32) -> Option<String> {
 async fn run_loop_init(
     machine_name: Option<String>,
     _blocking_threads: &mut BlockingThreads,
+    confirmed_override_rx: tokio::sync::mpsc::Receiver<ConfirmedOverride>,
 ) -> RunLoopContext {
+    // ── Phase 58.8-03: initialise pending override store (DIFF-01) ──────────
+    let _ = OVERRIDE_PENDING.set(Arc::new(Mutex::new(HashMap::new())));
     // ── Initialise the agent's local SQLite DB (offline audit queue) ───────
     if let Err(e) = init_agent_db() {
         warn!(error = %e, "agent DB init failed — offline audit queue unavailable");
@@ -1939,11 +2088,18 @@ async fn run_loop_init(
 
     // ── Phase 58-06: Override request channel (DIFF-01) ────────────────────
     // The HookIpcServer runs on a dedicated std::thread without a tokio runtime.
-    // Override requests need async server submission, so we use a channel to
-    // forward them to a tokio task that handles the async work.
+    // Override requests are stored with full context and forwarded to the UI;
+    // the actual server submission is deferred until the user confirms via Pipe 1.
     let (override_tx, mut override_rx) =
         tokio::sync::mpsc::channel::<dlp_common::hook_ipc::OverrideRequest>(100);
-    let override_server_client = server_client.clone();
+
+    // Spawn the async task that submits confirmed overrides to the server.
+    let confirmed_override_server_client = server_client.clone();
+    let confirmed_override_handle = tokio::spawn(confirmed_override_loop(
+        confirmed_override_rx,
+        confirmed_override_server_client,
+    ));
+
     let override_handle = tokio::spawn(async move {
         while let Some(req) = override_rx.recv().await {
             let request_id = format!("ovr-{}", uuid::Uuid::new_v4());
@@ -1953,48 +2109,39 @@ async fn run_loop_init(
                 "Override request received from hook DLL"
             );
 
-            // Forward to UI via Pipe 1.
+            // Store the full pending context so confirmation can rebuild the
+            // server approval request with the user's justification.
+            if let Some(store) = OVERRIDE_PENDING.get() {
+                store.lock().insert(
+                    request_id.clone(),
+                    PendingOverride {
+                        request: req.clone(),
+                        session_id: 0,
+                        created_at: Instant::now(),
+                    },
+                );
+            } else {
+                warn!(
+                    request_id = %request_id,
+                    "OVERRIDE_PENDING not initialised — dropping override request"
+                );
+                continue;
+            }
+
+            // Forward to UI via Pipe 1, preserving all original request fields.
             let ui_msg = crate::ipc::messages::Pipe1AgentMsg::OverrideRequest {
                 request_id: request_id.clone(),
                 reason: format!("Blocked: {}", req.resource_path),
                 classification: "T3".to_string(),
                 resource_path: req.resource_path.clone(),
+                requester_sid: req.requester_sid.clone(),
+                data_object_id: req.data_object_id.clone(),
+                action: req.action.clone(),
+                destination_scope: req.destination_scope.clone(),
+                justification: req.justification.clone(),
             };
             if let Err(e) = crate::ipc::pipe1::send_to_ui(0, &ui_msg) {
                 warn!(error = %e, "Failed to send OverrideRequest to UI");
-            }
-
-            // Submit to server via async HTTP call.
-            if let Some(ref sc) = override_server_client {
-                let approval_req = dlp_common::approval::ApprovalRequest {
-                    requester_sid: req.requester_sid.clone(),
-                    data_object_id: req.data_object_id.clone(),
-                    allowed_action: req.action.clone(),
-                    destination_scope: req.destination_scope.clone(),
-                    justification: req.justification.clone(),
-                    device_fingerprint: None,
-                };
-                match sc.submit_approval_request(&approval_req).await {
-                    Ok(server_request_id) => {
-                        info!(
-                            request_id = %request_id,
-                            server_request_id = %server_request_id,
-                            "Approval request submitted to server"
-                        );
-                    }
-                    Err(e) => {
-                        warn!(
-                            request_id = %request_id,
-                            error = %e,
-                            "Failed to submit approval request to server"
-                        );
-                    }
-                }
-            } else {
-                warn!(
-                    request_id = %request_id,
-                    "No server client available — approval request not submitted"
-                );
             }
         }
     });
@@ -2476,6 +2623,8 @@ async fn run_loop_init(
         health_push_handle: None,
         // Phase 58-06: Override request processing task (DIFF-01).
         override_handle: Some(override_handle),
+        // Phase 58.8-03: Deferred override submission task (DIFF-01).
+        confirmed_override_handle: Some(confirmed_override_handle),
         // Phase 58.5: Audit emit context for unhook orchestration and watchdog evidence.
         audit_ctx,
     }
@@ -4709,6 +4858,19 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
     }
     crate::password_stop::debug_log("run_loop: bypass correlator stopped");
 
+    // Phase 58.8-03: Stop deferred override submission task.  The channel senders
+    // held by Pipe 1 server threads may outlive this shutdown path, so abort the
+    // task to ensure timely exit, then drop any remaining pending context.
+    if let Some(handle) = ctx.confirmed_override_handle {
+        handle.abort();
+        match tokio::time::timeout(Duration::from_secs(2), handle).await {
+            Ok(Ok(())) => debug!("confirmed override submission task shut down cleanly"),
+            Ok(Err(e)) if e.is_cancelled() => debug!("confirmed override submission task aborted"),
+            Ok(Err(e)) => warn!(error = %e, "confirmed override submission task panicked"),
+            Err(_) => warn!("confirmed override submission task did not shut down within 2s"),
+        }
+    }
+
     // Phase 58.5: Clear the unhook request before stopping the hook IPC server.
     // Once the flag is false, `accept_loop` will observe the normal shutdown
     // signal on its next iteration and exit cleanly after the current connection.
@@ -6159,6 +6321,7 @@ mod tests {
             health_push_shutdown: None,
             health_push_handle: None,
             override_handle: None,
+            confirmed_override_handle: None,
             audit_ctx: crate::audit_emitter::EmitContext::default(),
         };
 
@@ -7900,4 +8063,103 @@ async fn test_wait_for_unhook_acks_empty_registry_returns_zero() {
     let registry = Arc::new(crate::process_registry::ProcessRegistry::new());
     let remaining = wait_for_unhook_acks(&registry, Duration::from_millis(50)).await;
     assert_eq!(remaining, 0);
+}
+
+// --- Phase 58.8-03: Deferred override submission tests (DIFF-01) ---
+
+/// Returns the global `OVERRIDE_PENDING` store, initializing it if necessary.
+///
+/// Tests that mutate the store must use `#[serial_test::serial]` to avoid
+/// races with other tests touching the same global map.
+#[cfg(test)]
+fn ensure_override_pending() -> Arc<Mutex<HashMap<String, PendingOverride>>> {
+    OVERRIDE_PENDING
+        .get_or_init(|| Arc::new(Mutex::new(HashMap::new())))
+        .clone()
+}
+
+#[cfg(test)]
+fn make_hook_override_request() -> dlp_common::hook_ipc::OverrideRequest {
+    dlp_common::hook_ipc::OverrideRequest {
+        requester_sid: "S-1-5-21-1".to_string(),
+        data_object_id: "label-001".to_string(),
+        action: "WRITE".to_string(),
+        destination_scope: Some(r"C:\Data".to_string()),
+        justification: "pre-filled".to_string(),
+        resource_path: r"C:\Data\confidential.docx".to_string(),
+    }
+}
+
+#[cfg(test)]
+#[test]
+#[serial_test::serial]
+fn test_build_approval_request_uses_user_justification() {
+    let store = ensure_override_pending();
+    store.lock().clear();
+
+    let pending = PendingOverride {
+        request: make_hook_override_request(),
+        session_id: 1,
+        created_at: Instant::now(),
+    };
+
+    let approval = build_approval_request(&pending, "user justification".to_string());
+    assert_eq!(approval.requester_sid, "S-1-5-21-1");
+    assert_eq!(approval.data_object_id, "label-001");
+    assert_eq!(approval.allowed_action, "WRITE");
+    assert_eq!(approval.destination_scope, Some(r"C:\Data".to_string()));
+    assert_eq!(approval.justification, "user justification");
+    assert_eq!(approval.device_fingerprint, None);
+}
+
+#[cfg(test)]
+#[tokio::test]
+#[serial_test::serial]
+async fn test_confirmed_override_loop_removes_pending_context() {
+    let store = ensure_override_pending();
+    store.lock().clear();
+
+    let request_id = "ovr-test-001".to_string();
+    let pending = PendingOverride {
+        request: make_hook_override_request(),
+        session_id: 1,
+        created_at: Instant::now(),
+    };
+    store.lock().insert(request_id.clone(), pending);
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<ConfirmedOverride>(1);
+    tx.send(ConfirmedOverride {
+        request_id: request_id.clone(),
+        justification: "user justification".to_string(),
+    })
+    .await
+    .unwrap();
+    drop(tx);
+
+    confirmed_override_loop(rx, None).await;
+
+    assert!(
+        store.lock().get(&request_id).is_none(),
+        "pending context should be removed after confirmation"
+    );
+}
+
+#[cfg(test)]
+#[tokio::test]
+#[serial_test::serial]
+async fn test_confirmed_override_loop_unknown_request_id_is_ignored() {
+    let store = ensure_override_pending();
+    store.lock().clear();
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<ConfirmedOverride>(1);
+    tx.send(ConfirmedOverride {
+        request_id: "unknown".to_string(),
+        justification: "user justification".to_string(),
+    })
+    .await
+    .unwrap();
+    drop(tx);
+
+    // Should complete without panic even though the request_id is unknown.
+    confirmed_override_loop(rx, None).await;
 }

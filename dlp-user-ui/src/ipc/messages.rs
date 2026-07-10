@@ -26,6 +26,13 @@ pub enum Pipe1AgentMsg {
         reason: String,
         classification: String,
         resource_path: String,
+        requester_sid: String,
+        data_object_id: String,
+        action: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination_scope: Option<String>,
+        #[serde(default)]
+        justification: String,
     },
     ClipboardRead {
         request_id: String,
@@ -46,6 +53,7 @@ pub enum Pipe1UiMsg {
     },
     UserConfirmed {
         request_id: String,
+        justification: String,
     },
     UserCancelled {
         request_id: String,

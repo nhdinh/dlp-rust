@@ -62,6 +62,11 @@ mod ipc_messages {
             reason: "Business justification".into(),
             classification: "T3".into(),
             resource_path: r"D:\Shares\confidential.docx".into(),
+            requester_sid: "S-1-5-21-1".into(),
+            data_object_id: "label-001".into(),
+            action: "WRITE".into(),
+            destination_scope: None,
+            justification: "pre-filled justification".into(),
         };
 
         let json = serde_json::to_string(&msg).unwrap();
@@ -73,11 +78,21 @@ mod ipc_messages {
                 reason,
                 classification,
                 resource_path,
+                requester_sid,
+                data_object_id,
+                action,
+                destination_scope,
+                justification,
             } => {
                 assert_eq!(request_id, "req-abc123");
                 assert_eq!(reason, "Business justification");
                 assert_eq!(classification, "T3");
                 assert_eq!(resource_path, r"D:\Shares\confidential.docx");
+                assert_eq!(requester_sid, "S-1-5-21-1");
+                assert_eq!(data_object_id, "label-001");
+                assert_eq!(action, "WRITE");
+                assert_eq!(destination_scope, None);
+                assert_eq!(justification, "pre-filled justification");
             }
             other => panic!("expected OverrideRequest, got {other:?}"),
         }

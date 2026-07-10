@@ -28,6 +28,18 @@ pub enum Pipe1AgentMsg {
         reason: String,
         classification: String,
         resource_path: String,
+        /// AD SID of the requesting user.
+        requester_sid: String,
+        /// ID of the data object being accessed.
+        data_object_id: String,
+        /// Action being requested (e.g. "WRITE", "COPY").
+        action: String,
+        /// Destination scope restriction (None = any).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        destination_scope: Option<String>,
+        /// Justification supplied by the hook DLL (usually empty; the user fills it in).
+        #[serde(default)]
+        justification: String,
     },
     /// The agent needs to read the clipboard — UI should return the data.
     ClipboardRead { request_id: String },
@@ -63,7 +75,7 @@ pub enum Pipe1UiMsg {
     /// after connecting to Pipe 1).
     RegisterSession { session_id: u32 },
     /// The user confirmed the block (override granted).
-    UserConfirmed { request_id: String },
+    UserConfirmed { request_id: String, justification: String },
     /// The user cancelled the override request.
     UserCancelled { request_id: String },
     /// The user's clipboard data.

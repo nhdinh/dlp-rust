@@ -13,6 +13,7 @@ use parking_lot::Mutex;
 use tracing::{error, info};
 
 use super::{pipe1, pipe2, pipe3};
+use crate::service::ConfirmedOverride;
 
 /// Starts all three IPC pipe servers on background threads.
 ///
@@ -25,18 +26,24 @@ use super::{pipe1, pipe2, pipe3};
 ///
 /// Returns an error if any pipe server thread fails to spawn, or if
 /// any pipe fails to create within the readiness timeout.
-pub fn start_all() -> Result<Vec<std::thread::JoinHandle<()>>> {
+pub fn start_all(
+    confirmed_override_tx: tokio::sync::mpsc::Sender<ConfirmedOverride>,
+) -> Result<Vec<std::thread::JoinHandle<()>>> {
     // Each pipe server will set its slot to `true` after the first
     // CreateNamedPipeW succeeds.  We poll until all three are ready.
     let ready = Arc::new(Mutex::new([false; 3]));
 
     let r0 = ready.clone();
+    let sender_for_pipe1 = confirmed_override_tx.clone();
     let p1 = thread::Builder::new()
         .name("ipc-pipe1".into())
         .spawn(move || {
-            if let Err(e) = pipe1::serve_with_ready(move || {
-                r0.lock()[0] = true;
-            }) {
+            if let Err(e) = pipe1::serve_with_ready(
+                move || {
+                    r0.lock()[0] = true;
+                },
+                sender_for_pipe1,
+            ) {
                 error!(error = %e, "Pipe 1 server exited with error");
             }
         })
