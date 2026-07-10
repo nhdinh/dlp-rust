@@ -23,7 +23,7 @@
 //! transitions to `StopPending` and exits cleanly.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::sync::OnceLock;
 use std::time::{Duration, Instant};
@@ -1707,6 +1707,16 @@ const HEALTH_PUSH_INTERVAL: Duration = Duration::from_secs(60);
 /// Default interval between diagnostic snapshot batch pushes to the server (DIFF-04).
 const DIAGNOSTIC_PUSH_INTERVAL: Duration = Duration::from_secs(60);
 
+/// Running total of diagnostic snapshots re-buffered or dropped after a failed
+/// server push (DIFF-04, WR-01).
+///
+/// Incremented on every `submit_diagnostic_snapshot` failure/timeout inside
+/// [`diagnostic_push_loop`] and read back to emit a `dropped_total` field in the
+/// warning log, giving operators an observable signal for silent compliance-feed
+/// gaps. The per-DLL aggregator cap (`max_entries_per_dll`) bounds re-buffer
+/// growth when the server is permanently down.
+static DIAGNOSTIC_PUSH_DROPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
+
 /// Periodic health snapshot push loop.
 ///
 /// Reads the latest aggregated health snapshot from [`HealthAggregator`] and
@@ -1758,10 +1768,13 @@ async fn health_push_loop(
 /// returns an owned `Vec` (all `DashMap` guards dropped before the `.await`), so
 /// no non-`Send` guard is ever held across the HTTP call (T-58.9-14). Push
 /// failures — including `429 Too Many Requests` (per-agent rate limit) and any
-/// `5xx` — are logged and retried on the next interval (RESEARCH A4); the 60 s
-/// cadence is the backoff, there is no spin-retry. On `shutdown` the loop performs
-/// one final drain + best-effort submit (flush-and-stop, T-58.9-15) before
-/// returning.
+/// `5xx` — cause the drained batch to be **re-buffered** into the aggregator and
+/// retried on the next interval (RESEARCH A4); the 60 s cadence is the backoff,
+/// there is no spin-retry. A running `dropped_total` is logged on every failure so
+/// silent compliance-feed gaps are observable (WR-01). Re-buffer growth is bounded
+/// by the aggregator's per-DLL cap, which truncates the oldest entries when the
+/// server is permanently down. On `shutdown` the loop performs one final drain +
+/// best-effort submit (flush-and-stop, T-58.9-15) before returning.
 ///
 /// The batch is attributed to `pid = 0` (aggregate multi-pid drain); per-snapshot
 /// attribution lives inside each snapshot's own fields (RESEARCH A3). Snapshot
@@ -1798,7 +1811,22 @@ async fn diagnostic_push_loop(
                     .submit_diagnostic_snapshot(&agent_id, 0, &snapshots)
                     .await
                 {
-                    warn!(error = %e, count = snapshots.len(), "failed to submit diagnostics");
+                    // Re-buffer the drained batch so the "retried next interval"
+                    // contract actually holds (WR-01). The aggregator's per-DLL
+                    // cap bounds growth if the server stays down. Re-attributed
+                    // under the aggregate (pid 0) key; per-pid fidelity is
+                    // preserved inside each snapshot.
+                    let dropped = snapshots.len();
+                    let dropped_total = DIAGNOSTIC_PUSH_DROPPED_TOTAL
+                        .fetch_add(dropped as u64, Ordering::Relaxed)
+                        + dropped as u64;
+                    warn!(
+                        error = %e,
+                        count = dropped,
+                        dropped_total,
+                        "failed to submit diagnostics — re-buffering for retry"
+                    );
+                    diagnostic_aggregator.ingest(&agent_id, 0, snapshots);
                 }
             }
             _ = shutdown.changed() => {
