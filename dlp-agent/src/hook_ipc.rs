@@ -633,14 +633,10 @@ fn handle_connection(
                             warn!(metric = "bypass_tx_dropped", error = ?e, "bypass channel full or closed");
                         }
                     }
-                    // Respond with empty ACK so DLL doesn't block.
-                    IpcPayloadV1::Response(HookResponse {
-                        decision: dlp_common::Decision::ALLOW,
-                        reason: "bypass alert forwarded".to_string(),
-                        cache_hint: None,
-                        cache_version: 0,
-                        approval_override: None,
-                    })
+                    // BypassAlert from the DLL is one-way (send_raw_oneway, no read);
+                    // writing an ACK would race CloseHandle and emit spurious
+                    // ERROR_BROKEN_PIPE warnings (WR-02). Skip the response write.
+                    continue;
                 }
                 IpcPayloadV1::JournalDegraded(ref alert) => {
                     debug!(file_object = alert.file_object, op = alert.op, error = %alert.error, "Hook IPC: journal degraded alert received");
@@ -666,14 +662,10 @@ fn handle_connection(
                         };
                         let _ = tx.send(bypass_alert);
                     }
-                    // Respond with empty ACK so DLL doesn't block waiting for a response.
-                    IpcPayloadV1::Response(HookResponse {
-                        decision: dlp_common::Decision::ALLOW,
-                        reason: "journal degraded alert received".to_string(),
-                        cache_hint: None,
-                        cache_version: 0,
-                        approval_override: None,
-                    })
+                    // JournalDegraded from the DLL is one-way (send_raw_oneway, no
+                    // read); writing an ACK would race CloseHandle and emit spurious
+                    // ERROR_BROKEN_PIPE warnings (WR-02). Skip the response write.
+                    continue;
                 }
                 IpcPayloadV1::HashEvidence(ref evidence) => {
                     debug!(
@@ -687,14 +679,10 @@ fn handle_connection(
                             (evidence.clone(), Instant::now()),
                         );
                     }
-                    // HashEvidence is fire-and-forget; respond with empty ACK.
-                    IpcPayloadV1::Response(HookResponse {
-                        decision: dlp_common::Decision::ALLOW,
-                        reason: "hash evidence received".to_string(),
-                        cache_hint: None,
-                        cache_version: 0,
-                        approval_override: None,
-                    })
+                    // HashEvidence from the DLL is one-way (send_raw_oneway, no read);
+                    // writing an ACK would race CloseHandle and emit spurious
+                    // ERROR_BROKEN_PIPE warnings (WR-02). Skip the response write.
+                    continue;
                 }
                 // DIFF-04: Ingest one-way HealthResponse frames from the hook DLL.
                 // These are fire-and-send (no response expected by the DLL).
@@ -712,21 +700,18 @@ fn handle_connection(
                     } else {
                         warn!("Hook IPC: health snapshot received but no aggregator configured");
                     }
-                    // HealthResponse from DLL is one-way; respond with empty ACK.
-                    IpcPayloadV1::Response(HookResponse {
-                        decision: dlp_common::Decision::ALLOW,
-                        reason: "health snapshot ingested".to_string(),
-                        cache_hint: None,
-                        cache_version: 0,
-                        approval_override: None,
-                    })
+                    // HealthResponse from the DLL is one-way: the DLL used
+                    // send_raw_oneway and does not read, so writing an ACK would
+                    // race CloseHandle and emit spurious ERROR_BROKEN_PIPE warnings
+                    // (WR-02). Skip the response write, mirroring RequestOverride.
+                    continue;
                 }
                 // DIFF-04: Ingest one-way DiagnosticsResponse frames from the hook
-                // DLL. These are fire-and-send (the DLL does not wait for a
-                // meaningful response), so we return an empty ALLOW ACK and never
-                // block the hooked file operation. Distinct from the
-                // `PullDiagnostics` arm above, which produces a DiagnosticsResponse
-                // as its REPLY; here the DLL pushes a DiagnosticsResponse to us.
+                // DLL. These are fire-and-send (the DLL used send_raw_oneway and
+                // does not read), so we skip the response write and never block the
+                // hooked file operation. Distinct from the `PullDiagnostics` arm
+                // above, which produces a DiagnosticsResponse as its REPLY; here the
+                // DLL pushes a DiagnosticsResponse to us.
                 IpcPayloadV1::DiagnosticsResponse(ref resp) => {
                     // Anti-spoof (T-58.9-11): attribute to the connecting client's
                     // REAL PID resolved by the OS via GetNamedPipeClientProcessId,
@@ -742,14 +727,11 @@ fn handle_connection(
                     } else {
                         warn!("Hook IPC: diagnostics received but no aggregator configured");
                     }
-                    // DiagnosticsResponse from the DLL is one-way; empty ALLOW ACK.
-                    IpcPayloadV1::Response(HookResponse {
-                        decision: dlp_common::Decision::ALLOW,
-                        reason: "diagnostics ingested".to_string(),
-                        cache_hint: None,
-                        cache_version: 0,
-                        approval_override: None,
-                    })
+                    // DiagnosticsResponse from the DLL is one-way: the DLL used
+                    // send_raw_oneway and does not read, so writing an ACK would
+                    // race CloseHandle and emit spurious ERROR_BROKEN_PIPE warnings
+                    // (WR-02). Skip the response write, mirroring RequestOverride.
+                    continue;
                 }
                 IpcPayloadV1::PollControl(ref poll) => {
                     debug!(
