@@ -150,6 +150,7 @@ fn build_state(pool: &Arc<db::Pool>, crypto: &Arc<SecretCrypto>) -> Arc<AppState
             dlp_server::db::repositories::bypass_alerts::BypassAlertsRepository,
         ),
         diagnostic_store: None,
+        health_snapshot_store: None,
     })
 }
 

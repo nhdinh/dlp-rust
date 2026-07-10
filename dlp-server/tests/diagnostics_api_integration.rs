@@ -91,6 +91,7 @@ fn build_test_app(with_diagnostic_store: bool) -> (axum::Router, Arc<db::Pool>) 
             dlp_server::db::repositories::bypass_alerts::BypassAlertsRepository,
         ),
         diagnostic_store,
+        health_snapshot_store: None,
     });
     (admin_router(state), pool)
 }
@@ -228,6 +229,7 @@ async fn test_diagnostics_with_data_returns_snapshots() {
             dlp_server::db::repositories::bypass_alerts::BypassAlertsRepository,
         ),
         diagnostic_store: Some(store),
+        health_snapshot_store: None,
     });
     let app = admin_router(state);
 
@@ -340,6 +342,7 @@ async fn test_diagnostics_pagination() {
             dlp_server::db::repositories::bypass_alerts::BypassAlertsRepository,
         ),
         diagnostic_store: Some(store),
+        health_snapshot_store: None,
     });
     let app = admin_router(state);
 
@@ -488,6 +491,7 @@ async fn test_diagnostics_filter_by_user_sid() {
             dlp_server::db::repositories::bypass_alerts::BypassAlertsRepository,
         ),
         diagnostic_store: Some(store),
+        health_snapshot_store: None,
     });
     let app = admin_router(state);
 

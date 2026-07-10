@@ -94,6 +94,7 @@ fn test_app() -> (NamedTempFile, axum::Router, Arc<db::Pool>) {
             dlp_server::db::repositories::bypass_alerts::BypassAlertsRepository,
         ),
         diagnostic_store: None,
+        health_snapshot_store: None,
     });
     (tmp, admin_router(state), pool)
 }
