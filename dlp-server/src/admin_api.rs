@@ -160,7 +160,17 @@ async fn agent_auth_middleware(
     })
     .await
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))?
-    .map_err(AppError::Database)?;
+    // Distinguish "no credential enrolled" from a real storage failure. The
+    // former is an authentication condition (401) — returning 500 here let an
+    // anonymous caller probe whether the credential store is empty and echoed
+    // the raw `rusqlite` "Query returned no rows" string (WR-03). Real storage
+    // errors remain 500.
+    .map_err(|e| match e {
+        rusqlite::Error::QueryReturnedNoRows => {
+            AppError::Unauthorized("agent credentials not provisioned".to_string())
+        }
+        other => AppError::Database(other),
+    })?;
 
     // Constant-time comparison of the bearer secret. The previous plain `!=`
     // was a timing side-channel (WR-01). This still treats the bcrypt hash as
@@ -1952,8 +1962,15 @@ async fn get_agent_auth_hash(
     let pool: Arc<db::Pool> = Arc::clone(&state.pool);
     let (hash, updated_at) =
         tokio::task::spawn_blocking(move || -> Result<(String, String), AppError> {
-            let row =
-                CredentialsRepository::get(&pool, "DLPAuthHash").map_err(AppError::Database)?;
+            let row = CredentialsRepository::get(&pool, "DLPAuthHash").map_err(|e| match e {
+                // Honor the documented 404 when no hash has been stored; the
+                // previous blanket `AppError::Database` mapping returned 500 for
+                // the not-found case (WR-03).
+                rusqlite::Error::QueryReturnedNoRows => {
+                    AppError::NotFound("agent auth hash not configured".to_string())
+                }
+                other => AppError::Database(other),
+            })?;
             Ok((row.value, row.updated_at))
         })
         .await

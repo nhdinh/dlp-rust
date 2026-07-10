@@ -221,17 +221,30 @@ impl From<PathRejection> for AppError {
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
+            // 5xx responses intentionally return a generic body: the underlying
+            // detail (e.g. a raw `rusqlite` string) is logged server-side but
+            // must not be echoed to clients, where it leaks internal state such
+            // as an unprovisioned credential store (WR-03).
             AppError::Database(e) => {
                 tracing::error!("database error: {e}");
-                (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal server error".to_string(),
+                )
             }
             AppError::Json(e) => {
                 tracing::error!("json error: {e}");
-                (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal server error".to_string(),
+                )
             }
             AppError::Internal(e) => {
                 tracing::error!("internal error: {e}");
-                (StatusCode::INTERNAL_SERVER_ERROR, self.to_string())
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal server error".to_string(),
+                )
             }
             AppError::NotFound(_) => (StatusCode::NOT_FOUND, self.to_string()),
             AppError::BadRequest(_) => (StatusCode::BAD_REQUEST, self.to_string()),

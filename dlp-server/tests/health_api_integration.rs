@@ -27,9 +27,11 @@ const TEST_AGENT_ID: &str = "integration-test-agent";
 
 /// Builds a fresh test router backed by a temporary SQLite file.
 ///
-/// Seeds an admin user and the agent auth hash so both JWT-protected admin
-/// endpoints and agent-authenticated ingest endpoints work.
-fn build_test_app() -> (axum::Router, Arc<db::Pool>) {
+/// Seeds an admin user and (when `seed_auth_hash` is true) the agent auth hash
+/// so both JWT-protected admin endpoints and agent-authenticated ingest
+/// endpoints work. Passing `seed_auth_hash = false` leaves the credential store
+/// empty, which exercises the unprovisioned-hash path (WR-03).
+fn build_test_app_inner(seed_auth_hash: bool) -> (axum::Router, Arc<db::Pool>) {
     set_jwt_secret(TEST_JWT_SECRET.to_string());
     let tmp = NamedTempFile::new().expect("create temp db");
     let pool = Arc::new(db::new_pool(tmp.path().to_str().unwrap()).expect("build pool"));
@@ -65,7 +67,8 @@ fn build_test_app() -> (axum::Router, Arc<db::Pool>) {
         std::sync::Arc::clone(&crypto),
     );
 
-    // Seed admin user (required for admin JWT auth) and agent auth hash.
+    // Seed admin user (required for admin JWT auth) and optionally the agent
+    // auth hash.
     {
         let conn = pool.get().expect("conn");
         conn.execute(
@@ -73,11 +76,13 @@ fn build_test_app() -> (axum::Router, Arc<db::Pool>) {
             ["test-admin", "hash", "2026-01-01T00:00:00Z"],
         )
         .expect("seed admin user");
-        conn.execute(
-            "INSERT INTO agent_credentials (key, value, updated_at) VALUES (?1, ?2, ?3)",
-            ["DLPAuthHash", TEST_AGENT_AUTH_HASH, "2026-01-01T00:00:00Z"],
-        )
-        .expect("seed agent auth hash");
+        if seed_auth_hash {
+            conn.execute(
+                "INSERT INTO agent_credentials (key, value, updated_at) VALUES (?1, ?2, ?3)",
+                ["DLPAuthHash", TEST_AGENT_AUTH_HASH, "2026-01-01T00:00:00Z"],
+            )
+            .expect("seed agent auth hash");
+        }
     }
 
     let state = Arc::new(AppState {
@@ -101,6 +106,18 @@ fn build_test_app() -> (axum::Router, Arc<db::Pool>) {
         health_snapshot_store: Some(Arc::new(health_snapshot_store::HealthSnapshotStore::new())),
     });
     (admin_router(state), pool)
+}
+
+/// Test app with the agent auth hash provisioned (the common case).
+fn build_test_app() -> (axum::Router, Arc<db::Pool>) {
+    build_test_app_inner(true)
+}
+
+/// Test app with NO agent auth hash provisioned, used to assert the
+/// unprovisioned-credential path returns 401/404 rather than a leaking 500
+/// (WR-03).
+fn build_test_app_no_auth_hash() -> (axum::Router, Arc<db::Pool>) {
+    build_test_app_inner(false)
 }
 
 /// Mints a valid admin JWT for the test secret.
@@ -475,5 +492,65 @@ async fn agent_approval_endpoints_require_agent_auth() {
         resp.status(),
         StatusCode::OK,
         "approvals/public-key must remain publicly readable"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Test 7: unprovisioned agent auth hash returns 401/404, not a leaking 500
+//         (WR-03)
+// ---------------------------------------------------------------------------
+//
+// When no `DLPAuthHash` has been enrolled, the agent-auth middleware must
+// reject with 401 (an authentication condition) and the admin read endpoint
+// must return 404 as documented — neither may surface a 500 whose body echoes
+// the raw `rusqlite` "Query returned no rows" string.
+
+#[tokio::test]
+async fn unprovisioned_auth_hash_returns_401_not_leaking_500() {
+    let (app, _pool) = build_test_app_no_auth_hash();
+
+    // Agent-authenticated endpoint with a well-formed bearer but no enrolled
+    // secret: must be 401, never 500, and must not echo the DB error text.
+    let payload = serde_json::json!({
+        "snapshot": dlp_common::hook_ipc::HookHealthSnapshot::default(),
+    });
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/agents/{}/health", TEST_AGENT_ID))
+        .header(
+            "authorization",
+            agent_auth_header(TEST_AGENT_ID, TEST_AGENT_AUTH_HASH),
+        )
+        .header("content-type", "application/json")
+        .body(Body::from(payload.to_string()))
+        .expect("build request");
+    let resp = app.clone().oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "unprovisioned credential must be a 401, not a 500"
+    );
+    let bytes = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("read body");
+    let body = String::from_utf8_lossy(&bytes).to_lowercase();
+    assert!(
+        !body.contains("query returned no rows") && !body.contains("database error"),
+        "401 body must not echo internal DB error text, got: {body}"
+    );
+
+    // Admin read endpoint with a valid JWT but no enrolled secret: documented
+    // 404, never 500.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/agent-credentials/auth-hash")
+        .header("authorization", format!("Bearer {}", mint_jwt()))
+        .body(Body::empty())
+        .expect("build request");
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::NOT_FOUND,
+        "missing auth hash must be 404 per handler doc, not 500"
     );
 }
