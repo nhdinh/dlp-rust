@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
-current_phase: 59
-current_phase_name: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
+current_phase: 58.8
+current_phase_name: fix-diff-01-and-diff-04
 status: executing
-stopped_at: Completed 58.7-04-PLAN.md
-last_updated: "2026-07-09T10:47:37.040Z"
-last_activity: 2026-07-09
-last_activity_desc: Phase 58.7 complete, transitioned to Phase 59
+stopped_at: Completed 58.8-01-PLAN.md
+last_updated: "2026-07-10T02:25:13.751Z"
+last_activity: 2026-07-10
+last_activity_desc: Phase 58.8 execution started
 progress:
-  total_phases: 50
+  total_phases: 51
   completed_phases: 39
-  total_plans: 214
-  completed_plans: 183
-  percent: 78
+  total_plans: 218
+  completed_plans: 184
+  percent: 76
 ---
 
 # Project State
@@ -23,17 +23,17 @@ progress:
 
 **Project:** DLP-RUST — Enterprise DLP System (NTFS + Active Directory + ABAC)
 **Core Value:** Prevent data exfiltration via a layered enforcement stack (NTFS + ABAC + AD identity)
-**Current Focus:** Phase 58.7 — close-gap-dacl-protected_paths-wiring
+**Current Focus:** Phase 58.8 — fix-diff-01-and-diff-04
 
 ---
 
 ## Current Position
 
-Phase: 59 — Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
-Plan: Not started
+Phase: 58.8 (fix-diff-01-and-diff-04) — EXECUTING
+Plan: 2 of 4
 Status: Ready to execute
 Verification: TBD
-Last activity: 2026-07-09 — Phase 58.7 complete, transitioned to Phase 59
+Last activity: 2026-07-10 — Phase 58.8 execution started
 
 ### Previous: Phase 58.5 — COMPLETE
 
@@ -170,6 +170,7 @@ Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlatio
 - UAT must be run by operator on physical hardware with real cloud clients, real printers, and real USB/SD/optical/virtual drives.
 - CRIT-04 benchmark gate (<= 25% wall-clock overhead) must be verified during UAT.
 - See `.planning/phases/57-operational-deployment-guide-av-edr-allowlist-uat/57-VERIFICATION.md` for full status.
+- sonar-scanner cannot run locally: JAVA_HOME is not set and no Java executable is in PATH. Quality Gate verification for 58.8-01 is blocked on environment tooling.
 
 ## Next Action
 
@@ -196,8 +197,8 @@ Phase 59 and later are complete and shipped as part of v0.11.0.
 
 ## Session Continuity
 
-Last session: 2026-07-09T01:46:55.621Z
-Stopped at: Completed 58.7-04-PLAN.md
+Last session: 2026-07-10T02:24:40.411Z
+Stopped at: Completed 58.8-01-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
@@ -252,6 +253,7 @@ Resume file: None
 | Phase 58.7-close-gap-dacl-protected_paths-wiring P02 | 48min | 3 tasks | 1 files |
 | Phase 58.7-close-gap-dacl-protected_paths-wiring P03 | 35min | 2 tasks | 2 files |
 | Phase 58.7 P04 | 10min | 2 tasks | 3 files |
+| Phase 58.8-fix-diff-01-and-diff-04 P01 | 90min | 4 tasks | 5 files |
 
 ## Quick Tasks Completed
 
@@ -307,3 +309,6 @@ Resume file: None
 - [Phase 58.7-close-gap-dacl-protected_paths-wiring]: Reordered run_loop_init so the bypass correlator is built before the DACL manager — The manager must hold a clone of the Arc<BypassCorrelator> to call set_protected_paths during Reinit without restarting the correlator task.
 - [Phase 58.7-close-gap-dacl-protected_paths-wiring]: Reinit reads a fresh AgentConfig snapshot each time so global_mode cannot become stale — Threat T-58.7-08 requires that Reinit use current global_mode. Building the minimal reinit config inside the command handler from the shared config Arc guarantees a fresh snapshot.
 - [Phase 58.7]: Phase 58.7: The per-path removal sequence (get_snapshot -> remove_tripwire_from_path -> mark_applied -> unregister) runs under DaclStaging::with_path_lock to prevent races with the repair task. — Prevents concurrent repair task from observing partial removal state or consuming a snapshot that unregister is about to delete.
+- [Phase 58.8]: Pre-create next named-pipe instance in HookIpcServer accept_loop to eliminate fire-and-forget reconnect race — RequestOverride clients connect immediately after a HookRequest response; creating the next pipe during current connection handling removes the recreate window that caused 50% test flakiness.
+- [Phase 58.8]: Keep RequestOverride fire-and-forget: agent writes no response frame — The DLL closes the pipe immediately after send_raw_oneway; writing a response risks broken pipe and contradicts the fire-and-forget contract.
+- [Phase 58.8]: Fix hook_ipc_integration RequestOverride test to close client pipe and assert handler invocation — The previous test expected an ACK response that is never sent under fire-and-forget semantics, causing deadlock.

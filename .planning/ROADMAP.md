@@ -618,7 +618,7 @@ Plans:
   4. `GET /admin/diagnostics` returns real snapshots when diagnostics have been ingested via authenticated `POST /agents/{id}/diagnostics`.
   5. Full workspace tests, clippy, formatting, and sonar-scanner Quality Gate pass (where environmental tooling permits).
 
-**Plans:** 4/4 planned
+**Plans:** 1/4 plans executed
 
 **Wave 1** *(no dependencies)*
 
@@ -885,6 +885,11 @@ Standard patterns (likely skip phase research): Phases 48, 49, 50, 52, 54, 55, 5
 **Depends on:** Phase 67
 **Plans:** 2/6 plans complete (Plans 01-02 implemented; Plans 03-06 are gap closure for UAT)
 Plans:
+
+- [x] 58.8-01-PLAN.md
+- [ ] 58.8-02-PLAN.md
+- [ ] 58.8-03-PLAN.md
+- [ ] 58.8-04-PLAN.md
 
 - [x] 58.7-01-PLAN.md
 - [x] 58.7-02-PLAN.md
