@@ -310,11 +310,26 @@ fn dispatch(
                     request_id: request_id.clone(),
                     justification,
                 };
-                if let Err(e) = confirmed_override_tx.try_send(confirmed) {
+                // WR-03: apply backpressure instead of dropping on saturation.
+                // The pending entry is only removed by `confirmed_override_loop`
+                // after the server accepts the submit (CR-01/WR-05), so losing
+                // this send would strand an approved override until the 120s
+                // reaper — with no audit and after the UI already reported
+                // "Approved". Block until capacity is available; the only
+                // error is a closed channel (consumer gone). Production runs
+                // the pipe server under Tokio (spawn_blocking), so await the
+                // send via the current runtime handle; synchronous unit tests
+                // have no runtime handle and use `blocking_send`, which also
+                // blocks rather than drops.
+                let send_result = match tokio::runtime::Handle::try_current() {
+                    Ok(handle) => handle.block_on(confirmed_override_tx.send(confirmed)),
+                    Err(_) => confirmed_override_tx.blocking_send(confirmed),
+                };
+                if let Err(e) = send_result {
                     warn!(
                         request_id,
                         error = %e,
-                        "Pipe 1: confirmed override channel saturated — dropping"
+                        "Pipe 1: confirmed override channel closed"
                     );
                 }
             } else {
