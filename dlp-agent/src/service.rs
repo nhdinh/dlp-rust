@@ -1621,51 +1621,71 @@ async fn override_pending_reaper() {
 /// and submits each one to the server with the user-provided justification.
 ///
 /// The loop exits when the channel sender is dropped (e.g. during service shutdown).
+///
+/// Removal of the pending context is intentionally deferred until the server
+/// *accepts* the submission (WR-05): removing it before the submit and then
+/// failing the HTTP call would strand the user's confirmation with no retry and
+/// no reaper help (the entry was already gone). On submit failure the context is
+/// retained for the reaper and the loss is surfaced at error level rather than
+/// dropped silently.
 async fn confirmed_override_loop(
     mut receiver: tokio::sync::mpsc::Receiver<ConfirmedOverride>,
     server_client: Option<crate::server_client::ServerClient>,
 ) {
     while let Some(confirmed) = receiver.recv().await {
+        // Peek (clone) the pending context WITHOUT removing it. The entry is the
+        // single source of truth for the user's confirmation; we only retire it
+        // after a confirmed-successful submit (see the `Ok` arm below).
         let pending = OVERRIDE_PENDING
             .get()
-            .and_then(|store| store.lock().remove(&confirmed.request_id));
-        if let Some(pending) = pending {
-            let justification = confirmed.justification.clone();
-            match submit_approval_request_with_justification(
-                &server_client,
-                &pending,
-                confirmed.justification,
-            )
-            .await
-            {
-                Ok(server_request_id) => {
-                    info!(
-                        request_id = %pending.request.data_object_id,
-                        server_request_id = %server_request_id,
-                        "Approval request submitted to server"
-                    );
-                    // Emit the override-grant audit event only after the server
-                    // accepts the submission, using the real request context.
-                    let agent_id = server_client
-                        .as_ref()
-                        .map(|sc| sc.agent_id().to_string())
-                        .or_else(|| std::env::var("DLP_AGENT_ID").ok())
-                        .unwrap_or_else(|| "AGENT-UNKNOWN".to_string());
-                    emit_override_granted_audit(&pending, &justification, &agent_id);
-                }
-                Err(e) => {
-                    warn!(
-                        request_id = %pending.request.data_object_id,
-                        error = %e,
-                        "Failed to submit approval request to server"
-                    );
-                }
-            }
-        } else {
+            .and_then(|store| store.lock().get(&confirmed.request_id).cloned());
+        let Some(pending) = pending else {
             warn!(
                 request_id = %confirmed.request_id,
                 "Confirmed override has no pending context — ignoring"
             );
+            continue;
+        };
+        let justification = confirmed.justification.clone();
+        match submit_approval_request_with_justification(
+            &server_client,
+            &pending,
+            confirmed.justification,
+        )
+        .await
+        {
+            Ok(server_request_id) => {
+                info!(
+                    request_id = %pending.request.data_object_id,
+                    server_request_id = %server_request_id,
+                    "Approval request submitted to server"
+                );
+                // Server accepted the submission — now safe to retire the
+                // pending context (WR-05: removal happens after success).
+                if let Some(store) = OVERRIDE_PENDING.get() {
+                    store.lock().remove(&confirmed.request_id);
+                }
+                // Emit the override-grant audit event only after the server
+                // accepts the submission, using the real request context.
+                let agent_id = server_client
+                    .as_ref()
+                    .map(|sc| sc.agent_id().to_string())
+                    .or_else(|| std::env::var("DLP_AGENT_ID").ok())
+                    .unwrap_or_else(|| "AGENT-UNKNOWN".to_string());
+                emit_override_granted_audit(&pending, &justification, &agent_id);
+            }
+            Err(e) => {
+                // Submission failed (server down, agent-only mode, auth error).
+                // Do NOT remove the pending context: leave it for the reaper so
+                // the confirmation is not silently dropped, and surface the
+                // loss at error level (WR-05).
+                error!(
+                    request_id = %pending.request.data_object_id,
+                    confirmed_request_id = %confirmed.request_id,
+                    error = %e,
+                    "Failed to submit confirmed override to server — pending context retained for reaper"
+                );
+            }
         }
     }
     debug!("confirmed_override_loop exiting");
@@ -8385,11 +8405,11 @@ fn test_build_approval_request_uses_user_justification() {
 #[cfg(test)]
 #[tokio::test]
 #[serial_test::serial]
-async fn test_confirmed_override_loop_removes_pending_context() {
+async fn test_confirmed_override_loop_retains_pending_on_submit_failure() {
     let store = ensure_override_pending();
     store.lock().clear();
 
-    let request_id = "ovr-test-001".to_string();
+    let request_id = "ovr-test-fail-001".to_string();
     let pending = PendingOverride {
         request: make_hook_override_request(),
         session_id: 1,
@@ -8406,11 +8426,84 @@ async fn test_confirmed_override_loop_removes_pending_context() {
     .unwrap();
     drop(tx);
 
+    // No server client -> submission fails (WR-05 agent-only mode). The pending
+    // context must be RETAINED so the confirmation is not silently dropped.
     confirmed_override_loop(rx, None).await;
 
     assert!(
+        store.lock().get(&request_id).is_some(),
+        "pending context must be retained when submission fails (WR-05)"
+    );
+    // Clean up so subsequent tests are not affected by the retained entry.
+    store.lock().remove(&request_id);
+}
+
+#[cfg(test)]
+/// Spins up a tiny TCP server that accepts `POST /agent/approval-request` and
+/// returns `200 {"request_id":"srv-mock-001"}`, exercising the success path of
+/// `confirmed_override_loop`.
+async fn spawn_approval_accepting_server() -> (String, tokio::task::JoinHandle<()>) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind mock approval server");
+    let addr = listener.local_addr().expect("mock server addr");
+    let handle = tokio::spawn(async move {
+        loop {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                break;
+            };
+            tokio::spawn(async move {
+                let mut buf = [0u8; 8192];
+                let _ = sock.read(&mut buf).await;
+                let body = br#"{"request_id":"srv-mock-001"}"#;
+                let header = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\n\
+                     content-length: {}\r\nconnection: close\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(header.as_bytes()).await;
+                let _ = sock.write_all(body).await;
+            });
+        }
+    });
+    (format!("http://{addr}"), handle)
+}
+
+#[cfg(test)]
+#[tokio::test]
+#[serial_test::serial]
+async fn test_confirmed_override_loop_removes_pending_on_submit_success() {
+    let store = ensure_override_pending();
+    store.lock().clear();
+
+    let (base_url, server) = spawn_approval_accepting_server().await;
+    let sc = crate::server_client::ServerClient::from_env_with_config(Some(&base_url))
+        .expect("build server client");
+
+    let request_id = "ovr-test-ok-001".to_string();
+    let pending = PendingOverride {
+        request: make_hook_override_request(),
+        session_id: 1,
+        created_at: Instant::now(),
+    };
+    store.lock().insert(request_id.clone(), pending);
+
+    let (tx, rx) = tokio::sync::mpsc::channel::<ConfirmedOverride>(1);
+    tx.send(ConfirmedOverride {
+        request_id: request_id.clone(),
+        justification: "user justification".to_string(),
+    })
+    .await
+    .unwrap();
+    drop(tx);
+
+    confirmed_override_loop(rx, Some(sc)).await;
+    server.abort();
+
+    assert!(
         store.lock().get(&request_id).is_none(),
-        "pending context should be removed after confirmation"
+        "pending context must be removed once the server accepts the submission"
     );
 }
 
