@@ -5,15 +5,15 @@ milestone_name: Real-Time File Access Prevention
 current_phase: 58.9
 current_phase_name: close-gap-diff-04-agent-diagnostics-producer
 status: executing
-stopped_at: Completed 58.9-02-PLAN.md
-last_updated: "2026-07-10T17:44:18.726Z"
+stopped_at: Completed 58.9-03-PLAN.md
+last_updated: "2026-07-10T18:35:05.574Z"
 last_activity: 2026-07-10
-last_activity_desc: Phase 58.9 execution started
+last_activity_desc: Completed 58.9-03 (agent diagnostics producer: consumer + orchestration)
 progress:
   total_phases: 52
   completed_phases: 40
   total_plans: 222
-  completed_plans: 189
+  completed_plans: 190
   percent: 77
 ---
 
@@ -30,9 +30,9 @@ progress:
 ## Current Position
 
 Phase: 58.9 (close-gap-diff-04-agent-diagnostics-producer) — EXECUTING
-Plan: 3 of 4
-Status: Ready to execute
-Last activity: 2026-07-10 — Phase 58.9 execution started
+Plan: 4 of 4
+Status: Plan 03 complete; ready for Plan 04 (server round-trip + end-to-end GET /admin/diagnostics)
+Last activity: 2026-07-10 — Completed 58.9-03 (agent diagnostics producer: consumer + orchestration)
 Verification: cargo check, clippy, fmt, and dlp-server lib tests pass; sonar-scanner Quality Gate blocked on auth
 Last activity: 2026-07-10 — Completed 58.8-02 server-side DIFF-04 wiring
 
@@ -203,8 +203,8 @@ Phase 59 and later are complete and shipped as part of v0.11.0.
 
 ## Session Continuity
 
-Last session: 2026-07-10T17:44:18.712Z
-Stopped at: Completed 58.9-02-PLAN.md
+Last session: 2026-07-10T18:35:05.558Z
+Stopped at: Completed 58.9-03-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
@@ -266,6 +266,7 @@ Resume file: None
 | Phase 58.8 P04 | 18min | 3 tasks | 12 files |
 | Phase 58.9 P01 | 11min | 2 tasks | 2 files |
 | Phase 58.9 P02 | 19min | 2 tasks | 3 files |
+| Phase 58.9 P03 | 40min | 2 tasks | 3 files |
 
 ## Quick Tasks Completed
 
@@ -340,3 +341,8 @@ Resume file: None
 - [Phase 58.9 Plan 02]: Reused IpcPayloadV1::DiagnosticsResponse (no new variant) for the DLL one-way emit — preserves DLL<->agent bincode discriminants; dlp-common/src/hook_ipc.rs byte-for-byte unchanged (A2)
 - [Phase 58.9 Plan 02]: Diagnostic emit is fire-and-forget + best-effort (send_raw_oneway 50ms connect, bincode->PipeError::Malformed, caller-swallowed via debug_log) so the deny path is never blocked on pipe I/O (T-58.9-07); drain capped at drain_snapshots(1000) with empty-drain short-circuit (T-58.9-09)
 - [Phase 58.9 Plan 02]: DIFF-04 still not marked complete — spans Plans 01-04 and criterion 3 (end-to-end GET /admin/diagnostics) is only proven by Plan 04; no main-repo REQUIREMENTS.md to update
+- [Phase 58.9]: Plan 03: with_diagnostic_aggregator threads agent_id + aggregator together (A3: ingest id == push id); ingest keyed by named_pipe_client_pid(pipe) not payload (T-58.9-11 anti-spoof) — Single builder makes the identity invariant explicit at one call site; trusting the pipe pid (GetNamedPipeClientProcessId) prevents a DLL from attributing snapshots to another PID
+- [Phase 58.9]: Plan 03: Reused IpcPayloadV1::DiagnosticsResponse for the inbound arm (dual-use: reply to PullDiagnostics AND one-way inbound); no new enum variant, dlp-common/src/hook_ipc.rs byte-for-byte unchanged (DIFF-04 A2) — Preserves the DLL<->agent bincode discriminant layout cross-crate; mirrors Plan 02 producer decision and the 58.8-03 HealthResponse precedent
+- [Phase 58.9]: Plan 03: diagnostic_push_loop calls drain_all (owned Vec) BEFORE awaiting submit_diagnostic_snapshot; 429/non-2xx mapped non-fatal, single-shot POST, no retry — No DashMap guard crosses .await (T-58.9-14 / RESEARCH Pitfall 4); per-agent rate limit honored by 60s cadence + non-fatal mapping (T-58.9-12 / RESEARCH A4)
+- [Phase 58.9]: Plan 03: Populated EXISTING RunLoopContext::diagnostic_push_shutdown/handle (no new fields); extracted spawn_diagnostic_push_loop helper for testability; lifecycle mirrors health (start on run when server_client present; flush-and-stop on shutdown, 5s join) — Minimal struct-literal drift (T-58.9-15; cargo test --tests --no-run compiles all 12 test binaries); helper makes the (None,None)/(Some,Some) contract unit-testable without booting the service
+- [Phase 58.9]: Plan 03: DIFF-04 still NOT marked complete — spans Plans 01-04; criterion 3 (end-to-end GET /admin/diagnostics) only proven by Plan 04; no main-repo REQUIREMENTS.md to update — Mirrors STATE decisions #339/#342; marking complete now would overstate coverage
