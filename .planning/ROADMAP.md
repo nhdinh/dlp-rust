@@ -79,6 +79,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [ ] **Phase 58.6: Targeted hook injection — only processes that perform file operations (INSERTED)** — investigate and implement selective hook injection based on process file-operation behavior instead of universal injection.
 - [x] **Phase 58.7: Close gap: DACL protected_paths wiring (INSERTED)** — wire the protected_paths configuration from policy sync through the DACL tripwire repair watcher and agent enforcement path. (completed 2026-07-09)
 - [x] **Phase 58.8: Fix DIFF-01 and DIFF-04 (INSERTED)** — wire automatic override prompt requests from hook DLL deny paths (`IpcPayloadV1::RequestOverride`) with fire-and-forget agent handling, close DIFF-01 by deferring server approval submission until the UI confirms with justification, and close DIFF-04 by adding authenticated `POST /agents/{id}/health` and `POST /agents/{id}/diagnostics`, `GET /admin/health`, production store initialization, and `dlp-admin-cli` verification. **Plans:** 4/4 planned. (completed 2026-07-10)
+- [ ] **Phase 58.9: Close gap: DIFF-04 — agent diagnostics producer (INSERTED)** — drain the in-process `diagnostic_aggregator` in `dlp-agent` and push the resulting snapshots to the server via the authenticated `POST /agents/{id}/diagnostics` endpoint shipped in Phase 58.8, closing the producer side of the DIFF-04 gap surfaced in the v0.10.0 milestone re-audit (commit 97ef75d8). Server ingest + store already exists; this phase wires the agent-side collection, batching, and authenticated push with a lifecycle test.
 
 ---
 
@@ -629,6 +630,40 @@ Plans:
 
 - [ ] `58.8-03-PLAN.md` — DIFF-01 semantics + agent health push: store full `PendingOverride` context keyed by `request_id`, update both agent and UI copies of `Pipe1UiMsg::UserConfirmed` to carry justification, use a `tokio::mpsc` channel to submit the approval from the synchronous Pipe 1 dispatcher to an async service task, add `ServerClient::submit_health_snapshot`, a periodic agent health push task with shutdown wiring and lifecycle test, and a `dlp-server/tests/health_api_integration.rs` round-trip test.
 - [ ] `58.8-04-PLAN.md` — Integration-test compilation fixes + admin CLI self-health verification: discover and update every `AppState` literal in `dlp-server/tests`, add a `dlp-admin-cli` `EngineClient::get_self_health()` test asserting the exact dashboard snapshot fields consumed by the TUI and that the admin bearer token is sent, and add a server 401 test for unauthenticated `GET /admin/health`.
+
+### Phase 58.9: Close gap: DIFF-04 — agent diagnostics producer (INSERTED)
+
+**Goal**: Close the producer side of the DIFF-04 gap surfaced in the v0.10.0 milestone re-audit (commit 97ef75d8). Phase 58.8 shipped the authenticated `POST /agents/{id}/diagnostics` endpoint, the `diagnostic_store`, and `dlp-admin-cli` verification — but nothing in `dlp-agent` drains the in-process `diagnostic_aggregator` and pushes those snapshots to the server, so `GET /admin/diagnostics` stays empty in production. This phase wires the agent-side collection, batching, and authenticated push on a periodic task with graceful shutdown, mirroring the `submit_health_snapshot` push task landed in 58.8-03.
+**Depends on**: Phase 58.8 (server diagnostics endpoint + store) and Phase 58.4 (DIFF differentiator infrastructure feeding `diagnostic_aggregator`)
+**Requirements**: DIFF-04
+**Success Criteria** (what must be TRUE):
+
+  1. `dlp-agent` exposes a `ServerClient::submit_diagnostic_snapshot` (or equivalent) that posts a serialized diagnostic snapshot to `POST /agents/{id}/diagnostics` with the agent bearer token and honors the per-agent rate limit.
+  2. A periodic agent task drains `diagnostic_aggregator`, batches pending snapshots, and pushes them to the server; the task is wired into the service lifecycle (start on run, flush-and-stop on shutdown) exactly like the health push task from 58.8-03.
+  3. After the agent runs against a deny-path workload, `GET /admin/diagnostics` (via `dlp-admin-cli`) returns the pushed snapshots — i.e. the end-to-end DIFF-04 path is observable, not just the server half.
+  4. A server round-trip test (or agent integration test) proves a snapshot produced by the aggregator reaches `diagnostic_store` through the authenticated endpoint and is retrievable, including a 401 path for unauthenticated/mismatched agent identity.
+  5. Full workspace tests, clippy, formatting, and sonar-scanner Quality Gate pass (where environmental tooling permits).
+
+**Plans:** 4 plans
+
+**Wave 1** *(no dependencies — parallel; different crates, zero file overlap)*
+
+- [ ] `58.9-01-PLAN.md` — `dlp-agent` producer primitives: destructive `DiagnosticAggregator::drain_all` + `ServerClient::submit_diagnostic_snapshot` (header `DLP-AGENT {id}:{hash}`, body `{pid, snapshots}`, non-2xx non-fatal), with unit tests.
+- [ ] `58.9-02-PLAN.md` — `dlp-hook-dll` one-way emit (A1, cross-crate): `pipe_client::send_diagnostics` reusing `IpcPayloadV1::DiagnosticsResponse` over `send_raw_oneway`, `DIAGNOSTIC_EMIT_*` cadence consts, and the `record_pipe_round_trip_and_maybe_emit` drain+push arm (best-effort, non-blocking).
+
+**Wave 2** *(blocked on Wave 1)*
+
+- [ ] `58.9-03-PLAN.md` — agent consumer + orchestration: `HookIpcServer::with_diagnostic_aggregator` + `DiagnosticsResponse` ingest arm keyed by `named_pipe_client_pid(pipe)`, `diagnostic_push_loop` + `DIAGNOSTIC_PUSH_INTERVAL`, and lifecycle wiring POPULATING the existing `RunLoopContext::diagnostic_push_shutdown`/`diagnostic_push_handle` fields (no new fields); IPC ingest test + push-loop lifecycle test.
+
+**Wave 3** *(blocked on Wave 2)*
+
+- [ ] `58.9-04-PLAN.md` — end-to-end proof + quality gate: diagnostics 401/400 auth-boundary tests + strengthened 200 field-level round-trip in `dlp-server/tests/health_api_integration.rs`, workspace fmt/clippy/test gate, best-effort `sonar-scanner`, and the phase must_haves verification matrix.
+
+Plans:
+- [ ] `58.9-01-PLAN.md` — agent drain_all + submit_diagnostic_snapshot primitives (Wave 1)
+- [ ] `58.9-02-PLAN.md` — dlp-hook-dll one-way DiagnosticsResponse emit (Wave 1, parallel)
+- [ ] `58.9-03-PLAN.md` — HookIpcServer ingest arm + diagnostic_push_loop + lifecycle wiring (Wave 2)
+- [ ] `58.9-04-PLAN.md` — server 401/400 round-trip tests + workspace gate + must_haves matrix (Wave 3)
 
 ### Phase 59: Label Service — DB Schema + API + Folder Inheritance + Manual Assignment
 
