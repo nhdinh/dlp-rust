@@ -14,6 +14,7 @@ pub mod crypto;
 pub mod db;
 pub mod diagnostic_store;
 pub mod exception_store;
+pub mod health_snapshot_store;
 pub mod label_service;
 pub mod observability;
 pub mod policy_engine_error;
@@ -78,6 +79,9 @@ pub struct AppState {
     /// Phase 58: Optional diagnostic snapshot store for admin diagnostics API.
     /// Populated when server runs bundled with agent (test mode).
     pub diagnostic_store: Option<Arc<diagnostic_store::DiagnosticSnapshotStore>>,
+    /// Phase 58.8: Optional health snapshot store for admin self-health dashboard.
+    /// In-memory only; populated in production.
+    pub health_snapshot_store: Option<Arc<health_snapshot_store::HealthSnapshotStore>>,
 }
 
 impl AppState {
@@ -124,6 +128,14 @@ impl std::fmt::Debug for AppState {
                 "diagnostic_store",
                 &if self.diagnostic_store.is_some() {
                     "Some(DiagnosticSnapshotStore)"
+                } else {
+                    "None"
+                },
+            )
+            .field(
+                "health_snapshot_store",
+                &if self.health_snapshot_store.is_some() {
+                    "Some(HealthSnapshotStore)"
                 } else {
                     "None"
                 },
@@ -291,6 +303,7 @@ mod app_state_tests {
             ),
             bypass_alerts: Arc::new(crate::db::repositories::bypass_alerts::BypassAlertsRepository),
             diagnostic_store: None,
+            health_snapshot_store: None,
         }
     }
 

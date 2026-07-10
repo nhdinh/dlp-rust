@@ -5789,6 +5789,7 @@ mod tests {
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
             diagnostic_store: None,
+            health_snapshot_store: None,
         });
         admin_router(state)
     }
@@ -5872,6 +5873,7 @@ mod tests {
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
             diagnostic_store: None,
+            health_snapshot_store: None,
         });
         let app = admin_router(state);
 
@@ -5946,6 +5948,7 @@ mod tests {
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
             diagnostic_store: None,
+            health_snapshot_store: None,
         });
         let app = admin_router(state);
 
@@ -6074,6 +6077,7 @@ mod tests {
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
             diagnostic_store: None,
+            health_snapshot_store: None,
         });
         let app = admin_router(state);
 
@@ -6245,6 +6249,7 @@ mod tests {
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
             diagnostic_store: None,
+            health_snapshot_store: None,
         });
         let app = admin_router(state);
 
@@ -6498,6 +6503,7 @@ mod tests {
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
             diagnostic_store: None,
+            health_snapshot_store: None,
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -7714,6 +7720,7 @@ mod tests {
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
             diagnostic_store: None,
+            health_snapshot_store: None,
         });
         let app = admin_router(state);
 
@@ -7872,6 +7879,7 @@ mod tests {
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
             diagnostic_store: None,
+            health_snapshot_store: None,
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -7976,6 +7984,7 @@ mod tests {
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
             diagnostic_store: None,
+            health_snapshot_store: None,
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -8421,6 +8430,7 @@ mod tests {
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
             diagnostic_store: None,
+            health_snapshot_store: None,
         });
         let app = admin_router(state);
 
@@ -8518,6 +8528,7 @@ mod tests {
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
             diagnostic_store: None,
+            health_snapshot_store: None,
         });
         let app = admin_router(state);
 
@@ -8615,6 +8626,7 @@ mod tests {
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
             diagnostic_store: None,
+            health_snapshot_store: None,
         });
         let app = admin_router(state);
 
@@ -9318,6 +9330,7 @@ mod tests {
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
             diagnostic_store: None,
+            health_snapshot_store: None,
         })
     }
 
@@ -9739,6 +9752,7 @@ mod tests {
                     crate::db::repositories::bypass_alerts::BypassAlertsRepository,
                 ),
                 diagnostic_store: None,
+                health_snapshot_store: None,
             });
             // Minimal router with just the disk-registry delete route for isolation.
             axum::Router::new()
@@ -9820,6 +9834,7 @@ mod tests {
                     crate::db::repositories::bypass_alerts::BypassAlertsRepository,
                 ),
                 diagnostic_store: None,
+                health_snapshot_store: None,
             });
             axum::Router::new()
                 .route(
@@ -10171,6 +10186,7 @@ mod tests {
                     crate::db::repositories::bypass_alerts::BypassAlertsRepository,
                 ),
                 diagnostic_store: None,
+                health_snapshot_store: None,
             });
             axum::Router::new()
                 .route(
@@ -12573,6 +12589,7 @@ mod tests {
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
             diagnostic_store: Some(Arc::clone(&diag_store)),
+            health_snapshot_store: None,
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
@@ -12682,6 +12699,7 @@ mod tests {
                 crate::db::repositories::bypass_alerts::BypassAlertsRepository,
             ),
             diagnostic_store: Some(Arc::clone(&diag_store)),
+            health_snapshot_store: None,
         });
         let app = admin_router(state);
         let token = mint_admin_jwt();
