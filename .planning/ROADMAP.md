@@ -644,7 +644,7 @@ Plans:
   4. A server round-trip test (or agent integration test) proves a snapshot produced by the aggregator reaches `diagnostic_store` through the authenticated endpoint and is retrievable, including a 401 path for unauthenticated/mismatched agent identity.
   5. Full workspace tests, clippy, formatting, and sonar-scanner Quality Gate pass (where environmental tooling permits).
 
-**Plans:** 4 plans
+**Plans:** 1/4 plans executed
 
 **Wave 1** *(no dependencies — parallel; different crates, zero file overlap)*
 
@@ -660,6 +660,11 @@ Plans:
 - [ ] `58.9-04-PLAN.md` — end-to-end proof + quality gate: diagnostics 401/400 auth-boundary tests + strengthened 200 field-level round-trip in `dlp-server/tests/health_api_integration.rs`, workspace fmt/clippy/test gate, best-effort `sonar-scanner`, and the phase must_haves verification matrix.
 
 Plans:
+
+- [x] 58.9-01-PLAN.md
+- [ ] 58.9-02-PLAN.md
+- [ ] 58.9-03-PLAN.md
+- [ ] 58.9-04-PLAN.md
 - [ ] `58.9-01-PLAN.md` — agent drain_all + submit_diagnostic_snapshot primitives (Wave 1)
 - [ ] `58.9-02-PLAN.md` — dlp-hook-dll one-way DiagnosticsResponse emit (Wave 1, parallel)
 - [ ] `58.9-03-PLAN.md` — HookIpcServer ingest arm + diagnostic_push_loop + lifecycle wiring (Wave 2)

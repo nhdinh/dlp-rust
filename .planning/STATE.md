@@ -2,18 +2,18 @@
 gsd_state_version: 1.0
 milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
-current_phase: 58.8
-current_phase_name: fix-diff-01-and-diff-04
-status: verifying
-stopped_at: Completed 58.8-02-PLAN.md
-last_updated: "2026-07-10T14:52:55.329Z"
+current_phase: 58.9
+current_phase_name: close-gap-diff-04-agent-diagnostics-producer
+status: executing
+stopped_at: Completed 58.9-01-PLAN.md
+last_updated: "2026-07-10T17:14:48.410Z"
 last_activity: 2026-07-10
-last_activity_desc: Completed 58.8-02 server-side DIFF-04 wiring
+last_activity_desc: Phase 58.9 execution started
 progress:
   total_phases: 52
   completed_phases: 40
-  total_plans: 218
-  completed_plans: 187
+  total_plans: 222
+  completed_plans: 188
   percent: 77
 ---
 
@@ -23,16 +23,16 @@ progress:
 
 **Project:** DLP-RUST — Enterprise DLP System (NTFS + Active Directory + ABAC)
 **Core Value:** Prevent data exfiltration via a layered enforcement stack (NTFS + ABAC + AD identity)
-**Current Focus:** Phase 58.9 — close-gap-diff-04-agent-diagnostics-producer (PLANNED — 4 plans / 3 waves, ready to execute)
+**Current Focus:** Phase 58.9 — close-gap-diff-04-agent-diagnostics-producer
 
 ---
 
 ## Current Position
 
-Phase: 58.9 (close-gap-diff-04-agent-diagnostics-producer) — PLANNED (plan-checker PASSED; run `/gsd-execute-phase 58.9`)
-Plan: 4 plans (01-04) across 3 waves — Wave 1: 01 (`dlp-agent` core) + 02 (`dlp-hook-dll` emit, A1) in parallel; Wave 2: 03 (ingest + push loop + lifecycle); Wave 3: 04 (server round-trip + quality gate)
-Status: Planned — DIFF-04 producer-side (drain `diagnostic_aggregator` → `POST /agents/{id}/diagnostics`) incl. `dlp-hook-dll` one-way emit (A1 cross-crate, required by locked criterion 3)
-Last activity: 2026-07-10 — Phase 58.9 planned (4 plans/3 waves, plan-checker PASSED); ready for `/gsd-execute-phase 58.9`
+Phase: 58.9 (close-gap-diff-04-agent-diagnostics-producer) — EXECUTING
+Plan: 2 of 4
+Status: Ready to execute
+Last activity: 2026-07-10 — Phase 58.9 execution started
 Verification: cargo check, clippy, fmt, and dlp-server lib tests pass; sonar-scanner Quality Gate blocked on auth
 Last activity: 2026-07-10 — Completed 58.8-02 server-side DIFF-04 wiring
 
@@ -203,8 +203,8 @@ Phase 59 and later are complete and shipped as part of v0.11.0.
 
 ## Session Continuity
 
-Last session: 2026-07-10T04:55:59.378Z
-Stopped at: Completed 58.8-02-PLAN.md
+Last session: 2026-07-10T17:13:35.133Z
+Stopped at: Completed 58.9-01-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
@@ -264,6 +264,7 @@ Resume file: None
 | Phase 58.8-fix-diff-01-and-diff-04 P02 | 50min | 4 tasks | 5 files |
 | Phase 58.8-fix-diff-01-and-diff-04 P03 | 20min | 4 tasks | 9 files |
 | Phase 58.8 P04 | 18min | 3 tasks | 12 files |
+| Phase 58.9 P01 | 11min | 2 tasks | 2 files |
 
 ## Quick Tasks Completed
 
@@ -332,3 +333,6 @@ Resume file: None
 - [Phase ?]: Carry the user's justification in Pipe1UiMsg::UserConfirmed and apply it in the server ApprovalRequest
 - [Phase ?]: Used integer fail_state mock in client test to match server response shape — Server returns fail_state as u8; client test asserts the real contract rather than the TUI's string expectation.
 - [Phase ?]: Confirmed pre-existing test_admin_health_requires_auth satisfies plan 58.8-04 Task 3 — The 401 test was added in plan 58.8-02 and already meets all acceptance criteria.
+- [Phase 58.9]: drain_all takes &self (not &mut self) — DashMap interior mutability plus Plan 03 calls through Arc<DiagnosticAggregator>; &mut self would force an unnecessary exclusive borrow.
+- [Phase 58.9]: Map every non-2xx (incl. 429) to ServerClientError::ServerError; single-shot POST, no retry in client — RESEARCH A4: per-agent rate limit is honored by the 60s push cadence (Plan 03) plus the non-fatal mapping; CLAUDE.md 9.5 and the 58.8-03 rule forbid .context() and new error variants in the client.
+- [Phase 58.9]: DIFF-04 not marked complete in REQUIREMENTS.md after Plan 01 — DIFF-04 spans Plans 01-04; criterion 3 (end-to-end GET /admin/diagnostics) is only proven by Plan 04. Marking it complete now would overstate coverage.
