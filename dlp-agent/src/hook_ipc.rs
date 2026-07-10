@@ -549,14 +549,10 @@ fn handle_connection(
                     } else {
                         warn!("Hook IPC: override request received but no handler configured");
                     }
-                    // Override is fire-and-forget; respond with empty OK.
-                    IpcPayloadV1::Response(HookResponse {
-                        decision: dlp_common::Decision::ALLOW,
-                        reason: "override request forwarded".to_string(),
-                        cache_hint: None,
-                        cache_version: 0,
-                        approval_override: None,
-                    })
+                    // RequestOverride is fire-and-forget: the DLL closes the pipe
+                    // immediately after send_raw_oneway, so writing a response would
+                    // risk a broken pipe. Skip the response write entirely.
+                    continue;
                 }
                 IpcPayloadV1::PullDiagnostics(req) => {
                     debug!(max_entries = req.max_entries, "Hook IPC: pull diagnostics");
