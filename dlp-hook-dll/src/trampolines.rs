@@ -333,8 +333,9 @@ pub fn reset_override_cooldown() {
     OVERRIDE_COOLDOWN.lock().clear();
 }
 
-/// DIFF-04: Record a pipe round-trip and emit a health snapshot every
-/// `HEALTH_EMIT_INTERVAL` round-trips.
+/// DIFF-04: Record a pipe round-trip and, on their respective cadences, emit a health
+/// snapshot (every `HEALTH_EMIT_INTERVAL` round-trips) and drain+emit diagnostic
+/// snapshots (every `DIAGNOSTIC_EMIT_INTERVAL` round-trips).
 fn record_pipe_round_trip_and_maybe_emit() {
     crate::perf_telemetry::record_pipe_round_trip();
     let health_count = crate::perf_telemetry::HEALTH_EMIT_COUNTER
@@ -346,6 +347,22 @@ fn record_pipe_round_trip_and_maybe_emit() {
             crate::pipe_client::send_health_snapshot(crate::current_pipe_name(), &snapshot)
         {
             crate::debug_log(&format!("[dlp-hook] health snapshot send failed: {}\0", e));
+        }
+    }
+    // DIFF-04 (58.9): drain the in-process diagnostic ring and one-way-push the snapshots
+    // to the agent on its own cadence. Best-effort: any pipe/bincode error is logged and
+    // swallowed so the hooked file operation is never blocked on pipe I/O (T-58.9-07).
+    let diag_count = crate::perf_telemetry::DIAGNOSTIC_EMIT_COUNTER
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        + 1;
+    if diag_count.is_multiple_of(crate::perf_telemetry::DIAGNOSTIC_EMIT_INTERVAL) {
+        let snapshots = crate::diagnostic_ring::drain_snapshots(1000);
+        if !snapshots.is_empty() {
+            if let Err(e) =
+                crate::pipe_client::send_diagnostics(crate::current_pipe_name(), &snapshots)
+            {
+                crate::debug_log(&format!("[dlp-hook] diagnostics send failed: {}\0", e));
+            }
         }
     }
 }
@@ -3293,6 +3310,67 @@ mod tests {
         assert!(snapshot.timestamp_qpc > 0, "timestamp_qpc should be > 0");
 
         // Clean up.
+        crate::diagnostic_ring::drain_all_snapshots();
+    }
+
+    #[test]
+    fn diagnostics_cadence_drains_ring_best_effort() {
+        // DIFF-04 (58.9): on the diagnostic cadence, record_pipe_round_trip_and_maybe_emit
+        // drains the in-process ring and one-way-pushes the snapshots. With no agent pipe
+        // present the send fails (ConnectionRefused) and is swallowed — the function returns
+        // normally and the ring is left drained (best-effort, never blocks the deny path).
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+        crate::reset_hook_globals();
+        crate::perf_telemetry::reset_perf_counters();
+        crate::pipe_client::reset_pipe_client_mocks();
+        crate::diagnostic_ring::drain_all_snapshots();
+
+        // Seed one diagnostic snapshot into the ring directly (as the deny-path producers do).
+        // timestamp_qpc=0 / timestamp_secs=0 guarantees the entry is never evicted during drain.
+        let seeded = dlp_common::hook_ipc::DiagnosticSnapshot {
+            hook_function: "WriteFile".to_string(),
+            classification_source: dlp_common::hook_ipc::ClassificationSource::CacheHit,
+            classification_age_ms: 7,
+            abac_resource: r"C:\Data\secret.txt".to_string(),
+            abac_action: "WRITE".to_string(),
+            abac_environment: "local".to_string(),
+            matched_policy_id: Some("pol-diag".to_string()),
+            enforcement_mode: Some("Block".to_string()),
+            decision_latency_us: 120,
+            timestamp_qpc: 0,
+            timestamp_secs: 0,
+            user_sid: "S-1-5-21-1".to_string(),
+        };
+        crate::diagnostic_ring::push_snapshot(seeded);
+
+        // Drive the diagnostic counter to one-below the interval so the next call hits the
+        // cadence multiple. Keep the health counter off its cadence (count becomes 1) so the
+        // health arm does not fire and confound the drain assertion.
+        crate::perf_telemetry::DIAGNOSTIC_EMIT_COUNTER.store(
+            crate::perf_telemetry::DIAGNOSTIC_EMIT_INTERVAL - 1,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        crate::perf_telemetry::HEALTH_EMIT_COUNTER.store(0, std::sync::atomic::Ordering::Relaxed);
+
+        // Must return normally even though no agent pipe is present (best-effort emit).
+        record_pipe_round_trip_and_maybe_emit();
+
+        // The cadence arm fired and drained the ring.
+        let remaining = crate::diagnostic_ring::drain_snapshots(1000);
+        assert!(
+            remaining.is_empty(),
+            "diagnostic ring must be drained by the cadence arm; remaining={}",
+            remaining.len()
+        );
+        assert_eq!(
+            crate::perf_telemetry::DIAGNOSTIC_EMIT_COUNTER
+                .load(std::sync::atomic::Ordering::Relaxed),
+            crate::perf_telemetry::DIAGNOSTIC_EMIT_INTERVAL,
+            "diagnostic counter must advance by exactly one to the interval multiple"
+        );
+
+        // Clean up global state for other tests.
+        crate::perf_telemetry::reset_perf_counters();
         crate::diagnostic_ring::drain_all_snapshots();
     }
 
