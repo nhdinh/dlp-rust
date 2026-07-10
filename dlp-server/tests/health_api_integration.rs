@@ -186,10 +186,12 @@ async fn post_agent_health_surfaces_in_admin_health() {
     let status = json["snapshot"]["overall_status"]
         .as_str()
         .expect("overall_status should be a string");
-    assert!(
-        ["healthy", "degraded", "critical"].contains(&status),
-        "unexpected overall_status: {status}"
-    );
+    // The seeded snapshot (42 round-trips, 0.95 cache-hit, fail_state 0) is a
+    // genuinely healthy agent. Pin the exact value so a heuristic regression
+    // (e.g. reporting idle/zero-trip agents as "critical") is caught — the
+    // previous `contains(&["healthy","degraded","critical"])` assertion
+    // passed for any status and could not detect such a regression (WR-04).
+    assert_eq!(status, "healthy");
 
     let history = json["history"].as_array().expect("history array");
     assert!(
@@ -319,4 +321,47 @@ async fn post_agent_health_rejects_mismatched_agent_id() {
 
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+}
+
+// ---------------------------------------------------------------------------
+// Test 5: auth-hash endpoint requires admin authentication (CR-03 / WR-05)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn get_agent_auth_hash_requires_admin_auth() {
+    let (app, _pool) = build_test_app();
+
+    // No credentials -> rejected: the raw `DLP-AGENT` bearer secret must not be
+    // disclosed to anonymous network clients (CR-03).
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/agent-credentials/auth-hash")
+        .body(Body::empty())
+        .expect("build request");
+    let resp = app.clone().oneshot(req).await.expect("send request");
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // The `DLP-AGENT` bearer (the very secret the endpoint used to hand out)
+    // must NOT authorize reading it back.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/agent-credentials/auth-hash")
+        .header(
+            "authorization",
+            agent_auth_header(TEST_AGENT_ID, TEST_AGENT_AUTH_HASH),
+        )
+        .body(Body::empty())
+        .expect("build request");
+    let resp = app.clone().oneshot(req).await.expect("send request");
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+
+    // A valid admin JWT is required and sufficient.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/agent-credentials/auth-hash")
+        .header("authorization", format!("Bearer {}", mint_jwt()))
+        .body(Body::empty())
+        .expect("build request");
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(resp.status(), StatusCode::OK);
 }
