@@ -480,6 +480,81 @@ impl ServerClient {
         Ok(())
     }
 
+    /// Submits a batch of hook diagnostic snapshots to the server (DIFF-04).
+    ///
+    /// Calls `POST /agents/{agent_id}/diagnostics` with the `DLP-AGENT` auth
+    /// header and a JSON body of shape `{ "pid": <u32>, "snapshots": [...] }`,
+    /// matching the server's `AgentDiagnosticsIngest { pid, snapshots }`
+    /// contract shipped in 58.8-02.
+    ///
+    /// This is a best-effort, single-shot POST: the caller (the periodic
+    /// server-push task) owns retry/backoff via its 60 s cadence. A non-2xx
+    /// response — including `429 Too Many Requests` (per-agent rate limit) and
+    /// any `5xx` — is mapped to [`ServerClientError::ServerError`] so the loop
+    /// logs it and retries next interval rather than failing (RESEARCH A4).
+    ///
+    /// Snapshot contents (file paths, SIDs) are never logged — only the
+    /// `agent_id`, `pid`, and snapshot count are emitted, per CLAUDE.md 9.13.
+    ///
+    /// # Arguments
+    ///
+    /// * `agent_id` — the agent identifier used in the URL and auth header.
+    /// * `pid` — the hooked process id the batch is attributed to (0 for an
+    ///   aggregate multi-pid drain; per-snapshot attribution lives inside each
+    ///   snapshot's fields).
+    /// * `snapshots` — the drained diagnostic snapshots to forward. Borrowed as
+    ///   a slice so the batch is not cloned; it is serialized directly.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ServerClientError::Http` on network/serialization failures.
+    /// Returns `ServerClientError::ServerError { status, body }` on any non-2xx
+    /// response (including 429 and 5xx), treated as non-fatal by the caller.
+    pub async fn submit_diagnostic_snapshot(
+        &self,
+        agent_id: &str,
+        pid: u32,
+        snapshots: &[dlp_common::hook_ipc::DiagnosticSnapshot],
+    ) -> Result<(), ServerClientError> {
+        let url = format!("{}/agents/{}/diagnostics", self.base_url, agent_id);
+
+        // Lifetime-tied payload: borrow the slice to avoid cloning the batch.
+        #[derive(Serialize)]
+        struct DiagnosticsPayload<'a> {
+            pid: u32,
+            snapshots: &'a [dlp_common::hook_ipc::DiagnosticSnapshot],
+        }
+
+        let resp = self
+            .client
+            .post(&url)
+            .header(
+                "Authorization",
+                format!("DLP-AGENT {}:{}", agent_id, self.agent_auth_hash),
+            )
+            .json(&DiagnosticsPayload { pid, snapshots })
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<no body>".to_string());
+            // 429 (rate-limited) and 5xx are non-fatal: the loop retries next interval.
+            return Err(ServerClientError::ServerError { status, body });
+        }
+
+        debug!(
+            agent_id = %agent_id,
+            pid,
+            count = snapshots.len(),
+            "diagnostic snapshots submitted"
+        );
+        Ok(())
+    }
+
     /// Registers this agent with the dlp-server.
     ///
     /// Should be called once during agent startup. If the server is
@@ -2120,5 +2195,168 @@ mod tests {
             .expect("server received request");
         assert_eq!(agent_id, "AGENT-AUTH");
         assert_eq!(auth, "DLP-AGENT AGENT-AUTH:bcrypt-hash-abc");
+    }
+
+    // --- Phase 58.9-01: Hook diagnostic snapshot tests (DIFF-04) ---
+
+    fn make_diagnostic_snapshot() -> dlp_common::hook_ipc::DiagnosticSnapshot {
+        dlp_common::hook_ipc::DiagnosticSnapshot {
+            hook_function: "WriteFile".to_string(),
+            classification_source: dlp_common::hook_ipc::ClassificationSource::CacheHit,
+            classification_age_ms: 42,
+            abac_resource: r"C:\Data\file.txt".to_string(),
+            abac_action: "WRITE".to_string(),
+            abac_environment: "local".to_string(),
+            matched_policy_id: Some("pol-001".to_string()),
+            enforcement_mode: Some("Block".to_string()),
+            decision_latency_us: 150,
+            timestamp_qpc: 1000,
+            timestamp_secs: 1_700_000_000,
+            user_sid: "S-1-5-21-1".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_submit_diagnostic_snapshot_unreachable_server() {
+        let mut client = unreachable_client();
+        client.set_agent_auth_hash("hash-123".to_string());
+        let snapshots = vec![make_diagnostic_snapshot()];
+        let result = client
+            .submit_diagnostic_snapshot(&client.agent_id, 1234, &snapshots)
+            .await;
+        assert!(result.is_err(), "unreachable server must return Err");
+    }
+
+    #[tokio::test]
+    async fn test_submit_diagnostic_snapshot_payload_serde() {
+        use axum::{
+            extract::Json, http::StatusCode, response::IntoResponse, routing::post, Router,
+        };
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        let captured: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+        let captured_clone = captured.clone();
+
+        let app = Router::new().route(
+            "/agents/:id/diagnostics",
+            post(move |Json(body): Json<serde_json::Value>| async move {
+                *captured_clone.lock().await = Some(body.clone());
+                StatusCode::OK.into_response()
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+
+        let mut client = ServerClient {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .expect("reqwest client"),
+            base_url: format!("http://{addr}"),
+            agent_id: "AGENT-DIAG".to_string(),
+            hostname: "test-host".to_string(),
+            agent_auth_hash: "hash-456".to_string(),
+        };
+        client.set_agent_auth_hash("hash-456".to_string());
+
+        let snapshots = vec![make_diagnostic_snapshot()];
+        let result = client
+            .submit_diagnostic_snapshot(&client.agent_id, 1234, &snapshots)
+            .await;
+        assert!(
+            result.is_ok(),
+            "submit_diagnostic_snapshot should succeed: {result:?}"
+        );
+
+        let body = captured
+            .lock()
+            .await
+            .take()
+            .expect("server received a body");
+        // Top-level keys mirror `AgentDiagnosticsIngest { pid, snapshots }`.
+        assert_eq!(body["pid"], 1234);
+        let arr = body["snapshots"].as_array().expect("snapshots is an array");
+        assert_eq!(arr.len(), 1);
+        // Round-trip a `DiagnosticSnapshot` from the first element.
+        let rt: dlp_common::hook_ipc::DiagnosticSnapshot =
+            serde_json::from_value(arr[0].clone()).expect("deserialize snapshot");
+        assert_eq!(rt.hook_function, "WriteFile");
+        assert_eq!(rt.user_sid, "S-1-5-21-1");
+        assert_eq!(rt.timestamp_qpc, 1000);
+    }
+
+    #[tokio::test]
+    async fn test_submit_diagnostic_snapshot_sets_agent_auth_header() {
+        use axum::{
+            extract::Path,
+            http::{HeaderMap, StatusCode},
+            response::IntoResponse,
+            routing::post,
+            Router,
+        };
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        let captured: Arc<Mutex<Option<(String, String)>>> = Arc::new(Mutex::new(None));
+        let captured_clone = captured.clone();
+
+        let app = Router::new().route(
+            "/agents/:id/diagnostics",
+            post(
+                move |Path(agent_id): Path<String>, headers: HeaderMap| async move {
+                    let auth = headers
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+                    *captured_clone.lock().await = Some((agent_id, auth));
+                    StatusCode::OK.into_response()
+                },
+            ),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+
+        let mut client = ServerClient {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .expect("reqwest client"),
+            base_url: format!("http://{addr}"),
+            agent_id: "AGENT-DIAG-AUTH".to_string(),
+            hostname: "test-host".to_string(),
+            agent_auth_hash: String::new(),
+        };
+        client.set_agent_auth_hash("bcrypt-hash-xyz".to_string());
+
+        let snapshots = vec![make_diagnostic_snapshot()];
+        let result = client
+            .submit_diagnostic_snapshot(&client.agent_id, 5678, &snapshots)
+            .await;
+        assert!(
+            result.is_ok(),
+            "submit_diagnostic_snapshot should succeed: {result:?}"
+        );
+
+        let (agent_id, auth) = captured
+            .lock()
+            .await
+            .take()
+            .expect("server received request");
+        assert_eq!(agent_id, "AGENT-DIAG-AUTH");
+        assert_eq!(auth, "DLP-AGENT AGENT-DIAG-AUTH:bcrypt-hash-xyz");
     }
 }
