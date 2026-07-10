@@ -1717,6 +1717,17 @@ const DIAGNOSTIC_PUSH_INTERVAL: Duration = Duration::from_secs(60);
 /// growth when the server is permanently down.
 static DIAGNOSTIC_PUSH_DROPPED_TOTAL: AtomicU64 = AtomicU64::new(0);
 
+/// Per-submit timeout for diagnostic pushes (DIFF-04, WR-04).
+///
+/// Bounds each `submit_diagnostic_snapshot` call — both the periodic tick submit
+/// and the shutdown final-flush — so a slow or unreachable server cannot consume
+/// the entire 5 s shutdown join budget. An in-flight tick submit plus the
+/// shutdown final-flush must both complete within the join window: at 2 s each
+/// the worst case (~4 s) stays under the 5 s `run_loop_shutdown` join budget.
+/// On timeout the drained batch is re-buffered (tick arm) or counted-and-dropped
+/// (shutdown arm, where there is no next interval to retry on).
+const DIAGNOSTIC_SUBMIT_TIMEOUT: Duration = Duration::from_secs(2);
+
 /// Periodic health snapshot push loop.
 ///
 /// Reads the latest aggregated health snapshot from [`HealthAggregator`] and
@@ -1774,7 +1785,10 @@ async fn health_push_loop(
 /// silent compliance-feed gaps are observable (WR-01). Re-buffer growth is bounded
 /// by the aggregator's per-DLL cap, which truncates the oldest entries when the
 /// server is permanently down. On `shutdown` the loop performs one final drain +
-/// best-effort submit (flush-and-stop, T-58.9-15) before returning.
+/// best-effort submit (flush-and-stop, T-58.9-15) before returning. Every submit —
+/// periodic and final-flush — is bounded by [`DIAGNOSTIC_SUBMIT_TIMEOUT`] (WR-04)
+/// so an in-flight tick submit plus the shutdown flush cannot exceed the 5 s
+/// `run_loop_shutdown` join budget.
 ///
 /// The batch is attributed to `pid = 0` (aggregate multi-pid drain); per-snapshot
 /// attribution lives inside each snapshot's own fields (RESEARCH A3). Snapshot
@@ -1807,10 +1821,21 @@ async fn diagnostic_push_loop(
                     debug!("no diagnostic snapshots to push");
                     continue;
                 }
-                if let Err(e) = server_client
-                    .submit_diagnostic_snapshot(&agent_id, 0, &snapshots)
-                    .await
-                {
+                // Bound the per-tick submit (WR-04) so a slow server cannot
+                // consume the shutdown join budget; on any failure or timeout
+                // re-buffer so the "retried next interval" contract holds (WR-01).
+                let submit = server_client
+                    .submit_diagnostic_snapshot(&agent_id, 0, &snapshots);
+                let outcome: Result<(), String> =
+                    match tokio::time::timeout(DIAGNOSTIC_SUBMIT_TIMEOUT, submit).await {
+                        Ok(Ok(())) => Ok(()),
+                        Ok(Err(e)) => Err(format!("{e}")),
+                        Err(_elapsed) => Err(format!(
+                            "timed out after {}s",
+                            DIAGNOSTIC_SUBMIT_TIMEOUT.as_secs()
+                        )),
+                    };
+                if let Err(reason) = outcome {
                     // Re-buffer the drained batch so the "retried next interval"
                     // contract actually holds (WR-01). The aggregator's per-DLL
                     // cap bounds growth if the server stays down. Re-attributed
@@ -1821,7 +1846,7 @@ async fn diagnostic_push_loop(
                         .fetch_add(dropped as u64, Ordering::Relaxed)
                         + dropped as u64;
                     warn!(
-                        error = %e,
+                        error = %reason,
                         count = dropped,
                         dropped_total,
                         "failed to submit diagnostics — re-buffering for retry"
@@ -1831,12 +1856,35 @@ async fn diagnostic_push_loop(
             }
             _ = shutdown.changed() => {
                 // Flush-and-stop (T-58.9-15): forward whatever is buffered before
-                // exiting. Best-effort — the service is shutting down.
+                // exiting. Bounded by DIAGNOSTIC_SUBMIT_TIMEOUT (WR-04) so the
+                // final flush cannot outlive the 5 s join budget. On failure or
+                // timeout the batch is counted and dropped — there is no next
+                // interval to retry on during shutdown.
                 let snapshots = diagnostic_aggregator.drain_all();
                 if !snapshots.is_empty() {
-                    let _ = server_client
-                        .submit_diagnostic_snapshot(&agent_id, 0, &snapshots)
-                        .await;
+                    let count = snapshots.len();
+                    let submit = server_client
+                        .submit_diagnostic_snapshot(&agent_id, 0, &snapshots);
+                    let outcome: Result<(), String> =
+                        match tokio::time::timeout(DIAGNOSTIC_SUBMIT_TIMEOUT, submit).await {
+                            Ok(Ok(())) => Ok(()),
+                            Ok(Err(e)) => Err(format!("{e}")),
+                            Err(_elapsed) => Err(format!(
+                                "timed out after {}s",
+                                DIAGNOSTIC_SUBMIT_TIMEOUT.as_secs()
+                            )),
+                        };
+                    if let Err(reason) = outcome {
+                        let dropped_total = DIAGNOSTIC_PUSH_DROPPED_TOTAL
+                            .fetch_add(count as u64, Ordering::Relaxed)
+                            + count as u64;
+                        warn!(
+                            error = %reason,
+                            count,
+                            dropped_total,
+                            "diagnostic final flush failed on shutdown — dropping batch"
+                        );
+                    }
                 }
                 debug!("diagnostic push loop shutting down");
                 return;
