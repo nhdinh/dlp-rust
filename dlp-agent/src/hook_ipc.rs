@@ -110,6 +110,13 @@ pub struct HookIpcServer {
     hash_cache: Option<crate::hash_cache::HashCache>,
     /// Phase 58: Health snapshot aggregator for ingesting one-way HealthResponse frames.
     health_aggregator: Option<Arc<crate::health_aggregator::HealthAggregator>>,
+    /// Phase 58.9: Diagnostic aggregator for one-way `DiagnosticsResponse` frame
+    /// ingestion (DIFF-04).
+    diagnostic_aggregator: Option<Arc<crate::diagnostic_aggregator::DiagnosticAggregator>>,
+    /// Phase 58.9: Agent identity used to key the diagnostic aggregator
+    /// (`{pid}_{agent_id}`). MUST equal the identity used for the periodic server
+    /// push so local keys and the remote identity stay consistent (DIFF-04 A3).
+    agent_id: Option<Arc<str>>,
     /// Phase 58.5: Process registry for unhook ack routing and PollControl validation.
     registry: Option<Arc<crate::process_registry::ProcessRegistry>>,
     /// Phase 58.5: Audit emit context for unhook failure events.
@@ -136,6 +143,8 @@ impl HookIpcServer {
             bypass_tx: None,
             hash_cache: None,
             health_aggregator: None,
+            diagnostic_aggregator: None,
+            agent_id: None,
             registry: None,
             audit_ctx: None,
             poll_control_handler: None,
@@ -172,6 +181,8 @@ impl HookIpcServer {
             bypass_tx: None,
             hash_cache: None,
             health_aggregator: None,
+            diagnostic_aggregator: None,
+            agent_id: None,
             registry: None,
             audit_ctx: None,
             poll_control_handler: None,
@@ -199,6 +210,8 @@ impl HookIpcServer {
             bypass_tx: Some(bypass_tx),
             hash_cache: None,
             health_aggregator: None,
+            diagnostic_aggregator: None,
+            agent_id: None,
             registry: None,
             audit_ctx: None,
             poll_control_handler: None,
@@ -227,6 +240,8 @@ impl HookIpcServer {
             bypass_tx: Some(bypass_tx),
             hash_cache: None,
             health_aggregator: None,
+            diagnostic_aggregator: None,
+            agent_id: None,
             registry: None,
             audit_ctx: None,
             poll_control_handler: None,
@@ -264,6 +279,34 @@ impl HookIpcServer {
         aggregator: Arc<crate::health_aggregator::HealthAggregator>,
     ) -> Self {
         self.health_aggregator = Some(aggregator);
+        self
+    }
+
+    /// Sets the diagnostic aggregator and agent identity for one-way
+    /// `DiagnosticsResponse` frame ingestion (DIFF-04).
+    ///
+    /// The `agent_id` keys the aggregator (`{pid}_{agent_id}`) and MUST equal the
+    /// identity used for the periodic server push so local keys and the remote
+    /// identity stay consistent (DIFF-04 A3). Snapshots are attributed to the
+    /// connecting client's real PID (OS-resolved), never a DLL-supplied field
+    /// (T-58.9-11 anti-spoof).
+    ///
+    /// # Arguments
+    ///
+    /// * `agent_id` — the agent identifier used to key ingested snapshots.
+    /// * `aggregator` — the diagnostic aggregator that buffers snapshots until the
+    ///   periodic server push drains them.
+    ///
+    /// # Returns
+    ///
+    /// `Self` with the diagnostic aggregator and agent identity configured.
+    pub fn with_diagnostic_aggregator(
+        mut self,
+        agent_id: impl Into<Arc<str>>,
+        aggregator: Arc<crate::diagnostic_aggregator::DiagnosticAggregator>,
+    ) -> Self {
+        self.agent_id = Some(agent_id.into());
+        self.diagnostic_aggregator = Some(aggregator);
         self
     }
 
@@ -322,6 +365,8 @@ impl HookIpcServer {
             self.bypass_tx,
             self.hash_cache,
             self.health_aggregator,
+            self.diagnostic_aggregator,
+            self.agent_id,
             self.registry,
             self.audit_ctx.as_ref(),
             self.poll_control_handler,
@@ -442,6 +487,8 @@ fn accept_loop(
     bypass_tx: Option<crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>>,
     hash_cache: Option<crate::hash_cache::HashCache>,
     health_aggregator: Option<Arc<crate::health_aggregator::HealthAggregator>>,
+    diagnostic_aggregator: Option<Arc<crate::diagnostic_aggregator::DiagnosticAggregator>>,
+    agent_id: Option<Arc<str>>,
     registry: Option<Arc<crate::process_registry::ProcessRegistry>>,
     audit_ctx: Option<&crate::audit_emitter::EmitContext>,
     poll_control_handler: Option<PollControlHandler>,
@@ -501,6 +548,8 @@ fn accept_loop(
             bypass_tx.as_ref(),
             hash_cache.as_ref(),
             health_aggregator.as_ref(),
+            diagnostic_aggregator.as_ref(),
+            agent_id.as_ref(),
             registry.as_ref(),
             audit_ctx,
             poll_control_handler.as_ref(),
@@ -524,6 +573,8 @@ fn handle_connection(
     bypass_tx: Option<&crossbeam_channel::Sender<dlp_common::hook_ipc::BypassAlert>>,
     hash_cache: Option<&crate::hash_cache::HashCache>,
     health_aggregator: Option<&Arc<crate::health_aggregator::HealthAggregator>>,
+    diagnostic_aggregator: Option<&Arc<crate::diagnostic_aggregator::DiagnosticAggregator>>,
+    agent_id: Option<&Arc<str>>,
     registry: Option<&Arc<crate::process_registry::ProcessRegistry>>,
     audit_ctx: Option<&crate::audit_emitter::EmitContext>,
     poll_control_handler: Option<&PollControlHandler>,
@@ -665,6 +716,36 @@ fn handle_connection(
                     IpcPayloadV1::Response(HookResponse {
                         decision: dlp_common::Decision::ALLOW,
                         reason: "health snapshot ingested".to_string(),
+                        cache_hint: None,
+                        cache_version: 0,
+                        approval_override: None,
+                    })
+                }
+                // DIFF-04: Ingest one-way DiagnosticsResponse frames from the hook
+                // DLL. These are fire-and-send (the DLL does not wait for a
+                // meaningful response), so we return an empty ALLOW ACK and never
+                // block the hooked file operation. Distinct from the
+                // `PullDiagnostics` arm above, which produces a DiagnosticsResponse
+                // as its REPLY; here the DLL pushes a DiagnosticsResponse to us.
+                IpcPayloadV1::DiagnosticsResponse(ref resp) => {
+                    // Anti-spoof (T-58.9-11): attribute to the connecting client's
+                    // REAL PID resolved by the OS via GetNamedPipeClientProcessId,
+                    // never a field supplied by the DLL.
+                    let pid = named_pipe_client_pid(pipe).unwrap_or(0);
+                    debug!(
+                        pid,
+                        count = resp.snapshots.len(),
+                        "Hook IPC: diagnostics received from DLL"
+                    );
+                    if let (Some(aggregator), Some(aid)) = (diagnostic_aggregator, agent_id) {
+                        aggregator.ingest(aid.as_ref(), pid, resp.snapshots.clone());
+                    } else {
+                        warn!("Hook IPC: diagnostics received but no aggregator configured");
+                    }
+                    // DiagnosticsResponse from the DLL is one-way; empty ALLOW ACK.
+                    IpcPayloadV1::Response(HookResponse {
+                        decision: dlp_common::Decision::ALLOW,
+                        reason: "diagnostics ingested".to_string(),
                         cache_hint: None,
                         cache_version: 0,
                         approval_override: None,

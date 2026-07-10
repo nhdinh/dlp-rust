@@ -778,6 +778,81 @@ fn test_health_response_ingestion() {
     shutdown_and_join(handle, pipe_name);
 }
 
+/// Test that `HookIpcServer` ingests one-way `DiagnosticsResponse` frames into
+/// the `DiagnosticAggregator` keyed by the real pipe client PID + agent_id
+/// (DIFF-04 consumer half).
+///
+/// Drives a single one-way `IpcPayloadV1::DiagnosticsResponse` frame through the
+/// server (the same fire-and-send shape the hook DLL emits) and asserts the
+/// aggregator is actually fed — holding out RESEARCH Pitfall 1 (the aggregator
+/// must not stay empty in production). This deliberately does NOT use the
+/// `PullDiagnostics` request/response path.
+#[test]
+#[serial_test::serial]
+fn diagnostics_response_ingests_into_aggregator() {
+    let pipe_name = r"\\.\pipe\DlpHookPipeTestDiagnosticsResponseIngest";
+
+    let handler = default_mock_handler();
+
+    let aggregator = Arc::new(dlp_agent::diagnostic_aggregator::DiagnosticAggregator::new());
+    let aggregator_clone = Arc::clone(&aggregator);
+
+    let server = dlp_agent::hook_ipc::HookIpcServer::new(pipe_name, handler)
+        .with_diagnostic_aggregator("agent-test", aggregator_clone);
+
+    let (handle, client) = start_test_server(pipe_name, server);
+
+    // Send a one-way DiagnosticsResponse frame exactly as the hook DLL would.
+    let envelope = IpcEnvelope::V1(IpcMessageV1 {
+        payload: IpcPayloadV1::DiagnosticsResponse(dlp_common::hook_ipc::DiagnosticsResponse {
+            snapshots: vec![dlp_common::hook_ipc::DiagnosticSnapshot {
+                hook_function: "WriteFile".to_string(),
+                classification_source: dlp_common::hook_ipc::ClassificationSource::Pipe,
+                classification_age_ms: 0,
+                abac_resource: r"C:\test\secret.doc".to_string(),
+                abac_action: "WRITE".to_string(),
+                abac_environment: "LocalNTFS".to_string(),
+                matched_policy_id: Some("POL-001".to_string()),
+                enforcement_mode: Some("DENY".to_string()),
+                decision_latency_us: 1234,
+                timestamp_qpc: 5678,
+                timestamp_secs: 5678,
+                user_sid: "S-1-5-21-123".to_string(),
+            }],
+        }),
+    });
+
+    let payload = bincode::serialize(&envelope).expect("serialize envelope");
+    dlp_agent::ipc::frame::write_frame(client, &payload).expect("write frame");
+
+    // Read the ACK response (server always responds, even for one-way frames).
+    let frame = dlp_agent::ipc::frame::read_frame(client).expect("read ack frame");
+    let ack_envelope: IpcEnvelope = bincode::deserialize(&frame).expect("deserialize ack");
+    match ack_envelope {
+        IpcEnvelope::V1(IpcMessageV1 {
+            payload: IpcPayloadV1::Response(resp),
+        }) => {
+            assert_eq!(resp.decision, Decision::ALLOW);
+            assert!(resp.reason.contains("diagnostics ingested"));
+        }
+        other => panic!("Expected Response ACK frame, got {:?}", other),
+    }
+
+    dlp_agent::hook_ipc::close_pipe(client);
+
+    // The aggregator must be keyed by "{pid}_{agent_id}" and hold exactly one
+    // snapshot. Integration tests link the non-test build of dlp-agent, so the
+    // PID is the real pipe client PID (the test process) — we assert the count,
+    // not the literal key, to stay independent of the runtime PID.
+    assert_eq!(
+        aggregator.total_snapshot_count(),
+        1,
+        "DiagnosticAggregator should retain exactly one snapshot after one one-way frame"
+    );
+
+    shutdown_and_join(handle, pipe_name);
+}
+
 /// Integration test: an injected idle child process (that never calls a hooked
 /// API) still connects to the agent pipe and sends a `PollControl` frame with
 /// the real process creation time.
