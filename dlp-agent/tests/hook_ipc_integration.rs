@@ -312,22 +312,14 @@ fn test_consolidated_server_routes_override_frame() {
     let payload = bincode::serialize(&envelope).expect("serialize envelope");
     dlp_agent::ipc::frame::write_frame(client, &payload).expect("write frame");
 
-    // Override is fire-and-forget; server responds with ACK.
-    let frame = dlp_agent::ipc::frame::read_frame(client).expect("read ack frame");
-    let ack_envelope: IpcEnvelope = bincode::deserialize(&frame).expect("deserialize ack");
-    match ack_envelope {
-        IpcEnvelope::V1(IpcMessageV1 {
-            payload: IpcPayloadV1::Response(resp),
-        }) => {
-            assert_eq!(resp.decision, Decision::ALLOW);
-            assert!(resp.reason.contains("override"));
-        }
-        other => panic!("Expected Response ACK frame, got {:?}", other),
-    }
-
-    std::thread::sleep(std::time::Duration::from_millis(50));
-
+    // RequestOverride is fire-and-forget: the server handles the request but
+    // does not write a response frame because the DLL closes the pipe
+    // immediately after send_raw_oneway. Close our end so the server leaves
+    // handle_connection and the override handler can run.
     dlp_agent::hook_ipc::close_pipe(client);
+
+    // Give the handler a moment to run on the server thread.
+    std::thread::sleep(std::time::Duration::from_millis(100));
 
     assert_eq!(override_count.load(Ordering::SeqCst), 1);
 

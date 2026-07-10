@@ -486,6 +486,12 @@ fn accept_loop(
 
         info!("Hook IPC: client connected");
 
+        // Pre-create the next pipe instance before handling the current
+        // connection. Fire-and-forget clients (e.g. RequestOverride) can then
+        // queue on the new instance while we process the current request,
+        // eliminating the recreate window that caused connect timeouts.
+        let next_pipe = create_pipe(&pipe_name)?;
+
         if let Err(e) = handle_connection(
             pipe,
             &handler,
@@ -504,7 +510,7 @@ fn accept_loop(
         let _ = unsafe { DisconnectNamedPipe(pipe) };
         let _ = unsafe { CloseHandle(pipe) };
 
-        pipe = create_pipe(&pipe_name)?;
+        pipe = next_pipe;
     }
 }
 
