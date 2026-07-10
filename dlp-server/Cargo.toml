@@ -37,6 +37,8 @@ r2d2_sqlite = "0.33"
 # Auth
 jsonwebtoken = "9"
 bcrypt = "0.16"
+# Constant-time comparison for bearer-secret verification (WR-01).
+subtle = "2"
 
 # HTTP client (SIEM relay, alerts)
 reqwest = { version = "0.12", features = [

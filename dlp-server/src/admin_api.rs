@@ -162,10 +162,16 @@ async fn agent_auth_middleware(
     .map_err(|e| AppError::Internal(anyhow::anyhow!("join error: {e}")))?
     .map_err(AppError::Database)?;
 
-    // Constant-time comparison would be better, but the value is a bcrypt hash
-    // and agents send the raw hash string; plain equality matches the existing
-    // agent-auth-hash public endpoint contract.
-    if provided_hash != configured_hash {
+    // Constant-time comparison of the bearer secret. The previous plain `!=`
+    // was a timing side-channel (WR-01). This still treats the bcrypt hash as
+    // a bearer token; the move to per-agent credentials verified with
+    // `bcrypt::verify` is tracked as a follow-up.
+    use subtle::ConstantTimeEq;
+    let secrets_match: bool = provided_hash
+        .as_bytes()
+        .ct_eq(configured_hash.as_bytes())
+        .into();
+    if !secrets_match {
         return Err(AppError::Unauthorized(
             "invalid agent credentials".to_string(),
         ));
@@ -1173,7 +1179,6 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
                     agent_auth_middleware,
                 )),
         )
-        .route("/agent-credentials/auth-hash", get(get_agent_auth_hash))
         .route("/agent-config/{id}", get(get_agent_config_for_agent))
         .route("/admin/device-registry", get(list_device_registry_handler))
         .route("/admin/managed-origins", get(list_managed_origins_handler))
@@ -1236,7 +1241,10 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/exceptions", get(exception_store::list_exceptions))
         .route("/exceptions/{id}", get(exception_store::get_exception))
         .route("/exceptions", post(exception_store::create_exception))
-        .route("/agent-credentials/auth-hash", put(set_agent_auth_hash))
+        .route(
+            "/agent-credentials/auth-hash",
+            put(set_agent_auth_hash).get(get_agent_auth_hash),
+        )
         .route("/auth/password", put(admin_auth::change_password))
         .route("/admin/siem-config", get(get_siem_config_handler))
         .route("/admin/siem-config", put(update_siem_config_handler))
@@ -1909,10 +1917,16 @@ async fn set_agent_auth_hash(
     }))
 }
 
-/// `GET /agent-credentials/auth-hash` — fetch the agent auth hash (public).
+/// `GET /agent-credentials/auth-hash` — fetch the agent auth hash (admin only).
 ///
-/// Returns 404 if no hash has been stored yet. Agents call this endpoint
-/// on startup and periodically to sync the password hash.
+/// Requires an admin JWT (`require_auth`). Returning the raw bcrypt hash over
+/// an unauthenticated route let any network client read the `DLP-AGENT`
+/// bearer secret and forge agent identity (CR-03), so the secret is now only
+/// disclosed to authenticated administrators. Agents obtain their credential
+/// through a provisioned, non-public channel (local config / enrollment),
+/// not via this endpoint.
+///
+/// Returns 404 if no hash has been stored yet.
 async fn get_agent_auth_hash(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<AuthHashResponse>, AppError> {
