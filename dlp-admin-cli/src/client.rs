@@ -845,7 +845,10 @@ mod client_tests {
                 .await
                 .expect("get_self_health should succeed");
 
-            assert!(response.get("snapshot").is_some(), "snapshot field must be present");
+            assert!(
+                response.get("snapshot").is_some(),
+                "snapshot field must be present"
+            );
             assert_eq!(response["snapshot"]["overall_status"], "healthy");
             assert_eq!(response["snapshot"]["injected_pids"], 1);
             assert_eq!(response["snapshot"]["patched_modules"], 2);
@@ -868,7 +871,10 @@ mod client_tests {
                 .headers
                 .get("authorization")
                 .expect("authorization header should be present");
-            assert_eq!(auth_header.to_str().expect("valid ascii"), "Bearer test-token");
+            assert_eq!(
+                auth_header.to_str().expect("valid ascii"),
+                "Bearer test-token"
+            );
         });
     }
 
