@@ -288,6 +288,70 @@ async fn post_agent_diagnostics_surfaces_in_admin_diagnostics() {
     );
     assert_eq!(snapshots[0]["hook_function"], "WriteFile");
     assert_eq!(snapshots[0]["user_sid"], "S-1-5-21-1");
+    // Field-level round-trip (DIFF-04 criterion 3): the snapshot that survives
+    // the authenticated POST -> diagnostic_store -> GET /admin/diagnostics path
+    // must be observable with its originating fields unchanged, not merely
+    // present. Pin a representative subset across the String / u64 / Option<String>
+    // field kinds so a silent store-mapping regression is caught.
+    assert_eq!(snapshots[0]["abac_action"], "WRITE");
+    assert_eq!(snapshots[0]["abac_resource"], r"C:\Data\secret.txt");
+    assert_eq!(snapshots[0]["decision_latency_us"], 150);
+    assert_eq!(snapshots[0]["classification_age_ms"], 42);
+    assert_eq!(snapshots[0]["matched_policy_id"], "pol-001");
+    assert_eq!(snapshots[0]["enforcement_mode"], "Block");
+}
+
+// ---------------------------------------------------------------------------
+// Test 2a: unauthenticated diagnostics ingest is rejected (DIFF-04 criterion 4)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn post_agent_diagnostics_rejects_unauthenticated() {
+    let (app, _pool) = build_test_app();
+
+    // No `Authorization` header -> `agent_auth_middleware` rejects with 401
+    // before the handler runs.
+    let payload = serde_json::json!({ "pid": 1234, "snapshots": [] });
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/agents/{}/diagnostics", TEST_AGENT_ID))
+        .header("content-type", "application/json")
+        .body(Body::from(payload.to_string()))
+        .expect("build request");
+
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+}
+
+// ---------------------------------------------------------------------------
+// Test 2b: valid hash but mismatched agent_id is rejected with 400 (not 401)
+//          (DIFF-04 criterion 4)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn post_agent_diagnostics_rejects_mismatched_agent_id() {
+    let (app, _pool) = build_test_app();
+
+    // A VALID enrolled hash authenticates the identity "different-agent"
+    // (middleware passes), but the path id is TEST_AGENT_ID, so the handler's
+    // `agent_id != path_agent_id` check returns 400 BAD_REQUEST — distinct from
+    // the 401 the middleware returns for a missing/wrong hash.
+    let payload = serde_json::json!({ "pid": 1234, "snapshots": [] });
+
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri(format!("/agents/{}/diagnostics", TEST_AGENT_ID))
+        .header(
+            "authorization",
+            agent_auth_header("different-agent", TEST_AGENT_AUTH_HASH),
+        )
+        .header("content-type", "application/json")
+        .body(Body::from(payload.to_string()))
+        .expect("build request");
+
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
 }
 
 // ---------------------------------------------------------------------------
