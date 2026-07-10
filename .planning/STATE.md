@@ -6,15 +6,15 @@ current_phase: 58.8
 current_phase_name: fix-diff-01-and-diff-04
 status: verifying
 stopped_at: Completed 58.8-02-PLAN.md
-last_updated: "2026-07-10T04:56:57.772Z"
+last_updated: "2026-07-10T14:52:55.329Z"
 last_activity: 2026-07-10
 last_activity_desc: Completed 58.8-02 server-side DIFF-04 wiring
 progress:
-  total_phases: 51
+  total_phases: 52
   completed_phases: 40
   total_plans: 218
   completed_plans: 187
-  percent: 78
+  percent: 77
 ---
 
 # Project State
@@ -23,15 +23,16 @@ progress:
 
 **Project:** DLP-RUST — Enterprise DLP System (NTFS + Active Directory + ABAC)
 **Core Value:** Prevent data exfiltration via a layered enforcement stack (NTFS + ABAC + AD identity)
-**Current Focus:** Phase 58.8 — fix-diff-01-and-diff-04
+**Current Focus:** Phase 58.9 — close-gap-diff-04-agent-diagnostics-producer (PLANNED — 4 plans / 3 waves, ready to execute)
 
 ---
 
 ## Current Position
 
-Phase: 58.8 (fix-diff-01-and-diff-04) — EXECUTING
-Plan: 4 of 4
-Status: Phase complete — ready for verification
+Phase: 58.9 (close-gap-diff-04-agent-diagnostics-producer) — PLANNED (plan-checker PASSED; run `/gsd-execute-phase 58.9`)
+Plan: 4 plans (01-04) across 3 waves — Wave 1: 01 (`dlp-agent` core) + 02 (`dlp-hook-dll` emit, A1) in parallel; Wave 2: 03 (ingest + push loop + lifecycle); Wave 3: 04 (server round-trip + quality gate)
+Status: Planned — DIFF-04 producer-side (drain `diagnostic_aggregator` → `POST /agents/{id}/diagnostics`) incl. `dlp-hook-dll` one-way emit (A1 cross-crate, required by locked criterion 3)
+Last activity: 2026-07-10 — Phase 58.9 planned (4 plans/3 waves, plan-checker PASSED); ready for `/gsd-execute-phase 58.9`
 Verification: cargo check, clippy, fmt, and dlp-server lib tests pass; sonar-scanner Quality Gate blocked on auth
 Last activity: 2026-07-10 — Completed 58.8-02 server-side DIFF-04 wiring
 
@@ -233,6 +234,7 @@ Resume file: None
 - Phase 58.6 inserted after Phase 58.5: Targeted hook injection: only processes that perform file operations (URGENT)
 - Phase 71 added: Implement admin allowlist API handlers in dlp-admin-cli and dlp-server
 - Phase 58.7 inserted after Phase 58: Close gap: DACL protected_paths wiring (URGENT)
+- Phase 58.9 inserted after Phase 58.8: Close gap: DIFF-04 — agent diagnostics producer (drain diagnostic_aggregator to POST /agents/{id}/diagnostics) (URGENT)
 
 ## Performance Metrics
 
