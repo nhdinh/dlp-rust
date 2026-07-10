@@ -339,6 +339,57 @@ pub fn send_health_snapshot(
     };
     send_raw_oneway(pipe_name, &payload)
 }
+
+/// Fire-and-send helper for diagnostic snapshot frames that does not wait for a response.
+///
+/// Connects to the named pipe, serializes the `snapshots` into an
+/// [`IpcEnvelope::V1(IpcPayloadV1::DiagnosticsResponse(...))`], writes it with length-prefix
+/// framing, and immediately closes the handle. No read is performed.
+///
+/// Reuses the existing `IpcPayloadV1::DiagnosticsResponse` variant (no new variant — DIFF-04 A2)
+/// so the bincode discriminants for the DLL<->agent protocol are unchanged. This mirrors
+/// [`send_health_snapshot`]'s response-as-one-way transport.
+///
+/// # Arguments
+///
+/// * `pipe_name` — The named pipe path (e.g., `r"\\.\pipe\DlpHookPipe"`).
+/// * `snapshots` — Diagnostic snapshots drained from the in-process ring to send.
+///
+/// # Returns
+///
+/// `Ok(())` if the payload was written successfully, or [`PipeError`] on failure.
+///
+/// # Errors
+///
+/// Returns `PipeError::ConnectionRefused` if the pipe does not exist.
+/// Returns `PipeError::Malformed` if bincode serialization fails.
+/// Returns `PipeError::Win32(u32)` for unexpected Win32 errors.
+///
+/// # Best-effort semantics
+///
+/// The caller (the round-trip cadence site in `trampolines`) swallows any returned error so
+/// the hooked file operation is never blocked on pipe I/O. Snapshot contents (paths/SIDs) are
+/// never logged here — only a serialization-failure warning is emitted.
+pub fn send_diagnostics(
+    pipe_name: &str,
+    snapshots: &[dlp_common::hook_ipc::DiagnosticSnapshot],
+) -> Result<(), PipeError> {
+    let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+        payload: dlp_common::hook_ipc::IpcPayloadV1::DiagnosticsResponse(
+            dlp_common::hook_ipc::DiagnosticsResponse {
+                snapshots: snapshots.to_vec(),
+            },
+        ),
+    });
+    let payload = match bincode::serialize(&envelope) {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!(error = %e, "send_diagnostics: bincode serialization failed");
+            return Err(PipeError::Malformed);
+        }
+    };
+    send_raw_oneway(pipe_name, &payload)
+}
 ///
 /// Connects to the named pipe, writes the payload with length-prefix framing,
 /// and immediately closes the handle. No read is performed, avoiding deadlock
@@ -691,5 +742,54 @@ mod tests {
         // This is a compile-time check — if the signature changes, this test breaks.
         let f: fn(&str, &[u8]) -> Result<(), PipeError> = send_raw_oneway;
         let _ = f;
+    }
+
+    #[test]
+    fn send_diagnostics_diagnostics_response_bincode_roundtrip() {
+        // Reusing IpcPayloadV1::DiagnosticsResponse must not change the bincode encoding
+        // of the variant (DIFF-04 A2: no new variant, no discriminant shift).
+        let snapshot = dlp_common::hook_ipc::DiagnosticSnapshot {
+            hook_function: "WriteFile".to_string(),
+            classification_source: dlp_common::hook_ipc::ClassificationSource::CacheHit,
+            classification_age_ms: 42,
+            abac_resource: r"C:\Data\file.txt".to_string(),
+            abac_action: "WRITE".to_string(),
+            abac_environment: "local".to_string(),
+            matched_policy_id: Some("pol-001".to_string()),
+            enforcement_mode: Some("Block".to_string()),
+            decision_latency_us: 150,
+            timestamp_qpc: 1_000_000,
+            timestamp_secs: 1_000_000,
+            user_sid: "S-1-5-21-1".to_string(),
+        };
+        let resp = dlp_common::hook_ipc::DiagnosticsResponse {
+            snapshots: vec![snapshot],
+        };
+        let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+            payload: dlp_common::hook_ipc::IpcPayloadV1::DiagnosticsResponse(resp),
+        });
+        let bytes = bincode::serialize(&envelope).expect("serialize DiagnosticsResponse envelope");
+        let decoded: dlp_common::hook_ipc::IpcEnvelope =
+            bincode::deserialize(&bytes).expect("deserialize DiagnosticsResponse envelope");
+        match decoded {
+            dlp_common::hook_ipc::IpcEnvelope::V1(msg) => match msg.payload {
+                dlp_common::hook_ipc::IpcPayloadV1::DiagnosticsResponse(r) => {
+                    assert_eq!(r.snapshots.len(), 1);
+                    assert_eq!(r.snapshots[0].hook_function, "WriteFile");
+                    assert_eq!(r.snapshots[0].user_sid, "S-1-5-21-1");
+                }
+                other => panic!("unexpected payload variant: {other:?}"),
+            },
+        }
+    }
+
+    #[test]
+    fn send_diagnostics_no_pipe_is_best_effort() {
+        // With no agent pipe present, send_diagnostics must NOT panic and must return a
+        // best-effort error (ConnectionRefused via send_raw_oneway). The caller swallows
+        // it so the hooked file operation is never blocked (DIFF-04 T-58.9-07).
+        let empty: Vec<dlp_common::hook_ipc::DiagnosticSnapshot> = Vec::new();
+        let result = send_diagnostics(r"\\.\pipe\NonExistentPipeForDiagnosticsTest", &empty);
+        assert_eq!(result, Err(PipeError::ConnectionRefused));
     }
 }

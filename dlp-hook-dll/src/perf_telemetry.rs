@@ -79,6 +79,20 @@ static PATCHED_MODULES: AtomicU64 = AtomicU64::new(0);
 /// Counter for health snapshot emission cadence.
 pub static HEALTH_EMIT_COUNTER: AtomicU64 = AtomicU64::new(0);
 
+/// Diagnostic snapshot emission interval: every 100 pipe round-trips (DIFF-04).
+///
+/// Mirrors [`HEALTH_EMIT_INTERVAL`]. On this cadence the in-process diagnostic ring is
+/// drained and one-way-pushed to the agent from
+/// `trampolines::record_pipe_round_trip_and_maybe_emit`.
+pub const DIAGNOSTIC_EMIT_INTERVAL: u64 = 100;
+
+/// Counter for diagnostic snapshot emission cadence (DIFF-04).
+///
+/// Incremented once per pipe round-trip; when it reaches a multiple of
+/// [`DIAGNOSTIC_EMIT_INTERVAL`] the in-process diagnostic ring is drained and emitted.
+/// Zeroed by [`reset_perf_counters`] for test isolation.
+pub static DIAGNOSTIC_EMIT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
 /// Record a pipe round-trip (cache miss that required a pipe call).
 pub fn record_pipe_round_trip() {
     PIPE_ROUND_TRIPS.fetch_add(1, Ordering::Relaxed);
@@ -127,6 +141,7 @@ pub fn reset_perf_counters() {
     INJECTED_PIDS.store(0, Ordering::Relaxed);
     PATCHED_MODULES.store(0, Ordering::Relaxed);
     HEALTH_EMIT_COUNTER.store(0, Ordering::Relaxed);
+    DIAGNOSTIC_EMIT_COUNTER.store(0, Ordering::Relaxed);
 }
 
 /// Emit a health snapshot from the current counter values.
@@ -716,6 +731,18 @@ mod tests {
         let count = HEALTH_EMIT_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
         assert_eq!(count, 1);
         assert_eq!(HEALTH_EMIT_COUNTER.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn diagnostic_emit_counter_increments_and_resets() {
+        let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+        reset_perf_counters();
+        let count = DIAGNOSTIC_EMIT_COUNTER.fetch_add(1, Ordering::Relaxed) + 1;
+        assert_eq!(count, 1);
+        assert_eq!(DIAGNOSTIC_EMIT_COUNTER.load(Ordering::Relaxed), 1);
+        // reset_perf_counters must zero the diagnostic counter for test isolation (DIFF-04).
+        reset_perf_counters();
+        assert_eq!(DIAGNOSTIC_EMIT_COUNTER.load(Ordering::Relaxed), 0);
     }
 
     // --- Plan 58.4-04: Additional health counter tests ---
