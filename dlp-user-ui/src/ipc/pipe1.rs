@@ -185,25 +185,29 @@ fn handle_block_notify(
         &reason,
     );
     let msg = match dialog_result {
-        crate::dialogs::BlockDialogResult::Confirmed => Pipe1UiMsg::UserConfirmed { request_id, justification: String::new() },
+        crate::dialogs::BlockDialogResult::Confirmed => Pipe1UiMsg::UserConfirmed {
+            request_id,
+            justification: String::new(),
+        },
         crate::dialogs::BlockDialogResult::Close => Pipe1UiMsg::UserCancelled { request_id },
     };
     serialize_response(&msg, session_id, "BlockNotify response")
 }
 
 /// Handles an `OverrideRequest` message and returns the user's response.
-fn handle_override_request(
-    request_id: String,
-    reason: String,
-    classification: String,
-    resource_path: String,
-    _requester_sid: String,
-    _data_object_id: String,
-    _action: String,
-    _destination_scope: Option<String>,
-    _justification: String,
-    session_id: u32,
-) -> Option<Vec<u8>> {
+fn handle_override_request(msg: Pipe1AgentMsg, session_id: u32) -> Option<Vec<u8>> {
+    let Pipe1AgentMsg::OverrideRequest {
+        request_id,
+        reason,
+        classification,
+        resource_path,
+        ..
+    } = msg
+    else {
+        error!(session_id, "Pipe 1: expected OverrideRequest");
+        return None;
+    };
+
     info!(session_id, request_id, "Pipe 1: OverrideRequest received");
     let result = crate::dialogs::override_request::show_override_dialog(
         &classification,
@@ -218,7 +222,10 @@ fn handle_override_request(
                 justification = %justification,
                 "override approved by user"
             );
-            Pipe1UiMsg::UserConfirmed { request_id, justification }
+            Pipe1UiMsg::UserConfirmed {
+                request_id,
+                justification,
+            }
         }
         crate::dialogs::override_request::OverrideDialogResult::Cancelled => {
             info!(session_id, request_id, "override cancelled by user");
@@ -261,28 +268,7 @@ fn handle_agent_msg(msg: Pipe1AgentMsg, session_id: u32, pipe: HANDLE) -> Option
             resource_path,
             policy_id,
         } => handle_block_notify(reason, classification, resource_path, policy_id, session_id),
-        Pipe1AgentMsg::OverrideRequest {
-            request_id,
-            reason,
-            classification,
-            resource_path,
-            requester_sid,
-            data_object_id,
-            action,
-            destination_scope,
-            justification,
-        } => handle_override_request(
-            request_id,
-            reason,
-            classification,
-            resource_path,
-            requester_sid,
-            data_object_id,
-            action,
-            destination_scope,
-            justification,
-            session_id,
-        ),
+        Pipe1AgentMsg::OverrideRequest { .. } => handle_override_request(msg, session_id),
         Pipe1AgentMsg::ClipboardRead { request_id } => {
             info!(session_id, request_id, "Pipe 1: ClipboardRead received");
             let msg = handle_clipboard_read(request_id, session_id)?;

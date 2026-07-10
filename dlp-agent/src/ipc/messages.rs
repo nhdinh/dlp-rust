@@ -75,7 +75,10 @@ pub enum Pipe1UiMsg {
     /// after connecting to Pipe 1).
     RegisterSession { session_id: u32 },
     /// The user confirmed the block (override granted).
-    UserConfirmed { request_id: String, justification: String },
+    UserConfirmed {
+        request_id: String,
+        justification: String,
+    },
     /// The user cancelled the override request.
     UserCancelled { request_id: String },
     /// The user's clipboard data.

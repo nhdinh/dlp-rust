@@ -8248,13 +8248,7 @@ async fn test_confirmed_override_loop_unknown_request_id_is_ignored() {
 #[cfg(test)]
 #[tokio::test]
 async fn health_push_loop_starts_pushes_and_shuts_down() {
-    use axum::{
-        extract::Json,
-        http::StatusCode,
-        response::IntoResponse,
-        routing::post,
-        Router,
-    };
+    use axum::{extract::Json, http::StatusCode, response::IntoResponse, routing::post, Router};
     use std::sync::Arc;
     use tokio::sync::Mutex;
 
@@ -8269,15 +8263,17 @@ async fn health_push_loop_starts_pushes_and_shuts_down() {
         }),
     );
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind");
     let addr = listener.local_addr().expect("local addr");
     tokio::spawn(async move {
         axum::serve(listener, app).await.expect("serve");
     });
 
-    let mut client = crate::server_client::ServerClient::from_env_with_config(Some(&format!("http://{addr}")
-    ))
-    .expect("client creation");
+    let mut client =
+        crate::server_client::ServerClient::from_env_with_config(Some(&format!("http://{addr}")))
+            .expect("client creation");
     client.set_agent_auth_hash("hash-789".to_string());
 
     let aggregator = Arc::new(crate::health_aggregator::HealthAggregator::new());

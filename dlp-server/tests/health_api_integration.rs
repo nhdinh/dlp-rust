@@ -13,7 +13,8 @@ use chrono::Utc;
 use dlp_server::admin_api::admin_router;
 use dlp_server::admin_auth::{set_jwt_secret, Claims};
 use dlp_server::{
-    alert_router, db, diagnostic_store, health_snapshot_store, policy_store, siem_connector, AppState,
+    alert_router, db, diagnostic_store, health_snapshot_store, policy_store, siem_connector,
+    AppState,
 };
 use jsonwebtoken::{encode, EncodingKey, Header};
 use serde_json::Value;
@@ -145,7 +146,10 @@ async fn post_agent_health_surfaces_in_admin_health() {
     let req = Request::builder()
         .method(Method::POST)
         .uri(format!("/agents/{}/health", TEST_AGENT_ID))
-        .header("authorization", agent_auth_header(TEST_AGENT_ID, TEST_AGENT_AUTH_HASH))
+        .header(
+            "authorization",
+            agent_auth_header(TEST_AGENT_ID, TEST_AGENT_AUTH_HASH),
+        )
         .header("content-type", "application/json")
         .body(Body::from(payload.to_string()))
         .expect("build request");
@@ -188,7 +192,10 @@ async fn post_agent_health_surfaces_in_admin_health() {
     );
 
     let history = json["history"].as_array().expect("history array");
-    assert!(!history.is_empty(), "history should contain at least one entry");
+    assert!(
+        !history.is_empty(),
+        "history should contain at least one entry"
+    );
     assert_eq!(history[0]["injected_pids"], 3);
     assert_eq!(history[0]["patched_modules"], 7);
 }
@@ -223,7 +230,10 @@ async fn post_agent_diagnostics_surfaces_in_admin_diagnostics() {
     let req = Request::builder()
         .method(Method::POST)
         .uri(format!("/agents/{}/diagnostics", TEST_AGENT_ID))
-        .header("authorization", agent_auth_header(TEST_AGENT_ID, TEST_AGENT_AUTH_HASH))
+        .header(
+            "authorization",
+            agent_auth_header(TEST_AGENT_ID, TEST_AGENT_AUTH_HASH),
+        )
         .header("content-type", "application/json")
         .body(Body::from(payload.to_string()))
         .expect("build request");

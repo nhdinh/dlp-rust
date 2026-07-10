@@ -1964,13 +1964,17 @@ mod tests {
         let mut client = unreachable_client();
         client.set_agent_auth_hash("hash-123".to_string());
         let snapshot = make_health_snapshot();
-        let result = client.submit_health_snapshot(&client.agent_id, &snapshot).await;
+        let result = client
+            .submit_health_snapshot(&client.agent_id, &snapshot)
+            .await;
         assert!(result.is_err(), "unreachable server must return Err");
     }
 
     #[tokio::test]
     async fn test_submit_health_snapshot_payload_serde() {
-        use axum::{extract::Json, http::StatusCode, response::IntoResponse, routing::post, Router};
+        use axum::{
+            extract::Json, http::StatusCode, response::IntoResponse, routing::post, Router,
+        };
         use std::sync::Arc;
         use tokio::sync::Mutex;
 
@@ -1985,7 +1989,9 @@ mod tests {
             }),
         );
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
         let addr = listener.local_addr().expect("local addr");
         tokio::spawn(async move {
             axum::serve(listener, app).await.expect("serve");
@@ -2004,10 +2010,19 @@ mod tests {
         client.set_agent_auth_hash("hash-456".to_string());
 
         let snapshot = make_health_snapshot();
-        let result = client.submit_health_snapshot(&client.agent_id, &snapshot).await;
-        assert!(result.is_ok(), "submit_health_snapshot should succeed: {result:?}");
+        let result = client
+            .submit_health_snapshot(&client.agent_id, &snapshot)
+            .await;
+        assert!(
+            result.is_ok(),
+            "submit_health_snapshot should succeed: {result:?}"
+        );
 
-        let body = captured.lock().await.take().expect("server received a body");
+        let body = captured
+            .lock()
+            .await
+            .take()
+            .expect("server received a body");
         let inner = body
             .get("snapshot")
             .expect("payload wrapped in 'snapshot'")
@@ -2048,7 +2063,9 @@ mod tests {
             ),
         );
 
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind");
         let addr = listener.local_addr().expect("local addr");
         tokio::spawn(async move {
             axum::serve(listener, app).await.expect("serve");
@@ -2067,10 +2084,19 @@ mod tests {
         client.set_agent_auth_hash("bcrypt-hash-abc".to_string());
 
         let snapshot = make_health_snapshot();
-        let result = client.submit_health_snapshot(&client.agent_id, &snapshot).await;
-        assert!(result.is_ok(), "submit_health_snapshot should succeed: {result:?}");
+        let result = client
+            .submit_health_snapshot(&client.agent_id, &snapshot)
+            .await;
+        assert!(
+            result.is_ok(),
+            "submit_health_snapshot should succeed: {result:?}"
+        );
 
-        let (agent_id, auth) = captured.lock().await.take().expect("server received request");
+        let (agent_id, auth) = captured
+            .lock()
+            .await
+            .take()
+            .expect("server received request");
         assert_eq!(agent_id, "AGENT-AUTH");
         assert_eq!(auth, "DLP-AGENT AGENT-AUTH:bcrypt-hash-abc");
     }
