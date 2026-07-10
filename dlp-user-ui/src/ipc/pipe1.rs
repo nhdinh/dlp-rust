@@ -323,5 +323,34 @@ fn handle_agent_msg(msg: Pipe1AgentMsg, session_id: u32, pipe: HANDLE) -> Option
             handle_ping(session_id, pipe);
             None
         }
+        // Approval outcomes are server-originated notifications: the agent has
+        // already cached the granted token (or recorded the rejection). The UI
+        // surfaces the outcome via structured logging rather than a blocking
+        // modal — popping a modal dialog inside the pipe read loop would stall
+        // heartbeat responses and trip the agent's UI watchdog. No response is
+        // sent back to the agent (WR-01: previously these frames failed to
+        // deserialize and were silently dropped).
+        Pipe1AgentMsg::ApprovalGranted {
+            request_id,
+            token: _,
+            valid_until,
+        } => {
+            info!(
+                session_id,
+                request_id,
+                valid_until = %valid_until,
+                "Pipe 1: override approval granted by server"
+            );
+            None
+        }
+        Pipe1AgentMsg::ApprovalRejected { request_id, reason } => {
+            info!(
+                session_id,
+                request_id,
+                reason = ?reason,
+                "Pipe 1: override approval rejected by server"
+            );
+            None
+        }
     }
 }

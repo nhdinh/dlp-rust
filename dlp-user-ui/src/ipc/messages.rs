@@ -42,6 +42,26 @@ pub enum Pipe1AgentMsg {
     },
     /// Heartbeat ping sent periodically to verify the UI is still responsive.
     Ping,
+    /// An approval has been granted — UI should notify the user.
+    ///
+    /// Kept in sync with `dlp-agent/src/ipc/messages.rs::Pipe1AgentMsg`; an
+    /// approval frame that fails to deserialize here would be silently dropped
+    /// (WR-01).
+    ApprovalGranted {
+        /// The request ID that was approved.
+        request_id: String,
+        /// The signed JWT approval token.
+        token: String,
+        /// Human-readable expiry timestamp (ISO-8601).
+        valid_until: String,
+    },
+    /// An approval has been rejected — UI should notify the user.
+    ApprovalRejected {
+        /// The request ID that was rejected.
+        request_id: String,
+        /// Optional reason for rejection.
+        reason: Option<String>,
+    },
 }
 
 /// Messages sent FROM the UI TO the agent over Pipe 1.
@@ -134,6 +154,67 @@ mod tests {
         assert!(json.contains("\"type\":\"Pong\""), "json was: {json}");
         let decoded: Pipe1UiMsg = serde_json::from_str(&json).unwrap();
         assert!(matches!(decoded, Pipe1UiMsg::Pong));
+    }
+
+    #[test]
+    fn approval_granted_roundtrip() {
+        let msg = Pipe1AgentMsg::ApprovalGranted {
+            request_id: "req-1".to_string(),
+            token: "tok-abc".to_string(),
+            valid_until: "2026-12-31T23:59:59Z".to_string(),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let decoded: Pipe1AgentMsg = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            decoded,
+            Pipe1AgentMsg::ApprovalGranted { ref request_id, .. } if request_id == "req-1"
+        ));
+    }
+
+    #[test]
+    fn approval_rejected_roundtrip() {
+        let msg = Pipe1AgentMsg::ApprovalRejected {
+            request_id: "req-2".to_string(),
+            reason: Some("policy".to_string()),
+        };
+        let json = serde_json::to_string(&msg).unwrap();
+        let decoded: Pipe1AgentMsg = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            decoded,
+            Pipe1AgentMsg::ApprovalRejected { ref request_id, .. } if request_id == "req-2"
+        ));
+    }
+
+    /// Guards WR-01: the UI mirror must accept the exact JSON the agent emits
+    /// for approval outcomes. Both enums use `#[serde(tag="type",
+    /// content="payload")]` with identical field names, so an agent-shaped
+    /// payload must deserialize cleanly; if a future change drifts the two
+    /// enums apart, this test fails before an approval frame is silently
+    /// dropped at runtime.
+    #[test]
+    fn approval_variants_deserialize_agent_shaped_json() {
+        let granted = serde_json::json!({
+            "type": "ApprovalGranted",
+            "payload": {
+                "request_id": "req-9",
+                "token": "signed.jwt.token",
+                "valid_until": "2026-12-31T23:59:59Z",
+            }
+        });
+        let decoded: Pipe1AgentMsg =
+            serde_json::from_value(granted).expect("agent ApprovalGranted must deserialize");
+        assert!(matches!(decoded, Pipe1AgentMsg::ApprovalGranted { .. }));
+
+        let rejected = serde_json::json!({
+            "type": "ApprovalRejected",
+            "payload": {
+                "request_id": "req-10",
+                "reason": "denied by board",
+            }
+        });
+        let decoded: Pipe1AgentMsg =
+            serde_json::from_value(rejected).expect("agent ApprovalRejected must deserialize");
+        assert!(matches!(decoded, Pipe1AgentMsg::ApprovalRejected { .. }));
     }
 }
 
