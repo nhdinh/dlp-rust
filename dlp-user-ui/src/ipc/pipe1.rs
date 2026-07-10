@@ -5,6 +5,8 @@
 //! `PasswordDialog`.  Responds with `UserConfirmed`, `UserCancelled`,
 //! `ClipboardData`, `PasswordSubmit`, `PasswordCancel`.
 
+use std::sync::atomic::{AtomicU64, Ordering};
+
 use anyhow::Result;
 use tracing::{debug, error, info};
 use windows::core::PCWSTR;
@@ -17,6 +19,15 @@ use super::messages::{Pipe1AgentMsg, Pipe1UiMsg};
 
 /// The Win32 pipe name.
 const PIPE_NAME: &str = r"\\.\pipe\DLPCommand";
+
+/// Monotonic sequence used to mint a unique `request_id` per `BlockNotify`.
+///
+/// The previous `format!("block-{session_id}")` reused the same id for every
+/// block in a session, so concurrent `BlockNotify`s produced indistinguishable
+/// `UserConfirmed`/`UserCancelled` responses (WR-10). A process-wide counter
+/// guarantees uniqueness within the UI lifetime; cross-restart collisions are
+/// irrelevant because the id only correlates events within one run.
+static BLOCK_NOTIFY_SEQ: AtomicU64 = AtomicU64::new(0);
 
 /// `HANDLE` is `*mut c_void` — not `Send + Sync`.  Named-pipe handles are safe
 /// to move between threads, so we re-expose them with the correct trait impls.
@@ -205,6 +216,17 @@ fn handle_clipboard_read(request_id: String, session_id: u32) -> Option<Pipe1UiM
     }
 }
 
+/// Mints a unique `request_id` for a single `BlockNotify` event.
+///
+/// Format: `block-{session_id}-{seq}` where `seq` is a process-wide monotonic
+/// counter, so two near-simultaneous blocks (common when the hook DLL bursts)
+/// produce distinct, correlatable ids instead of the previous shared
+/// `block-{session_id}` (WR-10).
+fn mint_block_request_id(session_id: u32) -> String {
+    let seq = BLOCK_NOTIFY_SEQ.fetch_add(1, Ordering::Relaxed);
+    format!("block-{session_id}-{seq}")
+}
+
 /// Handles a `BlockNotify` message and returns the user's response.
 fn handle_block_notify(
     reason: String,
@@ -219,7 +241,7 @@ fn handle_block_notify(
         resource_path = %resource_path,
         "Pipe 1: BlockNotify received"
     );
-    let request_id = format!("block-{}", session_id);
+    let request_id = mint_block_request_id(session_id);
     let dialog_result = crate::dialogs::show_block_dialog_with_result(
         &classification,
         &resource_path,
@@ -351,6 +373,29 @@ fn handle_agent_msg(msg: Pipe1AgentMsg, session_id: u32, pipe: HANDLE) -> Option
                 "Pipe 1: override approval rejected by server"
             );
             None
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::mint_block_request_id;
+    use std::collections::HashSet;
+
+    /// WR-10: every `BlockNotify` must receive a unique `request_id` so
+    /// concurrent blocks do not produce colliding `UserConfirmed`/
+    /// `UserCancelled` responses.
+    #[test]
+    fn block_request_ids_are_unique_per_event() {
+        let session_id = 7;
+        let mut seen = HashSet::new();
+        for _ in 0..256 {
+            let id = mint_block_request_id(session_id);
+            assert!(
+                id.starts_with("block-7-"),
+                "request_id must keep the block-<session>-<seq> shape, got: {id}"
+            );
+            assert!(seen.insert(id.clone()), "duplicate request_id: {id}");
         }
     }
 }
