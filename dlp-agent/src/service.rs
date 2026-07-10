@@ -1569,11 +1569,21 @@ fn emit_override_granted_audit(pending: &PendingOverride, justification: &str, a
     .with_override_granted()
     .with_justification(justification.to_string());
 
+    // WR-04: record a human-readable identity in `user_name` for SIEM /
+    // forensic queries that group or display by that field. The raw SID is
+    // already carried in `user_sid`; duplicating it here adds no information
+    // and degrades the audit record for the most sensitive event (an approved
+    // bypass). Resolve SID -> account name (cached), falling back to "UNKNOWN"
+    // only when the account genuinely cannot be resolved — never the SID.
+    let user_name = crate::identity::IdentityResolver::new()
+        .lookup_account_name(&req.requester_sid)
+        .unwrap_or_else(|| "UNKNOWN".to_string());
+
     let ctx = crate::audit_emitter::EmitContext {
         agent_id: agent_id.to_string(),
         session_id: pending.session_id,
         user_sid: user_sid.clone(),
-        user_name: user_sid,
+        user_name,
         machine_name: None,
     };
     crate::audit_emitter::emit_audit(&ctx, &mut event);
