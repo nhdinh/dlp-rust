@@ -333,6 +333,19 @@ pub fn reset_override_cooldown() {
     OVERRIDE_COOLDOWN.lock().clear();
 }
 
+/// Maximum diagnostic snapshots per emitted frame (DIFF-04, WR-03).
+///
+/// Each [`DiagnosticSnapshot`](dlp_common::hook_ipc::DiagnosticSnapshot) carries
+/// several `String`s — most notably `abac_resource`, an arbitrary NTFS path that
+/// can reach ~32 k chars on long paths. The agent's `read_frame` rejects any
+/// payload over 64 MiB and drops the connection. Draining the full 1000-entry
+/// ring into one frame could therefore exceed the cap on a burst of long-path
+/// denies, losing the entire batch after the destructive drain. Chunking to 250
+/// keeps each frame comfortably under the cap (~8 MiB even at worst-case paths),
+/// so a single oversized path can at most drop its own small chunk, not the whole
+/// ring.
+const DIAG_FRAME_SNAPSHOT_CAP: usize = 250;
+
 /// DIFF-04: Record a pipe round-trip and, on their respective cadences, emit a health
 /// snapshot (every `HEALTH_EMIT_INTERVAL` round-trips) and drain+emit diagnostic
 /// snapshots (every `DIAGNOSTIC_EMIT_INTERVAL` round-trips).
@@ -357,11 +370,19 @@ fn record_pipe_round_trip_and_maybe_emit() {
         + 1;
     if diag_count.is_multiple_of(crate::perf_telemetry::DIAGNOSTIC_EMIT_INTERVAL) {
         let snapshots = crate::diagnostic_ring::drain_snapshots(1000);
-        if !snapshots.is_empty() {
+        // Emit in bounded chunks so no single frame exceeds the agent's 64 MiB
+        // payload cap on long NTFS paths (WR-03). `chunks` on an empty Vec yields
+        // no iterations, so an empty drain is a no-op. Best-effort: on the first
+        // chunk failure we stop sending further chunks this cadence so the hooked
+        // file operation is never blocked on pipe I/O (T-58.9-07); unsent chunks
+        // are dropped rather than re-queued — diagnostics are best-effort and the
+        // ring has already been destructively drained.
+        for chunk in snapshots.chunks(DIAG_FRAME_SNAPSHOT_CAP) {
             if let Err(e) =
-                crate::pipe_client::send_diagnostics(crate::current_pipe_name(), &snapshots)
+                crate::pipe_client::send_diagnostics(crate::current_pipe_name(), chunk)
             {
-                crate::debug_log(&format!("[dlp-hook] diagnostics send failed: {}\0", e));
+                crate::debug_log(&format!("[dlp-hook] diagnostics chunk send failed: {}\0", e));
+                break;
             }
         }
     }
