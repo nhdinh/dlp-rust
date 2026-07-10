@@ -384,6 +384,14 @@ pub struct OverrideRequest {
     /// The SID of the user requesting the override.
     #[serde(default)]
     pub requester_sid: String,
+    /// The PID of the process that requested the override.
+    ///
+    /// Used by the agent to resolve the interactive session that should
+    /// receive the override prompt (CR-02). Zero when the caller did not
+    /// provide it (legacy); the agent treats zero as unresolvable and fails
+    /// closed (keeps the operation denied).
+    #[serde(default)]
+    pub pid: u32,
     /// The ID of the data object being accessed.
     #[serde(default)]
     pub data_object_id: String,
@@ -1136,6 +1144,7 @@ mod tests {
     fn test_override_request_roundtrip() {
         let req = OverrideRequest {
             requester_sid: "S-1-5-21-1".to_string(),
+            pid: 0,
             data_object_id: "doc-123".to_string(),
             action: "WRITE".to_string(),
             classification: "T3".to_string(),
@@ -1268,6 +1277,7 @@ mod tests {
     fn test_ipc_payload_override_roundtrip() {
         let req = OverrideRequest {
             requester_sid: "S-1-5-21-1".to_string(),
+            pid: 0,
             data_object_id: "doc-123".to_string(),
             action: "WRITE".to_string(),
             classification: "T3".to_string(),

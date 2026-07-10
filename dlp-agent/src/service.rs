@@ -1579,6 +1579,44 @@ fn emit_override_granted_audit(pending: &PendingOverride, justification: &str, a
     crate::audit_emitter::emit_audit(&ctx, &mut event);
 }
 
+/// Maximum age of a pending override before the reaper discards it.
+///
+/// Bounds `OVERRIDE_PENDING` growth when a confirmation never arrives (e.g.
+/// the UI received the dialog but the user walked away). Set well above the
+/// expected dialog interaction time so legitimate confirms are not reaped.
+const OVERRIDE_PENDING_TTL: Duration = Duration::from_secs(120);
+
+/// Periodically drops stale pending overrides that were never confirmed.
+///
+/// Runs until the task is aborted on service shutdown. Entries older than
+/// [`OVERRIDE_PENDING_TTL`] are removed and logged so an unconfirmed dialog
+/// cannot leak memory (CR-02).
+async fn override_pending_reaper() {
+    let mut interval = tokio::time::interval(Duration::from_secs(30));
+    loop {
+        interval.tick().await;
+        if let Some(store) = OVERRIDE_PENDING.get() {
+            let mut map = store.lock();
+            let before = map.len();
+            map.retain(|request_id, pending| {
+                let keep = pending.created_at.elapsed() < OVERRIDE_PENDING_TTL;
+                if !keep {
+                    warn!(
+                        request_id = %request_id,
+                        age_ms = pending.created_at.elapsed().as_millis() as u64,
+                        "reaping stale pending override (no confirmation received)"
+                    );
+                }
+                keep
+            });
+            let reaped = before.saturating_sub(map.len());
+            if reaped > 0 {
+                info!(reaped, "reaped stale pending overrides");
+            }
+        }
+    }
+}
+
 /// Async service task that drains confirmed overrides from the Pipe 1 dispatcher
 /// and submits each one to the server with the user-provided justification.
 ///
@@ -2228,6 +2266,10 @@ async fn run_loop_init(
         confirmed_override_server_client,
     ));
 
+    // Reap pending overrides that are never confirmed so an abandoned dialog
+    // cannot leak memory (CR-02).
+    let _override_pending_reaper_handle = tokio::spawn(override_pending_reaper());
+
     // ── Phase 58.8-03: Periodic health snapshot push to server (DIFF-04) ─────
     let (health_push_shutdown, health_push_handle) = if let Some(ref sc) = server_client {
         let health_push_client = sc.clone();
@@ -2255,33 +2297,57 @@ async fn run_loop_init(
             info!(
                 request_id = %request_id,
                 resource_path = %req.resource_path,
+                pid = req.pid,
                 "Override request received from hook DLL"
             );
 
+            // Resolve the interactive session that owns the requesting process
+            // so the override prompt is delivered to the right UI instead of
+            // the hardcoded services session 0 (CR-02). If the session cannot
+            // be resolved we fail closed: the operation stays denied and no
+            // pending entry is leaked.
+            let session_id = match pid_to_session_id(req.pid) {
+                Some(sid) => sid,
+                None => {
+                    warn!(
+                        request_id = %request_id,
+                        pid = req.pid,
+                        "cannot resolve session for override request — denying (fail-closed)"
+                    );
+                    continue;
+                }
+            };
+
             // Store the full pending context so confirmation can rebuild the
             // server approval request with the user's justification.
-            if let Some(store) = OVERRIDE_PENDING.get() {
-                store.lock().insert(
-                    request_id.clone(),
-                    PendingOverride {
-                        request: req.clone(),
-                        session_id: 0,
-                        created_at: Instant::now(),
-                    },
-                );
-            } else {
-                warn!(
-                    request_id = %request_id,
-                    "OVERRIDE_PENDING not initialised — dropping override request"
-                );
-                continue;
-            }
+            let store = match OVERRIDE_PENDING.get() {
+                Some(store) => Arc::clone(store),
+                None => {
+                    warn!(
+                        request_id = %request_id,
+                        "OVERRIDE_PENDING not initialised — dropping override request"
+                    );
+                    continue;
+                }
+            };
+            store.lock().insert(
+                request_id.clone(),
+                PendingOverride {
+                    request: req.clone(),
+                    session_id,
+                    created_at: Instant::now(),
+                },
+            );
 
             // Forward to UI via Pipe 1, preserving all original request fields.
             let ui_msg = crate::ipc::messages::Pipe1AgentMsg::OverrideRequest {
                 request_id: request_id.clone(),
                 reason: format!("Blocked: {}", req.resource_path),
-                classification: "T3".to_string(),
+                classification: if req.classification.is_empty() {
+                    "T3".to_string()
+                } else {
+                    req.classification.clone()
+                },
                 resource_path: req.resource_path.clone(),
                 requester_sid: req.requester_sid.clone(),
                 data_object_id: req.data_object_id.clone(),
@@ -2289,8 +2355,17 @@ async fn run_loop_init(
                 destination_scope: req.destination_scope.clone(),
                 justification: req.justification.clone(),
             };
-            if let Err(e) = crate::ipc::pipe1::send_to_ui(0, &ui_msg) {
-                warn!(error = %e, "Failed to send OverrideRequest to UI");
+            if let Err(e) = crate::ipc::pipe1::send_to_ui(session_id, &ui_msg) {
+                // No UI is registered for the owning session (or the write
+                // failed): fail closed. Remove the entry we just inserted so
+                // it cannot leak, and leave the operation denied (CR-02).
+                store.lock().remove(&request_id);
+                warn!(
+                    request_id = %request_id,
+                    session_id,
+                    error = %e,
+                    "no UI for owning session — override denied (fail-closed)"
+                );
             }
         }
     });
@@ -4672,6 +4747,36 @@ fn resolve_service_identity() -> Option<(String, u32)> {
 #[cfg(not(windows))]
 fn resolve_service_identity() -> Option<(String, u32)> {
     Some(("S-1-5-18".to_string(), 0))
+}
+
+/// Resolves the interactive session id that owns `pid`.
+///
+/// Returns `None` when `pid` is 0 (unspecified / legacy request) or when
+/// `ProcessIdToSessionId` fails (e.g. the process has already exited). The
+/// agent runs as SYSTEM and may resolve any process's session. Callers use
+/// this to route an override prompt to the session that actually triggered
+/// the deny instead of the hardcoded services session 0 (CR-02).
+#[cfg(windows)]
+fn pid_to_session_id(pid: u32) -> Option<u32> {
+    use windows::Win32::System::RemoteDesktop::ProcessIdToSessionId;
+
+    if pid == 0 {
+        return None;
+    }
+    let mut session_id: u32 = 0;
+    let ok = unsafe { ProcessIdToSessionId(pid, &mut session_id) };
+    if ok.is_ok() {
+        Some(session_id)
+    } else {
+        None
+    }
+}
+
+/// Non-Windows fallback for session resolution: no session routing is
+/// available, so overrides cannot be delivered and must fail closed.
+#[cfg(not(windows))]
+fn pid_to_session_id(_pid: u32) -> Option<u32> {
+    None
 }
 
 /// Builds the default [`EmitContext`] used for audit events.
@@ -8245,6 +8350,7 @@ fn ensure_override_pending() -> Arc<Mutex<HashMap<String, PendingOverride>>> {
 fn make_hook_override_request() -> dlp_common::hook_ipc::OverrideRequest {
     dlp_common::hook_ipc::OverrideRequest {
         requester_sid: "S-1-5-21-1".to_string(),
+        pid: 0,
         data_object_id: "label-001".to_string(),
         action: "WRITE".to_string(),
         classification: "T3".to_string(),

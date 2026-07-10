@@ -69,6 +69,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HANDLE, NTSTATUS};
+use windows::Win32::System::Threading::GetCurrentProcessId;
 
 use crate::fail_mode::{FailModeState, FailState};
 use dlp_common::hook_ipc::ClassificationSource;
@@ -284,6 +285,10 @@ fn emit_override_request(path: &str, action: &str, handle_value: u64, classifica
 
     let req = dlp_common::hook_ipc::OverrideRequest {
         requester_sid: crate::get_current_user_sid(),
+        // The requesting process id so the agent can resolve the interactive
+        // session that should receive the override prompt (CR-02).
+        // SAFETY: GetCurrentProcessId is always valid and cannot fail.
+        pid: unsafe { GetCurrentProcessId() },
         data_object_id: resource.clone(),
         action: action.to_string(),
         classification: classification.to_string(),

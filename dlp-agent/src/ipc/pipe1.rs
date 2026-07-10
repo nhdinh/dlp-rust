@@ -380,19 +380,21 @@ fn dispatch(
     }
 }
 
-/// Sends a Pipe1AgentMsg to the UI in a specific session (fire-and-forget).
+/// Sends a Pipe1AgentMsg to the UI in a specific session.
 ///
 /// The session ID determines which connected UI client receives the message.
-/// If no client is registered for that session the message is silently dropped.
+/// Returns `Err` when no client is registered for the session so callers can
+/// react (e.g. fail closed and drop a freshly-inserted pending override)
+/// instead of silently leaking state (CR-02).
 pub fn send_to_ui(session_id: u32, msg: &Pipe1AgentMsg) -> Result<()> {
     let pipe = match CLIENTS.read().get(&session_id).map(|h| h.as_handle()) {
         Some(h) => h,
         None => {
             debug!(
                 session_id,
-                "Pipe 1: no client for session — dropping message"
+                "Pipe 1: no client for session — cannot deliver message"
             );
-            return Ok(());
+            anyhow::bail!("no Pipe 1 client registered for session {session_id}");
         }
     };
 
@@ -520,5 +522,18 @@ mod tests {
         assert_eq!(enqueued.justification, "business need");
 
         store.lock().clear();
+    }
+
+    /// CR-02 regression guard: sending to a session with no registered client
+    /// must return an error (so callers can fail closed) rather than silently
+    /// dropping the message.
+    #[test]
+    fn send_to_ui_returns_err_for_unknown_session() {
+        let msg = Pipe1AgentMsg::Ping;
+        let result = send_to_ui(999, &msg);
+        assert!(
+            result.is_err(),
+            "send_to_ui must fail for an unregistered session"
+        );
     }
 }

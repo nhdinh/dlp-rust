@@ -301,6 +301,7 @@ fn test_consolidated_server_routes_override_frame() {
     let envelope = IpcEnvelope::V1(IpcMessageV1 {
         payload: IpcPayloadV1::RequestOverride(OverrideRequest {
             requester_sid: "S-1-5-21-1".to_string(),
+            pid: 0,
             data_object_id: "doc-123".to_string(),
             action: "WRITE".to_string(),
             classification: "T3".to_string(),
