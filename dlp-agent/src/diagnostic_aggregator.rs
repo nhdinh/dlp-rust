@@ -143,6 +143,44 @@ impl DiagnosticAggregator {
         (paginated, total)
     }
 
+    /// Removes and returns every buffered snapshot across all DLL keys.
+    ///
+    /// Called by the periodic server-push task so each snapshot is forwarded
+    /// exactly once to the append-only server store. After this call the
+    /// backing map is empty (`dll_count() == 0`, `total_snapshot_count() == 0`);
+    /// a second call returns an empty `Vec`, proving each batch is pushed at
+    /// most once.
+    ///
+    /// Keys are collected first and each key is then removed, so no `DashMap`
+    /// guard is held across a remove and none is returned to the caller. The
+    /// returned `Vec` is fully owned, so callers may `.await` the HTTP push
+    /// without holding a non-`Send` guard.
+    ///
+    /// # Returns
+    ///
+    /// All previously buffered snapshots, sorted by QPC timestamp descending
+    /// (newest first). Returns an empty `Vec` when the aggregator is empty.
+    #[must_use]
+    pub fn drain_all(&self) -> Vec<DiagnosticSnapshot> {
+        // Collect keys first so no DashMap guard is held across a remove.
+        let keys: Vec<String> = self.snapshots.iter().map(|e| e.key().clone()).collect();
+        // Pre-size the output buffer to the known total (big-O friendly).
+        let total: usize = keys
+            .iter()
+            .map(|k| self.snapshots.get(k).map(|v| v.len()).unwrap_or(0))
+            .sum();
+        let mut out: Vec<DiagnosticSnapshot> = Vec::with_capacity(total);
+        for key in keys {
+            // Destructive remove: each snapshot leaves the map exactly once.
+            if let Some((_, mut v)) = self.snapshots.remove(&key) {
+                out.append(&mut v);
+            }
+        }
+        // Newest-first ordering, matching `get_snapshots`.
+        out.sort_by(|a, b| b.timestamp_qpc.cmp(&a.timestamp_qpc));
+        out
+    }
+
     /// Returns the total number of DLL keys currently tracked.
     #[must_use]
     pub fn dll_count(&self) -> usize {
@@ -406,5 +444,54 @@ mod tests {
 
         assert_eq!(agg.dll_count(), 2);
         assert_eq!(agg.total_snapshot_count(), 2);
+    }
+
+    #[test]
+    fn test_drain_all() {
+        let agg = DiagnosticAggregator::new();
+
+        // Three distinct keys (`{pid}_{agent_id}`), four snapshots total.
+        agg.ingest(
+            "AGENT-01",
+            100,
+            vec![
+                make_snapshot("S-1-5-21-1", Some("pol-001"), 1000),
+                make_snapshot("S-1-5-21-1", Some("pol-001"), 4000),
+            ],
+        );
+        agg.ingest(
+            "AGENT-01",
+            200,
+            vec![make_snapshot("S-1-5-21-2", Some("pol-002"), 2500)],
+        );
+        agg.ingest(
+            "AGENT-02",
+            100,
+            vec![make_snapshot("S-1-5-21-3", Some("pol-003"), 3000)],
+        );
+
+        // `get_snapshots` is non-destructive: two reads both observe all four.
+        let filter = DiagnosticFilter::default();
+        assert_eq!(agg.get_snapshots(&filter).len(), 4);
+        assert_eq!(agg.get_snapshots(&filter).len(), 4);
+        assert_eq!(agg.dll_count(), 3);
+        assert_eq!(agg.total_snapshot_count(), 4);
+
+        // `drain_all` returns every snapshot, newest first.
+        let drained = agg.drain_all();
+        assert_eq!(drained.len(), 4);
+        let qpcs: Vec<u64> = drained.iter().map(|s| s.timestamp_qpc).collect();
+        assert_eq!(qpcs, vec![4000, 3000, 2500, 1000]);
+        assert!(drained
+            .windows(2)
+            .all(|w| w[0].timestamp_qpc >= w[1].timestamp_qpc));
+
+        // The map is emptied by the drain.
+        assert_eq!(agg.dll_count(), 0);
+        assert_eq!(agg.total_snapshot_count(), 0);
+
+        // A second drain returns nothing (each batch pushed at most once).
+        let again = agg.drain_all();
+        assert!(again.is_empty());
     }
 }
