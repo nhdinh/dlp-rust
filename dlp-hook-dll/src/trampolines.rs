@@ -215,6 +215,7 @@ impl OverrideCooldownMap {
     }
 
     /// Clears all cooldown entries (test use only).
+    #[cfg(any(test, feature = "test-helpers"))]
     fn clear(&mut self) {
         self.entries.clear();
         self.lru_keys.clear();
@@ -710,6 +711,11 @@ pub(crate) fn classify_and_log_path(
         crate::diagnostic_ring::push_snapshot(snapshot);
     }
 
+    // DIFF-01: Prompt the user to request an override on every deny branch.
+    if decision.is_some() {
+        emit_override_request(path, action, handle_value);
+    }
+
     // Record latency telemetry.
     let is_cache_hit = decision.is_none()
         && !crate::allowlist::is_allowlisted(path, None).0
@@ -1030,6 +1036,11 @@ fn classify_and_log_handle(
             user_sid: crate::get_current_user_sid(),
         };
         crate::diagnostic_ring::push_snapshot(snapshot);
+    }
+
+    // DIFF-01: Prompt the user to request an override on every deny branch.
+    if result.is_some() {
+        emit_override_request(path, action, handle_value);
     }
 
     // Write to hook journal BEFORE returning the decision (per D-23).
