@@ -618,7 +618,7 @@ Plans:
   4. `GET /admin/diagnostics` returns real snapshots when diagnostics have been ingested via authenticated `POST /agents/{id}/diagnostics`.
   5. Full workspace tests, clippy, formatting, and sonar-scanner Quality Gate pass (where environmental tooling permits).
 
-**Plans:** 2/4 plans executed
+**Plans:** 3/4 plans executed
 
 **Wave 1** *(no dependencies)*
 
@@ -888,7 +888,7 @@ Plans:
 
 - [x] 58.8-01-PLAN.md
 - [x] 58.8-02-PLAN.md
-- [ ] 58.8-03-PLAN.md
+- [x] 58.8-03-PLAN.md
 - [ ] 58.8-04-PLAN.md
 
 - [x] 58.7-01-PLAN.md
