@@ -1551,6 +1551,52 @@ async fn confirmed_override_loop(
     debug!("confirmed_override_loop exiting");
 }
 
+/// Default interval between health snapshot pushes to the server.
+const HEALTH_PUSH_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Periodic health snapshot push loop.
+///
+/// Reads the latest aggregated health snapshot from [`HealthAggregator`] and
+/// pushes it to the server via [`ServerClient::submit_health_snapshot`] every
+/// `interval`. Errors are logged but never stop the loop.
+///
+/// # Arguments
+///
+/// * `server_client` — the HTTP client for the central server.
+/// * `health_aggregator` — the aggregator that holds the latest hook DLL health
+///   snapshot.
+/// * `agent_id` — the agent identifier to include in the URL and auth header.
+/// * `interval` — the period between pushes.
+/// * `shutdown` — watch channel that signals the loop to exit.
+async fn health_push_loop(
+    server_client: crate::server_client::ServerClient,
+    health_aggregator: Arc<crate::health_aggregator::HealthAggregator>,
+    agent_id: String,
+    interval: Duration,
+    mut shutdown: tokio::sync::watch::Receiver<bool>,
+) {
+    let mut interval = tokio::time::interval(interval);
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                match health_aggregator.get_current_status() {
+                    Some((_status, snapshot)) => {
+                        match server_client.submit_health_snapshot(&agent_id, &snapshot).await {
+                            Ok(()) => debug!(agent_id = %agent_id, "health snapshot pushed to server"),
+                            Err(e) => warn!(error = %e, "failed to submit health snapshot to server"),
+                        }
+                    }
+                    None => debug!("no health snapshot available yet — skipping push"),
+                }
+            }
+            _ = shutdown.changed() => {
+                debug!("health push loop shutting down");
+                return;
+            }
+        }
+    }
+}
+
 /// The main service run loop.
 ///
 /// Runs the file system event loop and the service control loop.
@@ -2100,6 +2146,27 @@ async fn run_loop_init(
         confirmed_override_server_client,
     ));
 
+    // ── Phase 58.8-03: Periodic health snapshot push to server (DIFF-04) ─────
+    let (health_push_shutdown, health_push_handle) = if let Some(ref sc) = server_client {
+        let health_push_client = sc.clone();
+        let health_push_aggregator = Arc::clone(&health_aggregator);
+        let health_push_agent_id = sc.agent_id().to_string();
+        let (tx, rx) = tokio::sync::watch::channel(false);
+        let handle = tokio::spawn(async move {
+            health_push_loop(
+                health_push_client,
+                health_push_aggregator,
+                health_push_agent_id,
+                HEALTH_PUSH_INTERVAL,
+                rx,
+            )
+            .await;
+        });
+        (Some(tx), Some(handle))
+    } else {
+        (None, None)
+    };
+
     let override_handle = tokio::spawn(async move {
         while let Some(req) = override_rx.recv().await {
             let request_id = format!("ovr-{}", uuid::Uuid::new_v4());
@@ -2617,10 +2684,10 @@ async fn run_loop_init(
         diagnostic_push_shutdown: None,
         // Phase 58: Diagnostic push task handle (reserved for future server push).
         diagnostic_push_handle: None,
-        // Phase 58: Health push task shutdown signal (reserved for future server push).
-        health_push_shutdown: None,
-        // Phase 58: Health push task handle (reserved for future server push).
-        health_push_handle: None,
+        // Phase 58.8-03: Health push task shutdown signal (DIFF-04).
+        health_push_shutdown,
+        // Phase 58.8-03: Health push task handle (DIFF-04).
+        health_push_handle,
         // Phase 58-06: Override request processing task (DIFF-01).
         override_handle: Some(override_handle),
         // Phase 58.8-03: Deferred override submission task (DIFF-01).
@@ -4838,6 +4905,20 @@ async fn run_loop_shutdown(ctx: RunLoopContext) {
         let _ = h.await;
     }
     crate::password_stop::debug_log("run_loop: audit buffer stopped");
+
+    // Phase 58.8-03: Stop the health snapshot push task.
+    if let Some(tx) = ctx.health_push_shutdown {
+        crate::password_stop::debug_log("run_loop: signalling health push shutdown");
+        let _ = tx.send(true);
+    }
+    if let Some(handle) = ctx.health_push_handle {
+        match tokio::time::timeout(Duration::from_secs(5), handle).await {
+            Ok(Ok(())) => debug!("health push task shut down cleanly"),
+            Ok(Err(e)) => warn!(error = %e, "health push task panicked"),
+            Err(_) => warn!("health push task did not shut down within 5s"),
+        }
+    }
+    crate::password_stop::debug_log("run_loop: health push stopped");
 
     // Phase 53: Stop bypass correlator.
     if let Some(shutdown_tx) = ctx.correlator_shutdown {
@@ -8162,4 +8243,76 @@ async fn test_confirmed_override_loop_unknown_request_id_is_ignored() {
 
     // Should complete without panic even though the request_id is unknown.
     confirmed_override_loop(rx, None).await;
+}
+
+#[cfg(test)]
+#[tokio::test]
+async fn health_push_loop_starts_pushes_and_shuts_down() {
+    use axum::{
+        extract::Json,
+        http::StatusCode,
+        response::IntoResponse,
+        routing::post,
+        Router,
+    };
+    use std::sync::Arc;
+    use tokio::sync::Mutex;
+
+    let received_count = Arc::new(Mutex::new(0u32));
+    let received_count_clone = Arc::clone(&received_count);
+
+    let app = Router::new().route(
+        "/agents/:id/health",
+        post(move |Json(_body): Json<serde_json::Value>| async move {
+            *received_count_clone.lock().await += 1;
+            StatusCode::OK.into_response()
+        }),
+    );
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+    let addr = listener.local_addr().expect("local addr");
+    tokio::spawn(async move {
+        axum::serve(listener, app).await.expect("serve");
+    });
+
+    let mut client = crate::server_client::ServerClient::from_env_with_config(Some(&format!("http://{addr}")
+    ))
+    .expect("client creation");
+    client.set_agent_auth_hash("hash-789".to_string());
+
+    let aggregator = Arc::new(crate::health_aggregator::HealthAggregator::new());
+    aggregator.ingest_snapshot(dlp_common::hook_ipc::HookHealthSnapshot {
+        injected_pids: 1,
+        patched_modules: 2,
+        pipe_round_trips_60s: 3,
+        cache_hit_rate_60s: 0.9,
+        current_fail_state: 0,
+        timestamp_secs: 1_700_000_000,
+    });
+
+    let (shutdown_tx, shutdown_rx) = tokio::sync::watch::channel(false);
+    let agent_id = client.agent_id().to_string();
+    let handle = tokio::spawn(health_push_loop(
+        client,
+        aggregator,
+        agent_id,
+        Duration::from_millis(50),
+        shutdown_rx,
+    ));
+
+    // Wait long enough for at least one push interval to fire.
+    tokio::time::sleep(Duration::from_millis(150)).await;
+
+    let _ = shutdown_tx.send(true);
+    match tokio::time::timeout(Duration::from_secs(2), handle).await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => panic!("health push task panicked: {e}"),
+        Err(_) => panic!("health push task did not shut down within 2s"),
+    }
+
+    let count = *received_count.lock().await;
+    assert!(
+        count >= 1,
+        "expected at least one health snapshot push, got {count}"
+    );
 }
