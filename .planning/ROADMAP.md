@@ -1,7 +1,7 @@
 ---
 milestone: v0.11.0
 milestone_name: Label Service + Workflow + Audit
-last_updated: 2026-07-06
+last_updated: 2026-07-10
 total_phases: 6
 v1_requirements: 26
 coverage: 26/26
@@ -618,12 +618,12 @@ Plans:
   4. `GET /admin/diagnostics` returns real snapshots when diagnostics have been ingested via authenticated `POST /agents/{id}/diagnostics`.
   5. Full workspace tests, clippy, formatting, and sonar-scanner Quality Gate pass (where environmental tooling permits).
 
-**Plans:** 1/4 plans executed
+**Plans:** 2/4 plans executed
 
 **Wave 1** *(no dependencies)*
 
-- [ ] `58.8-01-PLAN.md` — Hook DLL override trigger: emit `IpcPayloadV1::RequestOverride` from `classify_and_log_path` / `classify_and_log_handle` deny paths with a 30-second per-path cooldown, make the agent `HookIpcServer` fire-and-forget for override frames, and prove behavior with a `HookIpcServer::with_override_handler` integration test covering cooldown and approved-override suppression.
-- [ ] `58.8-02-PLAN.md` — Server-side health and diagnostics infrastructure: add `HealthSnapshotStore`, `DashboardHealthSnapshot`, authenticated `GET /admin/health`, agent-authenticated and per-agent rate-limited `POST /agents/{id}/health` and `POST /agents/{id}/diagnostics` (rate-limit key keyed on authenticated agent identity), and initialize `diagnostic_store` and `health_snapshot_store` in production `AppState`; update `AppState` literals in `dlp-server/src` and `dlp-server/src/admin_api.rs`.
+- [x] `58.8-01-PLAN.md` — Hook DLL override trigger: emit `IpcPayloadV1::RequestOverride` from `classify_and_log_path` / `classify_and_log_handle` deny paths with a 30-second per-path cooldown, make the agent `HookIpcServer` fire-and-forget for override frames, and prove behavior with a `HookIpcServer::with_override_handler` integration test covering cooldown and approved-override suppression.
+- [x] `58.8-02-PLAN.md` — Server-side health and diagnostics infrastructure: add `HealthSnapshotStore`, `DashboardHealthSnapshot`, authenticated `GET /admin/health`, agent-authenticated and per-agent rate-limited `POST /agents/{id}/health` and `POST /agents/{id}/diagnostics` (rate-limit key keyed on authenticated agent identity), and initialize `diagnostic_store` and `health_snapshot_store` in production `AppState`; update `AppState` literals in `dlp-server/src` and `dlp-server/src/admin_api.rs`.
 
 **Wave 2** *(blocked on Wave 1 server-side completion)*
 
@@ -876,7 +876,7 @@ Standard patterns (likely skip phase research): Phases 48, 49, 50, 52, 54, 55, 5
 
 ---
 
-*Last updated: 2026-06-09 — Phase 56 marked complete (all 6 plans verified), Phase 64 verified complete.*
+*Last updated: 2026-07-10 — Phase 58.8 Plan 02 marked complete (server-side DIFF-04 wiring).*
 
 ### Phase 67.1: Print Watermarking — XPS Page Geometry + Text Metrics (INSERTED)
 
@@ -887,7 +887,7 @@ Standard patterns (likely skip phase research): Phases 48, 49, 50, 52, 54, 55, 5
 Plans:
 
 - [x] 58.8-01-PLAN.md
-- [ ] 58.8-02-PLAN.md
+- [x] 58.8-02-PLAN.md
 - [ ] 58.8-03-PLAN.md
 - [ ] 58.8-04-PLAN.md
 

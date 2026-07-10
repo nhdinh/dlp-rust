@@ -5,16 +5,16 @@ milestone_name: Real-Time File Access Prevention
 current_phase: 58.8
 current_phase_name: fix-diff-01-and-diff-04
 status: executing
-stopped_at: Completed 58.8-01-PLAN.md
-last_updated: "2026-07-10T02:25:13.751Z"
+stopped_at: Completed 58.8-02-PLAN.md
+last_updated: "2026-07-10T03:30:00.000Z"
 last_activity: 2026-07-10
-last_activity_desc: Phase 58.8 execution started
+last_activity_desc: Completed 58.8-02 server-side DIFF-04 wiring
 progress:
   total_phases: 51
   completed_phases: 39
   total_plans: 218
-  completed_plans: 184
-  percent: 76
+  completed_plans: 186
+  percent: 85
 ---
 
 # Project State
@@ -30,10 +30,10 @@ progress:
 ## Current Position
 
 Phase: 58.8 (fix-diff-01-and-diff-04) — EXECUTING
-Plan: 2 of 4
+Plan: 3 of 4
 Status: Ready to execute
-Verification: TBD
-Last activity: 2026-07-10 — Phase 58.8 execution started
+Verification: cargo check, clippy, fmt, and dlp-server lib tests pass; sonar-scanner Quality Gate blocked on auth
+Last activity: 2026-07-10 — Completed 58.8-02 server-side DIFF-04 wiring
 
 ### Previous: Phase 58.5 — COMPLETE
 
@@ -170,7 +170,12 @@ Research flags on Phases 51 (HEAVY — ntdll/EDR), 53 (MEDIUM — ETW correlatio
 - UAT must be run by operator on physical hardware with real cloud clients, real printers, and real USB/SD/optical/virtual drives.
 - CRIT-04 benchmark gate (<= 25% wall-clock overhead) must be verified during UAT.
 - See `.planning/phases/57-operational-deployment-guide-av-edr-allowlist-uat/57-VERIFICATION.md` for full status.
-- sonar-scanner cannot run locally: JAVA_HOME is not set and no Java executable is in PATH. Quality Gate verification for 58.8-01 is blocked on environment tooling.
+
+**Phase 58.8 — SonarCloud Token Auth Gate**
+
+- `sonar-scanner` fails with `Not authorized` for project `nhdinh_dlp-rust` using the exported `SONAR_TOKEN`.
+- Tried `sonar.login`, `sonar.token`, and `SONAR_TOKEN` environment variable.
+- Quality Gate verification for 58.8-02 is blocked until the token is verified/regenerated at https://sonarcloud.io/account/security.
 
 ## Next Action
 
@@ -197,8 +202,8 @@ Phase 59 and later are complete and shipped as part of v0.11.0.
 
 ## Session Continuity
 
-Last session: 2026-07-10T02:24:40.411Z
-Stopped at: Completed 58.8-01-PLAN.md
+Last session: 2026-07-10T03:30:00.000Z
+Stopped at: Completed 58.8-02-PLAN.md
 Resume file: None
 
 ## Operator Next Steps
@@ -254,6 +259,7 @@ Resume file: None
 | Phase 58.7-close-gap-dacl-protected_paths-wiring P03 | 35min | 2 tasks | 2 files |
 | Phase 58.7 P04 | 10min | 2 tasks | 3 files |
 | Phase 58.8-fix-diff-01-and-diff-04 P01 | 90min | 4 tasks | 5 files |
+| Phase 58.8-fix-diff-01-and-diff-04 P02 | 50min | 4 tasks | 5 files |
 
 ## Quick Tasks Completed
 
@@ -287,6 +293,9 @@ Resume file: None
 - [Phase ?]: Returned None from classify_and_log_path/handle during shutdown for original-API pass-through.
 - [Phase ?]: Kept UNHOOK_WAIT_BUDGET at 5 seconds to preserve remaining SHUTDOWN_TIMEOUT budget — The existing service shutdown path has a 10-second SHUTDOWN_TIMEOUT; reserving 5 seconds for DLLs to poll and ack leaves 5 seconds for the rest of shutdown.
 - [Phase ?]: Used Vec snapshot from iter_injected to avoid holding DashMap across await points — DashMap guards are not Send/Sync across await boundaries; returning a Vec snapshot keeps the async shutdown code simple and correct.
+- [Phase 58.8 Plan 02]: Added Deserialize derives to admin response structs to enable integration-test assertions; no runtime behavior change.
+- [Phase 58.8 Plan 02]: Used #[allow(dead_code)] temporarily on agent_auth_middleware so Task 3 could commit without routes, then removed it in Task 4.
+- [Phase 58.8 Plan 02]: Keyed per-agent rate limiting on authenticated agent_id from request extensions, falling back to path segment and IP.
 - [Phase ?]: Propagated per-thread audit capture token to mock server thread for multi-threaded test isolation — Audit events emitted on the mock server thread were not visible to the test thread's capture sink; a thread-local token propagated to the server thread makes cross-thread assertions deterministic.
 - [Phase ?]: Retained unmatched watchdog evidence files and emitted untracked WatchdogSelfUnload audit — Deleting unmatched evidence would lose the signal that a prior agent crash occurred; retaining the file for bounded retry and emitting an untracked audit preserves observability.
 - [Phase 58.5]: Rust OnceLock<Mutex<NtdllPatcher>> cannot be reset; reset helper disables NTDLL_PATCHING_ENABLED and unpatches any initialized stubs instead
