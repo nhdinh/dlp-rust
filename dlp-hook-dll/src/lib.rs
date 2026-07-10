@@ -121,6 +121,12 @@ mod test_utils;
 #[cfg(any(test, feature = "test-helpers"))]
 pub use test_utils::{reset_for_test, set_test_pipe_name, unique_pipe_name, MockAgentServer};
 
+// Re-export override cooldown helpers for integration tests.
+#[cfg(any(test, feature = "test-helpers"))]
+pub use trampolines::{
+    classify_and_log_path_for_test, reset_override_cooldown, set_fail_state_for_test,
+};
+
 /// Default pipe name used by the hook DLL.
 pub(crate) const DEFAULT_PIPE_NAME: &str = r"\\.\pipe\DlpHookPipe";
 

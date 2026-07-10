@@ -117,6 +117,20 @@ pub(crate) fn reset_fail_state_for_test() {
     *guard = None;
 }
 
+/// Test-only helper to force the global fail-mode state machine into a state.
+///
+/// Use this to exercise non-pipe deny branches (e.g., `FailState::Isolated`)
+/// from integration tests.
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn set_fail_state_for_test(state: crate::FailState) {
+    // Ensure the lazy global is initialized before mutating it.
+    let _ = get_fail_state();
+    let guard = FAIL_STATE.lock();
+    if let Some(s) = guard.as_ref() {
+        s.set_state(state);
+    }
+}
+
 /// Default cooldown between override prompt requests for the same path/action pair.
 ///
 /// A single blocked application can repeatedly hit the same deny branch (e.g., a
@@ -734,6 +748,33 @@ pub(crate) fn classify_and_log_path(
     crate::hook_journal::journal_write_from_trampoline(handle_value, journal_op, path);
 
     decision
+}
+
+/// Test-only wrapper around [`classify_and_log_path`].
+///
+/// Integration tests cannot call `pub(crate)` items, so this re-exposes the
+/// full signature under the `test-helpers` feature. It forwards directly to
+/// [`classify_and_log_path`] without changing behavior.
+#[cfg(any(test, feature = "test-helpers"))]
+#[allow(clippy::too_many_arguments)]
+pub fn classify_and_log_path_for_test(
+    path: &str,
+    action: &str,
+    fn_name: &str,
+    handle_value: u64,
+    journal_op: u8,
+    source_volume_class: Option<dlp_common::VolumeClass>,
+    destination_volume_class: Option<dlp_common::VolumeClass>,
+) -> Option<crate::fail_closed::DenyReturn> {
+    classify_and_log_path(
+        path,
+        action,
+        fn_name,
+        handle_value,
+        journal_op,
+        source_volume_class,
+        destination_volume_class,
+    )
 }
 
 /// Sends a classification request to the agent via named pipe, including
