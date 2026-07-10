@@ -810,6 +810,69 @@ mod client_tests {
     }
 
     #[test]
+    fn get_self_health_returns_exact_dashboard_fields_and_sends_auth() {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("test runtime");
+        rt.block_on(async {
+            use wiremock::matchers::method;
+            use wiremock::{Mock, MockServer, ResponseTemplate};
+
+            let server = MockServer::start().await;
+
+            Mock::given(method("GET"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "snapshot": {
+                        "overall_status": "healthy",
+                        "injected_pids": 1,
+                        "patched_modules": 2,
+                        "pipe_round_trips_60s": 10,
+                        "cache_hit_rate_60s": 0.95,
+                        "fail_state": 0,
+                        "timestamp_secs": 1000
+                    },
+                    "history": []
+                })))
+                .mount(&server)
+                .await;
+
+            let mut client = EngineClient::for_test_with_url(server.uri());
+            client.set_token("test-token".to_string());
+
+            let response = client
+                .get_self_health()
+                .await
+                .expect("get_self_health should succeed");
+
+            assert!(response.get("snapshot").is_some(), "snapshot field must be present");
+            assert_eq!(response["snapshot"]["overall_status"], "healthy");
+            assert_eq!(response["snapshot"]["injected_pids"], 1);
+            assert_eq!(response["snapshot"]["patched_modules"], 2);
+            assert_eq!(response["snapshot"]["pipe_round_trips_60s"], 10);
+
+            let cache_hit_rate = response["snapshot"]["cache_hit_rate_60s"]
+                .as_f64()
+                .expect("cache_hit_rate_60s should be a float");
+            assert!((cache_hit_rate - 0.95).abs() < f64::EPSILON);
+
+            assert_eq!(response["snapshot"]["fail_state"], 0);
+
+            let requests = server
+                .received_requests()
+                .await
+                .expect("should have received requests");
+            assert_eq!(requests.len(), 1, "expected exactly one request");
+            let req = &requests[0];
+            let auth_header = req
+                .headers
+                .get("authorization")
+                .expect("authorization header should be present");
+            assert_eq!(auth_header.to_str().expect("valid ascii"), "Bearer test-token");
+        });
+    }
+
+    #[test]
     fn ack_bypass_alert_method_exists() {
         let client = EngineClient::for_test();
         let _future = client.ack_bypass_alert(42);
