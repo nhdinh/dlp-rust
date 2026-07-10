@@ -64,7 +64,9 @@
 
 use dlp_common::hook_ipc::HookOp;
 use parking_lot::Mutex;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{HANDLE, NTSTATUS};
 
@@ -113,6 +115,198 @@ pub(crate) fn reset_fail_state_for_test() {
     crate::background_thread::shutdown_background_thread();
     let mut guard = FAIL_STATE.lock();
     *guard = None;
+}
+
+/// Default cooldown between override prompt requests for the same path/action pair.
+///
+/// A single blocked application can repeatedly hit the same deny branch (e.g., a
+/// sync client retrying every few seconds). This TTL prevents the UI from being
+/// flooded with identical prompts while still giving the user a chance to request
+/// an override after a reasonable window.
+const OVERRIDE_COOLDOWN_TTL: Duration = Duration::from_secs(30);
+
+/// Maximum number of distinct path/action keys retained by the cooldown map.
+///
+/// Bounded memory is required because every unique denied path could otherwise
+/// become a permanent entry. When the cap is exceeded, the oldest keys are
+/// evicted opportunistically after removing expired entries.
+const OVERRIDE_COOLDOWN_MAX_KEYS: usize = 10_000;
+
+/// Per-path/action override prompt cooldown state.
+///
+/// Tracks the last emission instant for each composite key (`"{path}\0{action}"`).
+/// A bounded LRU queue (`lru_keys`) is kept in parallel so that memory usage is
+/// capped even when many unique paths are denied.
+struct OverrideCooldownMap {
+    /// Last-emission instant per composite key.
+    entries: HashMap<String, Instant>,
+    /// LRU key queue used for bounded eviction.
+    lru_keys: VecDeque<String>,
+    /// Hard cap on the number of tracked keys.
+    max_keys: usize,
+}
+
+impl OverrideCooldownMap {
+    /// Creates an empty cooldown map with the default key cap.
+    fn new() -> Self {
+        Self {
+            entries: HashMap::new(),
+            lru_keys: VecDeque::new(),
+            max_keys: OVERRIDE_COOLDOWN_MAX_KEYS,
+        }
+    }
+
+    /// Returns true if an override request should be emitted for `key`.
+    ///
+    /// The key is treated as fresh (and true is returned) when:
+    /// - the key has never been seen, or
+    /// - the stored instant is older than `ttl`.
+    ///
+    /// On a fresh key, the current instant is recorded and the key is moved to
+    /// the back of the LRU queue. If the map exceeds `max_keys`, expired entries
+    /// are removed first; if still over capacity, the oldest keys are evicted.
+    ///
+    /// # Arguments
+    ///
+    /// * `key` — Composite cooldown key (caller-defined format).
+    /// * `now` — Current instant to compare against.
+    /// * `ttl` — Cooldown duration.
+    fn should_emit(&mut self, key: &str, now: Instant, ttl: Duration) -> bool {
+        let is_fresh = match self.entries.get(key) {
+            Some(ts) => now.saturating_duration_since(*ts) >= ttl,
+            None => true,
+        };
+
+        if !is_fresh {
+            return false;
+        }
+
+        self.entries.insert(key.to_string(), now);
+        // Update LRU position: remove existing occurrence and push to back.
+        self.lru_keys.retain(|k| k != key);
+        self.lru_keys.push_back(key.to_string());
+        self.evict_expired_and_oldest(now, ttl);
+        true
+    }
+
+    /// Removes expired entries, then evicts oldest keys until at or below cap.
+    fn evict_expired_and_oldest(&mut self, now: Instant, ttl: Duration) {
+        // Opportunistically remove expired entries first.
+        let expired: Vec<String> = self
+            .entries
+            .iter()
+            .filter(|(_, ts)| now.saturating_duration_since(**ts) >= ttl)
+            .map(|(k, _)| k.clone())
+            .collect();
+        for k in expired {
+            self.entries.remove(&k);
+            self.lru_keys.retain(|x| x != &k);
+        }
+
+        // If still over capacity, evict the oldest keys.
+        while self.entries.len() > self.max_keys {
+            match self.lru_keys.pop_front() {
+                Some(oldest) => {
+                    self.entries.remove(&oldest);
+                }
+                None => break,
+            }
+        }
+    }
+
+    /// Clears all cooldown entries (test use only).
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.lru_keys.clear();
+    }
+}
+
+/// Global override-prompt cooldown map.
+///
+/// Guarded by a mutex because the deny path may be invoked concurrently from
+/// multiple hooked threads. The lock is held only for a short HashMap operation.
+static OVERRIDE_COOLDOWN: std::sync::LazyLock<Mutex<OverrideCooldownMap>> =
+    std::sync::LazyLock::new(|| Mutex::new(OverrideCooldownMap::new()));
+
+/// Emits a one-way `IpcPayloadV1::RequestOverride` frame to the agent.
+///
+/// This is invoked from every deny branch in [`classify_and_log_path`] and
+/// [`classify_and_log_handle`]. The original operation remains denied; the
+/// override request only gives the user a chance to approve a future operation
+/// via [`HookResponse.approval_override`].
+///
+/// The call is fire-and-forget: it uses [`pipe_client::send_raw_oneway`] with a
+/// bounded 50 ms connect budget and never waits for a response. Failures are
+/// logged and ignored so that a missing agent does not change the deny decision.
+///
+/// A 30-second per-path/action cooldown and a 10,000-key cap prevent UI spam
+/// and unbounded memory growth.
+///
+/// # Arguments
+///
+/// * `path` — The denied file path (may be empty for handle-based ops).
+/// * `action` — The action being denied (e.g., `"CREATE"`, `"WRITE"`).
+/// * `handle_value` — The raw handle value, used only when `path` is empty.
+fn emit_override_request(path: &str, action: &str, handle_value: u64) {
+    let key = format!("{}\0{}", path, action);
+    let now = Instant::now();
+
+    {
+        let mut cooldown = OVERRIDE_COOLDOWN.lock();
+        if !cooldown.should_emit(&key, now, OVERRIDE_COOLDOWN_TTL) {
+            return;
+        }
+    }
+
+    let resource = if path.is_empty() {
+        format!("handle:{}", handle_value)
+    } else {
+        path.to_string()
+    };
+
+    let req = dlp_common::hook_ipc::OverrideRequest {
+        requester_sid: crate::get_current_user_sid(),
+        data_object_id: resource.clone(),
+        action: action.to_string(),
+        destination_scope: None,
+        justification: String::new(),
+        resource_path: resource,
+    };
+
+    let envelope = dlp_common::hook_ipc::IpcEnvelope::V1(dlp_common::hook_ipc::IpcMessageV1 {
+        payload: dlp_common::hook_ipc::IpcPayloadV1::RequestOverride(req),
+    });
+
+    match bincode::serialize(&envelope) {
+        Ok(bytes) => {
+            if let Err(e) = crate::pipe_client::send_raw_oneway(crate::current_pipe_name(), &bytes)
+            {
+                tracing::warn!(
+                    resource_path = %path,
+                    action = %action,
+                    error = %e,
+                    "emit_override_request: one-way send failed"
+                );
+            }
+        }
+        Err(e) => {
+            tracing::warn!(
+                resource_path = %path,
+                action = %action,
+                error = %e,
+                "emit_override_request: bincode serialization failed"
+            );
+        }
+    }
+}
+
+/// Test-only helper to reset the global override cooldown map.
+///
+/// Integration tests should call this before assertions so that cooldown state
+/// from previous tests does not influence results.
+#[cfg(any(test, feature = "test-helpers"))]
+pub fn reset_override_cooldown() {
+    OVERRIDE_COOLDOWN.lock().clear();
 }
 
 /// DIFF-04: Record a pipe round-trip and emit a health snapshot every
