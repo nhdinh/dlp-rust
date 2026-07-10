@@ -262,7 +262,10 @@ static OVERRIDE_COOLDOWN: std::sync::LazyLock<Mutex<OverrideCooldownMap>> =
 /// * `path` — The denied file path (may be empty for handle-based ops).
 /// * `action` — The action being denied (e.g., `"CREATE"`, `"WRITE"`).
 /// * `handle_value` — The raw handle value, used only when `path` is empty.
-fn emit_override_request(path: &str, action: &str, handle_value: u64) {
+/// * `classification` — The resolved classification tier (e.g., `"T3"`), or
+///   empty when unknown. Carried so the agent can record a truthful
+///   override-grant audit event.
+fn emit_override_request(path: &str, action: &str, handle_value: u64, classification: &str) {
     let key = format!("{}\0{}", path, action);
     let now = Instant::now();
 
@@ -283,6 +286,7 @@ fn emit_override_request(path: &str, action: &str, handle_value: u64) {
         requester_sid: crate::get_current_user_sid(),
         data_object_id: resource.clone(),
         action: action.to_string(),
+        classification: classification.to_string(),
         destination_scope: None,
         justification: String::new(),
         resource_path: resource,
@@ -727,7 +731,8 @@ pub(crate) fn classify_and_log_path(
 
     // DIFF-01: Prompt the user to request an override on every deny branch.
     if decision.is_some() {
-        emit_override_request(path, action, handle_value);
+        let classification = decision.map(|c| format!("{c:?}")).unwrap_or_default();
+        emit_override_request(path, action, handle_value, &classification);
     }
 
     // Record latency telemetry.
@@ -1081,7 +1086,8 @@ fn classify_and_log_handle(
 
     // DIFF-01: Prompt the user to request an override on every deny branch.
     if result.is_some() {
-        emit_override_request(path, action, handle_value);
+        let classification = result.map(|c| format!("{c:?}")).unwrap_or_default();
+        emit_override_request(path, action, handle_value, &classification);
     }
 
     // Write to hook journal BEFORE returning the decision (per D-23).

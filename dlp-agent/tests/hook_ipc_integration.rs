@@ -303,6 +303,7 @@ fn test_consolidated_server_routes_override_frame() {
             requester_sid: "S-1-5-21-1".to_string(),
             data_object_id: "doc-123".to_string(),
             action: "WRITE".to_string(),
+            classification: "T3".to_string(),
             destination_scope: None,
             justification: "test".to_string(),
             resource_path: r"C:\test\file.txt".to_string(),

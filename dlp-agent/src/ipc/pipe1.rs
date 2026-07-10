@@ -290,10 +290,16 @@ fn dispatch(
             // If this was an override confirmation, enqueue the deferred
             // submission so the async service task can submit it with the
             // user-provided justification.
-            let removed = OVERRIDE_PENDING
+            // Look up (but do NOT remove) the pending context. The async
+            // `confirmed_override_loop` is the single owner that removes the
+            // entry and submits it to the server; removing it here would race
+            // the submitter and drop the approval request (CR-01). The
+            // override-grant audit event is emitted by the service loop only
+            // after the server accepts the submission (WR-02).
+            let ctx = OVERRIDE_PENDING
                 .get()
-                .and_then(|store| store.lock().remove(&request_id));
-            if let Some(ctx) = removed {
+                .and_then(|store| store.lock().get(&request_id).cloned());
+            if let Some(ctx) = ctx {
                 warn!(
                     request_id,
                     session_id = ctx.session_id,
@@ -311,27 +317,6 @@ fn dispatch(
                         "Pipe 1: confirmed override channel saturated — dropping"
                     );
                 }
-                // Emit an override-granted audit event.
-                let event = dlp_common::AuditEvent::new(
-                    dlp_common::EventType::Access,
-                    "OVERRIDE".to_string(),
-                    "OVERRIDE".to_string(),
-                    request_id.clone(),
-                    dlp_common::Classification::T1,
-                    dlp_common::Action::READ,
-                    dlp_common::Decision::AllowWithLog,
-                    "AGENT".to_string(),
-                    ctx.session_id,
-                )
-                .with_override_granted();
-                let ctx = crate::audit_emitter::EmitContext {
-                    agent_id: "AGENT".to_string(),
-                    session_id: ctx.session_id,
-                    user_sid: "OVERRIDE".to_string(),
-                    user_name: "OVERRIDE".to_string(),
-                    machine_name: None,
-                };
-                crate::audit_emitter::emit_audit(&ctx, &mut event.clone());
             } else {
                 debug!(
                     request_id,
@@ -480,5 +465,60 @@ pub fn send_ping_to_all() {
         if let Err(e) = write_frame(handle.as_handle(), &json) {
             debug!(session_id = sid, error = %e, "Pipe 1: Ping write failed");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::service::{ConfirmedOverride, PendingOverride, OVERRIDE_PENDING};
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::time::Instant;
+
+    fn pending_store() -> Arc<parking_lot::Mutex<HashMap<String, PendingOverride>>> {
+        OVERRIDE_PENDING
+            .get_or_init(|| Arc::new(parking_lot::Mutex::new(HashMap::new())))
+            .clone()
+    }
+
+    /// CR-01 regression guard: the Pipe 1 dispatcher must enqueue a
+    /// `ConfirmedOverride` without removing the pending entry, so the async
+    /// service loop remains the single owner that drains it and submits to
+    /// the server.
+    #[test]
+    #[serial_test::serial]
+    fn dispatch_user_confirmed_does_not_remove_pending_entry() {
+        let store = pending_store();
+        store.lock().clear();
+
+        let request_id = "ovr-dispatch-test".to_string();
+        store.lock().insert(
+            request_id.clone(),
+            PendingOverride {
+                request: dlp_common::hook_ipc::OverrideRequest::default(),
+                session_id: 1,
+                created_at: Instant::now(),
+            },
+        );
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<ConfirmedOverride>(1);
+        let msg = Pipe1UiMsg::UserConfirmed {
+            request_id: request_id.clone(),
+            justification: "business need".to_string(),
+        };
+        let _ = dispatch(msg, &tx);
+
+        assert!(
+            store.lock().get(&request_id).is_some(),
+            "dispatch(UserConfirmed) must leave the pending entry for the service loop"
+        );
+        let enqueued = rx
+            .try_recv()
+            .expect("ConfirmedOverride should be enqueued for the service loop");
+        assert_eq!(enqueued.request_id, request_id);
+        assert_eq!(enqueued.justification, "business need");
+
+        store.lock().clear();
     }
 }

@@ -1506,6 +1506,79 @@ pub async fn submit_approval_request_with_justification(
     }
 }
 
+/// Maps an override action string to an [`Action`] for audit events.
+///
+/// Unknown actions fall back to `READ` so the audit event is always well-formed.
+fn audit_action_for_override(action: &str) -> dlp_common::Action {
+    match action.to_ascii_uppercase().as_str() {
+        "READ" => dlp_common::Action::READ,
+        "WRITE" => dlp_common::Action::WRITE,
+        "COPY" => dlp_common::Action::COPY,
+        "DELETE" => dlp_common::Action::DELETE,
+        "MOVE" => dlp_common::Action::MOVE,
+        "PASTE" => dlp_common::Action::PASTE,
+        "PRINT" => dlp_common::Action::PRINT,
+        "CLOUD_UPLOAD" | "UPLOAD" => dlp_common::Action::CLOUD_UPLOAD,
+        _ => dlp_common::Action::READ,
+    }
+}
+
+/// Maps a classification tier string (e.g., `"T3"`) to a [`Classification`].
+///
+/// Defaults to `T3` (Confidential) when the tier is empty or unrecognised: an
+/// override is almost always requested for sensitive data, so `T3` is a safer
+/// audit default than `T1`.
+fn audit_classification_for_override(tier: &str) -> dlp_common::Classification {
+    match tier.to_ascii_uppercase().as_str() {
+        "T1" => dlp_common::Classification::T1,
+        "T2" => dlp_common::Classification::T2,
+        "T4" => dlp_common::Classification::T4,
+        // T3 is the intended default for unknown/empty tiers.
+        _ => dlp_common::Classification::T3,
+    }
+}
+
+/// Emits the override-granted audit event using the real request context.
+///
+/// Called from [`confirmed_override_loop`] only after the server accepts the
+/// approval submission, so the audit record matches server-side state (WR-02).
+/// Identity, resource, action, classification and session are taken from the
+/// originating [`PendingOverride`] rather than fabricated constants.
+fn emit_override_granted_audit(pending: &PendingOverride, justification: &str, agent_id: &str) {
+    let req = &pending.request;
+    let user_sid = req.requester_sid.clone();
+    let resource = if req.data_object_id.is_empty() {
+        req.resource_path.clone()
+    } else {
+        req.data_object_id.clone()
+    };
+    let classification = audit_classification_for_override(&req.classification);
+    let action = audit_action_for_override(&req.action);
+
+    let mut event = dlp_common::AuditEvent::new(
+        dlp_common::EventType::Access,
+        user_sid.clone(),
+        user_sid.clone(),
+        resource,
+        classification,
+        action,
+        dlp_common::Decision::AllowWithLog,
+        agent_id.to_string(),
+        pending.session_id,
+    )
+    .with_override_granted()
+    .with_justification(justification.to_string());
+
+    let ctx = crate::audit_emitter::EmitContext {
+        agent_id: agent_id.to_string(),
+        session_id: pending.session_id,
+        user_sid: user_sid.clone(),
+        user_name: user_sid,
+        machine_name: None,
+    };
+    crate::audit_emitter::emit_audit(&ctx, &mut event);
+}
+
 /// Async service task that drains confirmed overrides from the Pipe 1 dispatcher
 /// and submits each one to the server with the user-provided justification.
 ///
@@ -1519,6 +1592,7 @@ async fn confirmed_override_loop(
             .get()
             .and_then(|store| store.lock().remove(&confirmed.request_id));
         if let Some(pending) = pending {
+            let justification = confirmed.justification.clone();
             match submit_approval_request_with_justification(
                 &server_client,
                 &pending,
@@ -1532,6 +1606,14 @@ async fn confirmed_override_loop(
                         server_request_id = %server_request_id,
                         "Approval request submitted to server"
                     );
+                    // Emit the override-grant audit event only after the server
+                    // accepts the submission, using the real request context.
+                    let agent_id = server_client
+                        .as_ref()
+                        .map(|sc| sc.agent_id().to_string())
+                        .or_else(|| std::env::var("DLP_AGENT_ID").ok())
+                        .unwrap_or_else(|| "AGENT-UNKNOWN".to_string());
+                    emit_override_granted_audit(&pending, &justification, &agent_id);
                 }
                 Err(e) => {
                     warn!(
@@ -8165,6 +8247,7 @@ fn make_hook_override_request() -> dlp_common::hook_ipc::OverrideRequest {
         requester_sid: "S-1-5-21-1".to_string(),
         data_object_id: "label-001".to_string(),
         action: "WRITE".to_string(),
+        classification: "T3".to_string(),
         destination_scope: Some(r"C:\Data".to_string()),
         justification: "pre-filled".to_string(),
         resource_path: r"C:\Data\confidential.docx".to_string(),

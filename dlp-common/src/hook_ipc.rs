@@ -390,6 +390,13 @@ pub struct OverrideRequest {
     /// The action being requested (e.g., "WRITE", "COPY").
     #[serde(default)]
     pub action: String,
+    /// The classification tier of the resource (e.g., "T3"), when known.
+    ///
+    /// Used so the override-grant audit event records the true sensitivity of
+    /// the resource instead of a fabricated constant. Empty when the caller
+    /// did not resolve a tier.
+    #[serde(default)]
+    pub classification: String,
     /// The destination scope for the action (if applicable).
     #[serde(default)]
     pub destination_scope: Option<String>,
@@ -1131,6 +1138,7 @@ mod tests {
             requester_sid: "S-1-5-21-1".to_string(),
             data_object_id: "doc-123".to_string(),
             action: "WRITE".to_string(),
+            classification: "T3".to_string(),
             destination_scope: Some("USB".to_string()),
             justification: "Business need".to_string(),
             resource_path: r"C:\Data\secret.docx".to_string(),
@@ -1262,6 +1270,7 @@ mod tests {
             requester_sid: "S-1-5-21-1".to_string(),
             data_object_id: "doc-123".to_string(),
             action: "WRITE".to_string(),
+            classification: "T3".to_string(),
             destination_scope: None,
             justification: "test".to_string(),
             resource_path: r"C:\test.txt".to_string(),
