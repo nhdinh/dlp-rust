@@ -146,7 +146,9 @@ async fn agent_auth_middleware(
         .ok_or_else(|| AppError::Unauthorized("invalid Authorization format".to_string()))?;
 
     if agent_id.is_empty() {
-        return Err(AppError::Unauthorized("agent_id cannot be empty".to_string()));
+        return Err(AppError::Unauthorized(
+            "agent_id cannot be empty".to_string(),
+        ));
     }
     let agent_id = agent_id.to_string();
 
@@ -164,7 +166,9 @@ async fn agent_auth_middleware(
     // and agents send the raw hash string; plain equality matches the existing
     // agent-auth-hash public endpoint contract.
     if provided_hash != configured_hash {
-        return Err(AppError::Unauthorized("invalid agent credentials".to_string()));
+        return Err(AppError::Unauthorized(
+            "invalid agent credentials".to_string(),
+        ));
     }
 
     request.extensions_mut().insert(agent_id);
@@ -5593,10 +5597,9 @@ async fn post_agent_health_handler(
         ));
     }
 
-    let store = state
-        .health_snapshot_store
-        .as_ref()
-        .ok_or_else(|| AppError::Internal(anyhow::anyhow!("health snapshot store not configured")))?;
+    let store = state.health_snapshot_store.as_ref().ok_or_else(|| {
+        AppError::Internal(anyhow::anyhow!("health snapshot store not configured"))
+    })?;
     store.ingest(&agent_id, payload.snapshot);
     Ok(Json(AgentHealthIngestResponse { received: true }))
 }

@@ -115,10 +115,13 @@ impl HealthSnapshotStore {
         let is_new_key = !self.snapshots.contains_key(&key);
 
         {
-            let mut entry = self.snapshots.entry(key.clone()).or_insert_with(|| AgentHealthRecord {
-                latest: snapshot.clone(),
-                history: VecDeque::with_capacity(self.max_history),
-            });
+            let mut entry =
+                self.snapshots
+                    .entry(key.clone())
+                    .or_insert_with(|| AgentHealthRecord {
+                        latest: snapshot.clone(),
+                        history: VecDeque::with_capacity(self.max_history),
+                    });
             entry.latest = snapshot.clone();
             entry.history.push_back(snapshot);
             while entry.history.len() > self.max_history {
@@ -253,7 +256,9 @@ mod tests {
         let snap = make_snapshot(1, 2, 10, 0.85, 0, 100);
         store.ingest("agent-1", snap.clone());
 
-        let dashboard = store.get_dashboard_snapshot().expect("should have snapshot");
+        let dashboard = store
+            .get_dashboard_snapshot()
+            .expect("should have snapshot");
         assert_eq!(dashboard.overall_status, "healthy");
         assert_eq!(dashboard.injected_pids, 1);
         assert_eq!(dashboard.patched_modules, 2);
@@ -306,7 +311,9 @@ mod tests {
         let store = HealthSnapshotStore::new();
         store.ingest("agent-1", make_snapshot(1, 1, 100, 0.9, 2, 100));
 
-        let dashboard = store.get_dashboard_snapshot().expect("should have snapshot");
+        let dashboard = store
+            .get_dashboard_snapshot()
+            .expect("should have snapshot");
         assert_eq!(dashboard.fail_state, 2);
         assert_eq!(dashboard.overall_status, "critical");
     }
@@ -316,7 +323,9 @@ mod tests {
         let store = HealthSnapshotStore::new();
         store.ingest("agent-1", make_snapshot(1, 1, 0, 0.95, 0, 100));
 
-        let dashboard = store.get_dashboard_snapshot().expect("should have snapshot");
+        let dashboard = store
+            .get_dashboard_snapshot()
+            .expect("should have snapshot");
         assert_eq!(dashboard.overall_status, "critical");
     }
 
@@ -325,7 +334,9 @@ mod tests {
         let store = HealthSnapshotStore::new();
         store.ingest("agent-1", make_snapshot(1, 1, 100, 0.95, 1, 100));
 
-        let dashboard = store.get_dashboard_snapshot().expect("should have snapshot");
+        let dashboard = store
+            .get_dashboard_snapshot()
+            .expect("should have snapshot");
         assert_eq!(dashboard.fail_state, 1);
         assert_eq!(dashboard.overall_status, "degraded");
     }
@@ -352,6 +363,12 @@ mod tests {
 
         assert_eq!(store.agent_count(), 2);
         // Oldest agent evicted.
-        assert!(store.get_dashboard_snapshot().expect("snapshot").timestamp_secs != 100);
+        assert!(
+            store
+                .get_dashboard_snapshot()
+                .expect("snapshot")
+                .timestamp_secs
+                != 100
+        );
     }
 }
