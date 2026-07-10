@@ -1103,7 +1103,6 @@ pub(crate) fn validate_webhook_url(url: &str) -> Result<(), String> {
 /// - `POST /agents/{id}/health` — agent health snapshot ingest
 /// - `POST /agents/{id}/diagnostics` — agent diagnostic snapshot ingest
 /// - `POST /audit/events` — event ingestion (agent-to-server)
-/// - `GET /agent-credentials/auth-hash` — fetch agent auth hash
 ///
 /// **Authenticated (JWT required):**
 /// - `GET /agents` — list agents
@@ -1118,6 +1117,7 @@ pub(crate) fn validate_webhook_url(url: &str) -> Result<(), String> {
 /// - `GET /exceptions` — list exceptions
 /// - `GET /exceptions/:id` — get exception
 /// - `POST /exceptions` — create exception
+/// - `GET /agent-credentials/auth-hash` — fetch agent auth hash
 /// - `PUT /agent-credentials/auth-hash` — set agent auth hash
 /// - `PUT /auth/password` — change admin password
 /// - `GET /admin/siem-config` — get SIEM connector configuration
