@@ -1085,6 +1085,19 @@ pub fn send_raw(pipe: HANDLE, raw: &[u8]) -> Result<Vec<u8>> {
     Ok(frame)
 }
 
+/// Sends raw bytes over an open pipe WITHOUT reading a response (one-way).
+///
+/// Mirrors the hook DLL's `pipe_client::send_raw_oneway`: writes the frame
+/// (`write_frame` already flushes) and returns immediately. Use for
+/// fire-and-forget frames — `BypassAlert`, `JournalDegraded`, `HashEvidence`,
+/// `HealthResponse`, `DiagnosticsResponse` — where the server deliberately
+/// writes no response (WR-02). Callers assert the server-side side effect
+/// (aggregator state, channel forward) rather than a reply envelope.
+pub fn send_raw_oneway(pipe: HANDLE, raw: &[u8]) -> Result<()> {
+    write_frame(pipe, raw).context("write raw frame (one-way)")?;
+    Ok(())
+}
+
 /// Closes a pipe handle.
 pub fn close_pipe(pipe: HANDLE) {
     let _ = unsafe { CloseHandle(pipe) };
@@ -1964,18 +1977,10 @@ mod tests {
         });
         let envelope_bytes = bincode::serialize(&envelope).unwrap();
 
-        // The server sends back an ACK response; read it so the client doesn't deadlock.
-        let ack_bytes = send_raw(client, &envelope_bytes).expect("send bypass alert");
-        let ack_envelope: dlp_common::hook_ipc::IpcEnvelope =
-            bincode::deserialize(&ack_bytes).expect("deserialize ack");
-        match ack_envelope {
-            dlp_common::hook_ipc::IpcEnvelope::V1(msg) => match msg.payload {
-                dlp_common::hook_ipc::IpcPayloadV1::Response(resp) => {
-                    assert_eq!(resp.decision, Decision::ALLOW);
-                }
-                _ => panic!("expected BypassAlert ack response"),
-            },
-        }
+        // BypassAlert is one-way: the server forwards it on bypass_tx and writes
+        // NO response (WR-02). Send without reading, then assert the routing side
+        // effect on bypass_rx (reading an ACK here would deadlock the client).
+        send_raw_oneway(client, &envelope_bytes).expect("send bypass alert (one-way)");
 
         let received = bypass_rx
             .recv_timeout(Duration::from_secs(5))

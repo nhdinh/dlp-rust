@@ -460,18 +460,10 @@ fn test_consolidated_server_ingests_health_response() {
     let payload = bincode::serialize(&envelope).expect("serialize envelope");
     dlp_agent::ipc::frame::write_frame(client, &payload).expect("write frame");
 
-    // Read the ACK response (server always responds, even for one-way frames).
-    let frame = dlp_agent::ipc::frame::read_frame(client).expect("read ack frame");
-    let ack_envelope: IpcEnvelope = bincode::deserialize(&frame).expect("deserialize ack");
-    match ack_envelope {
-        IpcEnvelope::V1(IpcMessageV1 {
-            payload: IpcPayloadV1::Response(resp),
-        }) => {
-            assert_eq!(resp.decision, Decision::ALLOW);
-            assert!(resp.reason.contains("health snapshot ingested"));
-        }
-        other => panic!("Expected Response ACK frame, got {:?}", other),
-    }
+    // HealthResponse is one-way: the server ingests and writes NO response
+    // (WR-02). Let the server ingest, then assert the aggregator side effect
+    // instead of reading an ACK (reading would deadlock the client).
+    std::thread::sleep(std::time::Duration::from_millis(100));
 
     dlp_agent::hook_ipc::close_pipe(client);
 
@@ -519,17 +511,10 @@ fn test_consolidated_server_health_response_without_aggregator() {
     let payload = bincode::serialize(&envelope).expect("serialize envelope");
     dlp_agent::ipc::frame::write_frame(client, &payload).expect("write frame");
 
-    let frame = dlp_agent::ipc::frame::read_frame(client).expect("read ack frame");
-    let ack_envelope: IpcEnvelope = bincode::deserialize(&frame).expect("deserialize ack");
-    match ack_envelope {
-        IpcEnvelope::V1(IpcMessageV1 {
-            payload: IpcPayloadV1::Response(resp),
-        }) => {
-            assert_eq!(resp.decision, Decision::ALLOW);
-            assert!(resp.reason.contains("health snapshot ingested"));
-        }
-        other => panic!("Expected Response ACK frame, got {:?}", other),
-    }
+    // HealthResponse is one-way: the server handles it (warn if no aggregator)
+    // and writes NO response (WR-02). Let it run, then close cleanly instead of
+    // reading an ACK (reading would deadlock the client).
+    std::thread::sleep(std::time::Duration::from_millis(100));
 
     dlp_agent::hook_ipc::close_pipe(client);
 
@@ -570,19 +555,12 @@ fn test_health_response_builds_aggregator_history() {
         });
         let payload = bincode::serialize(&envelope).expect("serialize envelope");
         dlp_agent::ipc::frame::write_frame(client, &payload).expect("write frame");
-
-        // Read ACK for each frame.
-        let frame = dlp_agent::ipc::frame::read_frame(client).expect("read ack frame");
-        let ack: IpcEnvelope = bincode::deserialize(&frame).expect("deserialize ack");
-        match ack {
-            IpcEnvelope::V1(IpcMessageV1 {
-                payload: IpcPayloadV1::Response(resp),
-            }) => {
-                assert_eq!(resp.decision, Decision::ALLOW);
-            }
-            other => panic!("Expected Response ACK frame, got {:?}", other),
-        }
     }
+
+    // HealthResponse frames are one-way: the server ingests each and writes NO
+    // response (WR-02). Let the server drain the loop, then close cleanly
+    // instead of reading an ACK per frame (which would deadlock on frame 0).
+    std::thread::sleep(std::time::Duration::from_millis(150));
 
     dlp_agent::hook_ipc::close_pipe(client);
 
@@ -753,18 +731,10 @@ fn test_health_response_ingestion() {
     let payload = bincode::serialize(&envelope).expect("serialize envelope");
     dlp_agent::ipc::frame::write_frame(client, &payload).expect("write frame");
 
-    // Read the ACK response (server always responds, even for one-way frames).
-    let frame = dlp_agent::ipc::frame::read_frame(client).expect("read ack frame");
-    let ack_envelope: IpcEnvelope = bincode::deserialize(&frame).expect("deserialize ack");
-    match ack_envelope {
-        IpcEnvelope::V1(IpcMessageV1 {
-            payload: IpcPayloadV1::Response(resp),
-        }) => {
-            assert_eq!(resp.decision, Decision::ALLOW);
-            assert!(resp.reason.contains("health snapshot ingested"));
-        }
-        other => panic!("Expected Response ACK frame, got {:?}", other),
-    }
+    // HealthResponse is one-way: the server ingests and writes NO response
+    // (WR-02). Let the server ingest, then assert history_len instead of reading
+    // an ACK (reading would deadlock the client).
+    std::thread::sleep(std::time::Duration::from_millis(100));
 
     dlp_agent::hook_ipc::close_pipe(client);
 
@@ -825,18 +795,10 @@ fn diagnostics_response_ingests_into_aggregator() {
     let payload = bincode::serialize(&envelope).expect("serialize envelope");
     dlp_agent::ipc::frame::write_frame(client, &payload).expect("write frame");
 
-    // Read the ACK response (server always responds, even for one-way frames).
-    let frame = dlp_agent::ipc::frame::read_frame(client).expect("read ack frame");
-    let ack_envelope: IpcEnvelope = bincode::deserialize(&frame).expect("deserialize ack");
-    match ack_envelope {
-        IpcEnvelope::V1(IpcMessageV1 {
-            payload: IpcPayloadV1::Response(resp),
-        }) => {
-            assert_eq!(resp.decision, Decision::ALLOW);
-            assert!(resp.reason.contains("diagnostics ingested"));
-        }
-        other => panic!("Expected Response ACK frame, got {:?}", other),
-    }
+    // DiagnosticsResponse is one-way: the server ingests and writes NO response
+    // (WR-02). Let the server ingest, then assert the aggregator count instead
+    // of reading an ACK (reading would deadlock the client).
+    std::thread::sleep(std::time::Duration::from_millis(100));
 
     dlp_agent::hook_ipc::close_pipe(client);
 
@@ -1041,18 +1003,10 @@ fn test_blocked_write_audit_contains_hash() {
     let payload = bincode::serialize(&envelope).expect("serialize envelope");
     dlp_agent::ipc::frame::write_frame(client, &payload).expect("write frame");
 
-    // Read the ACK response (server always responds, even for one-way frames).
-    let frame = dlp_agent::ipc::frame::read_frame(client).expect("read ack frame");
-    let ack_envelope: IpcEnvelope = bincode::deserialize(&frame).expect("deserialize ack");
-    match ack_envelope {
-        IpcEnvelope::V1(IpcMessageV1 {
-            payload: IpcPayloadV1::Response(resp),
-        }) => {
-            assert_eq!(resp.decision, Decision::ALLOW);
-            assert!(resp.reason.contains("hash evidence received"));
-        }
-        other => panic!("Expected Response ACK frame, got {:?}", other),
-    }
+    // HashEvidence is one-way: the server populates the HashCache and writes NO
+    // response (WR-02). Let the server ingest, then assert the HashCache side
+    // effect instead of reading an ACK (reading would deadlock the client).
+    std::thread::sleep(std::time::Duration::from_millis(100));
 
     dlp_agent::hook_ipc::close_pipe(client);
 
