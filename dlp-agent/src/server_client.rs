@@ -328,6 +328,11 @@ pub struct ServerClient {
     agent_id: String,
     /// Machine hostname, included in registration payloads.
     hostname: String,
+    /// Phase 58.8-03: agent authentication hash for `DLP-AGENT` scheme.
+    ///
+    /// Fetched from the server after registration and used when calling
+    /// agent-authenticated endpoints such as `/agents/{id}/health`.
+    agent_auth_hash: String,
 }
 
 impl ServerClient {
@@ -396,6 +401,7 @@ impl ServerClient {
             base_url,
             agent_id,
             hostname,
+            agent_auth_hash: String::new(),
         })
     }
 
@@ -410,6 +416,68 @@ impl ServerClient {
     #[must_use]
     pub fn agent_id(&self) -> &str {
         &self.agent_id
+    }
+
+    /// Sets the agent authentication hash used for the `DLP-AGENT` scheme.
+    ///
+    /// The hash is normally fetched from the server via [`fetch_auth_hash`]
+    /// during service startup.
+    pub fn set_agent_auth_hash(&mut self, hash: String) {
+        self.agent_auth_hash = hash;
+    }
+
+    /// Submits a hook health snapshot to the server.
+    ///
+    /// Calls `POST /agents/{agent_id}/health` with the `DLP-AGENT` auth header.
+    /// Errors are returned so the caller can log and continue best-effort.
+    ///
+    /// # Arguments
+    ///
+    /// * `agent_id` — the agent identifier to include in the URL and auth header.
+    /// * `snapshot` — the health snapshot to submit.
+    ///
+    /// # Errors
+    ///
+    /// Returns `ServerClientError::Http` on network failures.
+    /// Returns `ServerClientError::ServerError` on non-2xx responses.
+    pub async fn submit_health_snapshot(
+        &self,
+        agent_id: &str,
+        snapshot: &dlp_common::hook_ipc::HookHealthSnapshot,
+    ) -> Result<(), ServerClientError> {
+        let url = format!("{}/agents/{}/health", self.base_url, agent_id);
+
+        #[derive(Serialize)]
+        struct HealthSnapshotPayload {
+            snapshot: dlp_common::hook_ipc::HookHealthSnapshot,
+        }
+
+        let payload = HealthSnapshotPayload {
+            snapshot: snapshot.clone(),
+        };
+
+        let resp = self
+            .client
+            .post(&url)
+            .header(
+                "Authorization",
+                format!("DLP-AGENT {}:{}", agent_id, self.agent_auth_hash),
+            )
+            .json(&payload)
+            .send()
+            .await?;
+
+        if !resp.status().is_success() {
+            let status = resp.status().as_u16();
+            let body = resp
+                .text()
+                .await
+                .unwrap_or_else(|_| "<no body>".to_string());
+            return Err(ServerClientError::ServerError { status, body });
+        }
+
+        debug!(agent_id = %agent_id, "health snapshot submitted to server");
+        Ok(())
     }
 
     /// Registers this agent with the dlp-server.
@@ -1287,6 +1355,7 @@ mod tests {
             base_url: "http://192.0.2.1:1".to_string(),
             agent_id: "AGENT-TEST".to_string(),
             hostname: "test-host".to_string(),
+            agent_auth_hash: String::new(),
         }
     }
 
@@ -1813,6 +1882,7 @@ mod tests {
             base_url: "http://192.0.2.1:1".to_string(), // TEST-NET-1, fails fast
             agent_id: "AGENT-TEST".to_string(),
             hostname: "test-host".to_string(),
+            agent_auth_hash: String::new(),
         };
 
         // This will fail with a network error, not a logic error, confirming the
@@ -1874,5 +1944,134 @@ mod tests {
             .expect("deserialization must succeed without allowlist fields");
         assert!(payload.allowlist_entries.is_empty());
         assert_eq!(payload.allowlist_version, 0);
+    }
+
+    // --- Phase 58.8-03: Hook health snapshot tests ---
+
+    fn make_health_snapshot() -> dlp_common::hook_ipc::HookHealthSnapshot {
+        dlp_common::hook_ipc::HookHealthSnapshot {
+            injected_pids: 3,
+            patched_modules: 7,
+            pipe_round_trips_60s: 42,
+            cache_hit_rate_60s: 0.95,
+            current_fail_state: 0,
+            timestamp_secs: 1_700_000_000,
+        }
+    }
+
+    #[tokio::test]
+    async fn test_submit_health_snapshot_unreachable_server() {
+        let mut client = unreachable_client();
+        client.set_agent_auth_hash("hash-123".to_string());
+        let snapshot = make_health_snapshot();
+        let result = client.submit_health_snapshot(&client.agent_id, &snapshot).await;
+        assert!(result.is_err(), "unreachable server must return Err");
+    }
+
+    #[tokio::test]
+    async fn test_submit_health_snapshot_payload_serde() {
+        use axum::{extract::Json, http::StatusCode, response::IntoResponse, routing::post, Router};
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        let captured: Arc<Mutex<Option<serde_json::Value>>> = Arc::new(Mutex::new(None));
+        let captured_clone = captured.clone();
+
+        let app = Router::new().route(
+            "/agents/:id/health",
+            post(move |Json(body): Json<serde_json::Value>| async move {
+                *captured_clone.lock().await = Some(body.clone());
+                StatusCode::OK.into_response()
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+
+        let mut client = ServerClient {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .expect("reqwest client"),
+            base_url: format!("http://{addr}"),
+            agent_id: "AGENT-HEALTH".to_string(),
+            hostname: "test-host".to_string(),
+            agent_auth_hash: "hash-456".to_string(),
+        };
+        client.set_agent_auth_hash("hash-456".to_string());
+
+        let snapshot = make_health_snapshot();
+        let result = client.submit_health_snapshot(&client.agent_id, &snapshot).await;
+        assert!(result.is_ok(), "submit_health_snapshot should succeed: {result:?}");
+
+        let body = captured.lock().await.take().expect("server received a body");
+        let inner = body
+            .get("snapshot")
+            .expect("payload wrapped in 'snapshot'")
+            .clone();
+        assert_eq!(inner["injected_pids"], 3);
+        assert_eq!(inner["patched_modules"], 7);
+        assert_eq!(inner["pipe_round_trips_60s"], 42);
+        assert_eq!(inner["current_fail_state"], 0);
+    }
+
+    #[tokio::test]
+    async fn test_submit_health_snapshot_sets_agent_auth_header() {
+        use axum::{
+            extract::Path,
+            http::{HeaderMap, StatusCode},
+            response::IntoResponse,
+            routing::post,
+            Router,
+        };
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        let captured: Arc<Mutex<Option<(String, String)>>> = Arc::new(Mutex::new(None));
+        let captured_clone = captured.clone();
+
+        let app = Router::new().route(
+            "/agents/:id/health",
+            post(
+                move |Path(agent_id): Path<String>, headers: HeaderMap| async move {
+                    let auth = headers
+                        .get("authorization")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_string();
+                    *captured_clone.lock().await = Some((agent_id, auth));
+                    StatusCode::OK.into_response()
+                },
+            ),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind");
+        let addr = listener.local_addr().expect("local addr");
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve");
+        });
+
+        let mut client = ServerClient {
+            client: reqwest::Client::builder()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .expect("reqwest client"),
+            base_url: format!("http://{addr}"),
+            agent_id: "AGENT-AUTH".to_string(),
+            hostname: "test-host".to_string(),
+            agent_auth_hash: String::new(),
+        };
+        client.set_agent_auth_hash("bcrypt-hash-abc".to_string());
+
+        let snapshot = make_health_snapshot();
+        let result = client.submit_health_snapshot(&client.agent_id, &snapshot).await;
+        assert!(result.is_ok(), "submit_health_snapshot should succeed: {result:?}");
+
+        let (agent_id, auth) = captured.lock().await.take().expect("server received request");
+        assert_eq!(agent_id, "AGENT-AUTH");
+        assert_eq!(auth, "DLP-AGENT AGENT-AUTH:bcrypt-hash-abc");
     }
 }
