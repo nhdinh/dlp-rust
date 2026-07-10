@@ -87,18 +87,51 @@ pub async fn connect_and_run(
 }
 
 /// Maximum time between agent messages before assuming the agent is dead.
+///
+/// Measured from connection (and reset on every received frame) so a
+/// live-but-silent agent — one that holds the pipe open but never writes —
+/// is detected even when no frame has arrived yet (WR-06).
 const HEARTBEAT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 
-/// The blocking read loop for a Pipe 1 client.
-fn client_loop(pipe: HANDLE, session_id: u32) -> Result<()> {
-    // Initialised to a sentinel; overwritten on first successful read_frame.
-    #[allow(unused_assignments)]
-    let mut last_message: Option<std::time::Instant> = None;
+/// Poll interval for the read channel. Bounds how often the main loop wakes
+/// to check the heartbeat clock while a read is pending.
+const PIPE_POLL_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 
-    loop {
-        match read_frame(pipe) {
-            Ok(frame) => {
-                last_message = Some(std::time::Instant::now());
+/// The blocking read loop for a Pipe 1 client.
+///
+/// A dedicated reader thread owns the blocking `read_frame` call for the
+/// lifetime of this loop and forwards each result over a channel. The main
+/// thread waits with a bounded `recv_timeout` so it can wake periodically
+/// and detect a live-but-silent agent (no frames within
+/// [`HEARTBEAT_TIMEOUT`]) instead of blocking forever inside `read_frame`
+/// (WR-06). On exit the pipe handle is closed from this thread, which
+/// unblocks the reader's pending read so it terminates cleanly.
+fn client_loop(pipe: HANDLE, session_id: u32) -> Result<()> {
+    let (tx, rx) = std::sync::mpsc::channel::<Result<Vec<u8>>>();
+    let reader_handle = SendableHandle(pipe);
+    let reader = std::thread::spawn(move || {
+        loop {
+            let result = read_frame(reader_handle.into_inner());
+            let stop = result.is_err();
+            if tx.send(result).is_err() {
+                // Receiver dropped — the main loop has exited.
+                return;
+            }
+            if stop {
+                // Pipe closed or errored — nothing more to read.
+                return;
+            }
+        }
+    });
+
+    // Start the clock at connect time: an agent that never writes a single
+    // frame must still be detected within HEARTBEAT_TIMEOUT.
+    let mut last_message = std::time::Instant::now();
+
+    let outcome: Result<()> = loop {
+        match rx.recv_timeout(PIPE_POLL_INTERVAL) {
+            Ok(Ok(frame)) => {
+                last_message = std::time::Instant::now();
                 let msg: Pipe1AgentMsg = match serde_json::from_slice(&frame) {
                     Ok(m) => m,
                     Err(e) => {
@@ -113,27 +146,36 @@ fn client_loop(pipe: HANDLE, session_id: u32) -> Result<()> {
                 if let Some(response) = handle_agent_msg(msg, session_id, pipe) {
                     if let Err(e) = write_frame(pipe, &response) {
                         error!(error = %e, "Pipe 1: failed to write response");
-                        break;
+                        break Ok(());
                     }
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 debug!(error = %e, "Pipe 1: read error — disconnecting");
-                break;
+                break Ok(());
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                if last_message.elapsed() > HEARTBEAT_TIMEOUT {
+                    error!(session_id, "Pipe 1: heartbeat timeout — agent appears dead");
+                    break Err(anyhow::anyhow!("Pipe 1: agent heartbeat timeout"));
+                }
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                debug!("Pipe 1: reader thread exited — disconnecting");
+                break Ok(());
             }
         }
+    };
 
-        if last_message.is_some_and(|t| t.elapsed() > HEARTBEAT_TIMEOUT) {
-            error!(session_id, "Pipe 1: heartbeat timeout — agent appears dead");
-            break;
-        }
-    }
-
+    // Close the handle from this thread to unblock the reader's pending
+    // read_frame, then wait for the reader thread to drain.
     unsafe {
         let _ = CloseHandle(pipe);
     }
+    drop(rx);
+    let _ = reader.join();
 
-    Ok(())
+    outcome
 }
 
 /// Serialises a UI response message into JSON bytes.
