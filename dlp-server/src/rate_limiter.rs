@@ -17,13 +17,17 @@ use tower_governor::{
 };
 
 /// Custom key extractor that derives the rate-limit key from the authenticated
-/// `agent_id` in request extensions (set by `agent_auth_middleware`), then from
-/// the `agent_id` path segment for agent routes, and finally falls back to the
-/// peer's socket address for all other routes.
+/// `agent_id` in request extensions (set by `agent_auth_middleware`) when
+/// present, and otherwise falls back to the peer's socket address.
 ///
-/// This allows the heartbeat and event-ingestion endpoints to be rate-limited
-/// **per agent** rather than per IP, preventing one misbehaving agent from
-/// affecting others.
+/// It deliberately does **not** key on the `:id` path segment for agent routes:
+/// on `/agents/{id}/...` the limiter runs *before* `agent_auth_middleware` has
+/// populated the extension, so the only identity available at extract time is
+/// the (attacker-controlled) URL. Keying on the path id let a single
+/// credential-holder rotate `:id` per request to obtain a fresh bucket each
+/// time, defeating per-agent isolation (WR-06). The peer IP is the only
+/// pre-authentication value worth trusting here; per-agent fairness for the
+/// agent routes is enforced inside the authenticated handler instead.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct AgentIdOrIpKeyExtractor;
 
@@ -31,17 +35,15 @@ impl KeyExtractor for AgentIdOrIpKeyExtractor {
     type Key = String;
 
     fn extract<T>(&self, req: &Request<T>) -> Result<Self::Key, GovernorError> {
-        // Prefer authenticated agent identity set by middleware.
+        // Prefer authenticated agent identity when the limiter happens to run
+        // after `agent_auth_middleware` (auth-outermost composition).
         if let Some(agent_id) = req.extensions().get::<String>() {
             return Ok(agent_id.clone());
         }
 
-        // Agent-specific routes — key by the :id path segment.
-        if let Some(id) = extract_agent_id_from_path(req.uri().path()) {
-            return Ok(id);
-        }
-
-        // Fall back to peer IP (requires `connect_info` in the Router).
+        // Fall back to peer IP (requires `connect_info` in the Router). The
+        // `:id` path segment is intentionally NOT used as a key — see the
+        // struct-level comment (WR-06).
         let peer = req
             .extensions()
             .get::<axum::extract::ConnectInfo<SocketAddr>>()
@@ -49,21 +51,6 @@ impl KeyExtractor for AgentIdOrIpKeyExtractor {
             .unwrap_or_else(|| "unknown".to_owned());
 
         Ok(peer)
-    }
-}
-
-/// Parses `agent_id` from a URI path such as `/agents/{id}/heartbeat` or
-/// `/agents/{id}`.
-///
-/// Returns `None` if the path does not match the expected pattern.
-pub fn extract_agent_id_from_path(path: &str) -> Option<String> {
-    let after_prefix = path.strip_prefix("/agents/")?;
-    let end = after_prefix.find('/').unwrap_or(after_prefix.len());
-    let id = &after_prefix[..end];
-    if id.is_empty() {
-        None
-    } else {
-        Some(id.to_owned())
     }
 }
 
@@ -176,25 +163,8 @@ pub fn diagnostics_config() -> GovernorLayer<AgentIdOrIpKeyExtractor, NoOpMiddle
 mod tests {
     use super::*;
 
-    #[test]
-    fn test_extract_agent_id_from_path() {
-        assert_eq!(
-            extract_agent_id_from_path("/agents/abc-123/heartbeat"),
-            Some("abc-123".to_owned())
-        );
-        assert_eq!(
-            extract_agent_id_from_path("/agents/my-agent-id"),
-            Some("my-agent-id".to_owned())
-        );
-        assert_eq!(
-            extract_agent_id_from_path("/agents/550e8400-e29b-41d4-a716-446655440000/events"),
-            Some("550e8400-e29b-41d4-a716-446655440000".to_owned())
-        );
-        assert_eq!(extract_agent_id_from_path("/policies"), None);
-        assert_eq!(extract_agent_id_from_path("/health"), None);
-        assert_eq!(extract_agent_id_from_path("/agents/"), None);
-    }
-
+    /// Authenticated identity (populated by `agent_auth_middleware`) always
+    /// wins, regardless of the path. This is the auth-outermost case.
     #[test]
     fn test_extract_authenticated_agent_id_from_extensions() {
         let mut req = Request::builder()
@@ -209,8 +179,13 @@ mod tests {
         );
     }
 
+    /// WR-06: when the limiter runs before authentication (the agent-route
+    /// composition), the `:id` path segment must NOT be used as the key — it
+    /// is attacker-controlled. With no authenticated extension and no
+    /// `ConnectInfo`, the extractor falls back to the `"unknown"` bucket
+    /// rather than minting a per-`:id` bucket.
     #[test]
-    fn test_extract_agent_id_from_path_when_no_extension() {
+    fn test_extract_agent_route_falls_back_to_unknown_without_auth() {
         let req = Request::builder()
             .uri("/agents/abc-123/heartbeat")
             .body(())
@@ -218,7 +193,49 @@ mod tests {
 
         assert_eq!(
             AgentIdOrIpKeyExtractor.extract(&req).expect("extract"),
-            "abc-123".to_owned()
+            "unknown".to_owned()
+        );
+    }
+
+    /// WR-06: with no authenticated extension, the peer IP from `ConnectInfo`
+    /// is used as the key. This is the only pre-authentication value worth
+    /// trusting.
+    #[test]
+    fn test_extract_uses_peer_ip_from_connect_info() {
+        let mut req = Request::builder()
+            .uri("/agents/abc-123/heartbeat")
+            .body(())
+            .expect("build request");
+        req.extensions_mut()
+            .insert(axum::extract::ConnectInfo(SocketAddr::from(([10, 0, 0, 5], 4242))));
+
+        assert_eq!(
+            AgentIdOrIpKeyExtractor.extract(&req).expect("extract"),
+            "10.0.0.5".to_owned()
+        );
+    }
+
+    /// WR-06 regression guard: two requests that differ only in the `:id`
+    /// path segment — the attack the reviewer described — must collapse to
+    /// the SAME bucket so rotating `:id` cannot yield a fresh bucket per
+    /// request. Both resolve to `"unknown"` here because no `ConnectInfo` is
+    /// present; the important property is equality, not the literal value.
+    #[test]
+    fn test_distinct_path_ids_share_one_bucket() {
+        let req_a = Request::builder()
+            .uri("/agents/agent-a/health")
+            .body(())
+            .expect("build request a");
+        let req_b = Request::builder()
+            .uri("/agents/agent-b/health")
+            .body(())
+            .expect("build request b");
+
+        let key_a = AgentIdOrIpKeyExtractor.extract(&req_a).expect("extract a");
+        let key_b = AgentIdOrIpKeyExtractor.extract(&req_b).expect("extract b");
+        assert_eq!(
+            key_a, key_b,
+            "distinct :id values must not produce distinct buckets (WR-06)"
         );
     }
 }
