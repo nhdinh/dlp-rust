@@ -9,7 +9,7 @@
 
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Extension, Path, Query, State};
 use axum::http::StatusCode;
 use axum::Json;
 use chrono::Utc;
@@ -783,8 +783,17 @@ pub async fn revoke_approval(
 }
 
 /// `POST /agent/approval-request` — submit an approval request from the agent.
+///
+/// Requires the `DLP-AGENT` bearer (see `agent_auth_middleware`). The
+/// authenticated `agent_id` (from the request extension) is recorded as the
+/// audit actor rather than the literal string `"agent"`, so the audit trail
+/// names the specific enrolled agent that submitted the request (CR-02). The
+/// per-user fields (`requester_sid`, etc.) still come from the body — they
+/// describe the local user who triggered the override, which the now-
+/// authenticated agent is vouching for.
 pub async fn submit_approval_request(
     State(state): State<Arc<AppState>>,
+    Extension(agent_id): Extension<String>,
     Json(body): Json<AgentApprovalRequest>,
 ) -> Result<Json<AgentApprovalResponse>, AppError> {
     body.validate()?;
@@ -838,8 +847,11 @@ pub async fn submit_approval_request(
         created_at: now.clone(),
         updated_at: now.clone(),
     };
-    let audit_event =
-        build_approval_audit_event(dlp_common::EventType::ApprovalRequest, &approval, "agent");
+    let audit_event = build_approval_audit_event(
+        dlp_common::EventType::ApprovalRequest,
+        &approval,
+        &agent_id,
+    );
     let pool = Arc::clone(&state.pool);
     tokio::task::spawn_blocking(move || -> Result<(), AppError> {
         let mut conn = pool.get().map_err(AppError::from)?;

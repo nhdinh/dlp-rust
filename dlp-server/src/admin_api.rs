@@ -1182,14 +1182,33 @@ pub fn admin_router(state: Arc<AppState>) -> Router {
         .route("/agent-config/{id}", get(get_agent_config_for_agent))
         .route("/admin/device-registry", get(list_device_registry_handler))
         .route("/admin/managed-origins", get(list_managed_origins_handler))
-        // Phase 61: Agent-facing approval endpoints (no JWT — agent-authenticated)
+        // Phase 61: Agent-facing approval endpoints.
+        //
+        // The submit and token-issuing endpoints require the `DLP-AGENT`
+        // bearer (CR-02): `list_active_approvals` mints signed Ed25519 approval
+        // JWTs that the agent trusts to authorize access, so handing them to
+        // anonymous callers would be a DLP bypass / credential-theft vector;
+        // `submit_approval_request` otherwise lets any network client forge
+        // requests for arbitrary SIDs and spam the admin workflow + audit log.
+        // The Ed25519 *verifying* key is intentionally public — it only lets
+        // holders verify tokens, not mint them.
         .route(
             "/agent/approval-request",
-            post(approval_api::submit_approval_request),
+            post(approval_api::submit_approval_request)
+                .route_layer(rate_limiter::per_agent_config())
+                .layer(middleware::from_fn_with_state(
+                    Arc::clone(&state),
+                    agent_auth_middleware,
+                )),
         )
         .route(
             "/agent/approvals/active",
-            get(approval_api::list_active_approvals),
+            get(approval_api::list_active_approvals)
+                .route_layer(rate_limiter::per_agent_config())
+                .layer(middleware::from_fn_with_state(
+                    Arc::clone(&state),
+                    agent_auth_middleware,
+                )),
         )
         .route(
             "/agent/approvals/public-key",

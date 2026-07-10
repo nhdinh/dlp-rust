@@ -365,3 +365,115 @@ async fn get_agent_auth_hash_requires_admin_auth() {
     let resp = app.oneshot(req).await.expect("send request");
     assert_eq!(resp.status(), StatusCode::OK);
 }
+
+// ---------------------------------------------------------------------------
+// Test 6: agent approval endpoints require the DLP-AGENT bearer (CR-02)
+// ---------------------------------------------------------------------------
+//
+// `list_active_approvals` mints signed Ed25519 approval JWTs that the agent
+// trusts to authorize access, and `submit_approval_request` lets a caller forge
+// requests for arbitrary SIDs — so both must reject anonymous callers with 401
+// and accept the enrolled `DLP-AGENT` bearer. The Ed25519 verifying key stays
+// public (it cannot mint tokens).
+
+/// Minimal valid body for `POST /agent/approval-request`.
+fn approval_request_body() -> serde_json::Value {
+    serde_json::json!({
+        "requester_sid": "S-1-5-21-1",
+        "data_object_id": "label-cr02-test",
+        "allowed_action": "WRITE",
+        "destination_scope": null,
+        "justification": "CR-02 auth regression test",
+        "device_fingerprint": null,
+    })
+}
+
+#[tokio::test]
+async fn agent_approval_endpoints_require_agent_auth() {
+    let (app, _pool) = build_test_app();
+
+    // 1. POST /agent/approval-request with NO credentials -> 401.
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/agent/approval-request")
+        .header("content-type", "application/json")
+        .body(Body::from(approval_request_body().to_string()))
+        .expect("build request");
+    let resp = app.clone().oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "approval-request must reject anonymous callers"
+    );
+
+    // 2. POST /agent/approval-request with a valid DLP-AGENT bearer -> 200.
+    let req = Request::builder()
+        .method(Method::POST)
+        .uri("/agent/approval-request")
+        .header(
+            "authorization",
+            agent_auth_header(TEST_AGENT_ID, TEST_AGENT_AUTH_HASH),
+        )
+        .header("content-type", "application/json")
+        .body(Body::from(approval_request_body().to_string()))
+        .expect("build request");
+    let resp = app.clone().oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "approval-request must accept the enrolled agent bearer"
+    );
+    let bytes = to_bytes(resp.into_body(), usize::MAX)
+        .await
+        .expect("read body");
+    let json: Value = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+    assert!(
+        json["id"].as_str().is_some_and(|s| !s.is_empty()),
+        "approval-request response must include a non-empty id"
+    );
+    assert_eq!(json["status"], "pending");
+
+    // 3. GET /agent/approvals/active with NO credentials -> 401. This is the
+    // token-exfiltration vector: the endpoint signs a JWT per active approval.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/agent/approvals/active")
+        .body(Body::empty())
+        .expect("build request");
+    let resp = app.clone().oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::UNAUTHORIZED,
+        "approvals/active must not hand signed tokens to anonymous callers"
+    );
+
+    // 4. GET /agent/approvals/active with a valid DLP-AGENT bearer -> 200.
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/agent/approvals/active")
+        .header(
+            "authorization",
+            agent_auth_header(TEST_AGENT_ID, TEST_AGENT_AUTH_HASH),
+        )
+        .body(Body::empty())
+        .expect("build request");
+    let resp = app.clone().oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "approvals/active must accept the enrolled agent bearer"
+    );
+
+    // 5. GET /agent/approvals/public-key stays public (verifying key only).
+    let req = Request::builder()
+        .method(Method::GET)
+        .uri("/agent/approvals/public-key")
+        .body(Body::empty())
+        .expect("build request");
+    let resp = app.oneshot(req).await.expect("send request");
+    assert_eq!(
+        resp.status(),
+        StatusCode::OK,
+        "approvals/public-key must remain publicly readable"
+    );
+}

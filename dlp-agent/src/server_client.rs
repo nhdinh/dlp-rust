@@ -889,7 +889,17 @@ impl ServerClient {
         &self,
     ) -> Result<Vec<ServerApprovalEntry>, ServerClientError> {
         let url = format!("{}/agent/approvals/active", self.base_url);
-        let resp = self.client.get(&url).send().await?;
+        // CR-02: the server now requires the `DLP-AGENT` bearer on this
+        // endpoint because it mints signed approval JWTs.
+        let resp = self
+            .client
+            .get(&url)
+            .header(
+                "Authorization",
+                format!("DLP-AGENT {}:{}", self.agent_id, self.agent_auth_hash),
+            )
+            .send()
+            .await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp
@@ -923,7 +933,18 @@ impl ServerClient {
         request: &dlp_common::approval::ApprovalRequest,
     ) -> Result<String, ServerClientError> {
         let url = format!("{}/agent/approval-request", self.base_url);
-        let resp = self.client.post(&url).json(request).send().await?;
+        // CR-02: the server now requires the `DLP-AGENT` bearer so anonymous
+        // clients cannot forge approval requests for arbitrary SIDs.
+        let resp = self
+            .client
+            .post(&url)
+            .header(
+                "Authorization",
+                format!("DLP-AGENT {}:{}", self.agent_id, self.agent_auth_hash),
+            )
+            .json(request)
+            .send()
+            .await?;
         if !resp.status().is_success() {
             let status = resp.status().as_u16();
             let body = resp
