@@ -438,9 +438,13 @@ Plans:
 **Plans:** 3 plans
 
 Plans:
+**Wave 1**
 
 - [ ] 58.10-01-PLAN.md — Agent hook IPC closure mode gate: extract apply_effective_mode_to_hook_decision, Audit DENY->ALLOW flip, full-parity audit, hook_ipc_mode_gate test matrix
 - [ ] 58.10-02-PLAN.md — Shared-cache header global-mode byte: _reserved[0] ABI contract, CACHE_LAYOUT_VERSION 1->2 (agent+DLL), agent writer, CacheView::global_mode() reader, ABI/DLL tests
+
+**Wave 2** *(blocked on Wave 1 completion)*
+
 - [ ] 58.10-03-PLAN.md — DLL fast-path mode check at HEALTHY:554 + DEGRADED:621 (force pipe under global Audit) + end-to-end global-Audit->ALLOW integration test
 
 ### Phase 58.1: Close v0.10.0 ship-gap verification items (INSERTED)
