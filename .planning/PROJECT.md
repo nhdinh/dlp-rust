@@ -156,6 +156,7 @@ If NTFS ALLOW and ABAC DENY → FINAL RESULT = DENY. ABAC always tightens, never
 
 - ✓ **Close v0.10.0 ship-gap verification items** (Phase 58.1, completed 2026-06-23) — hook DLL journal writes for all mutating trampolines, bypass correlator bypass_rx routing, missing VERIFICATION.md artifacts for phases 48–58, OPS-04 UAT execution handoff PowerShell script and companion guide (SC-58.1-01..04)
 - ✓ **DACL protected_paths wiring gap closure** (Phase 58.7, completed 2026-07-09) — agent-side consumers (`init_dacl_watcher`, `BypassCorrelator`, classification cache) read from `AgentConfig.protected_paths`; path normalization/validation rejects traversal and relative paths; staging keys migrated to canonical form; runtime reinit applies new protected paths without service restart; agent removes DLP Deny ACE when paths are deleted (DACL-01..05, CACHE-04)
+- ✓ **DIFF-04 Differentiator — Diagnostics Observability** (v0.10.0 Phases 58.8 + 58.9, completed 2026-07-11) — authenticated `POST /agents/{id}/diagnostics` + `diagnostic_store` + `GET /admin/diagnostics` (58.8 server half) plus the agent-side producer (58.9): DLL `diagnostic_ring` drained on the pipe cadence into one-way `IpcPayloadV1::DiagnosticsResponse` frames, agent ingests PID-keyed (anti-spoof) into `DiagnosticAggregator`, and a periodic `diagnostic_push_loop` drains via `drain_all` and POSTs every 60 s with flush-and-stop. End-to-end field-level round-trip + distinct 401/400 auth boundary proven; full DLL -> agent -> server -> admin path observable (DIFF-04)
 
 ### Active (v0.10.0 — Real-Time File Access Prevention)
 
@@ -299,4 +300,4 @@ The earlier `.planning.legacy/` (phase-numbered GSD format) and `.gsd.legacy/` (
 
 ---
 
-*Last updated: 2026-07-02 — Phase 58.5 complete (unhook DLL on agent exit), transitioning to Phase 59.*
+*Last updated: 2026-07-11 — Phase 58.9 complete (DIFF-04 agent diagnostics producer); DIFF-04 closed end-to-end (58.8 server half + 58.9 agent producer). v0.10.0 ship gate remains Phase 57 OPS-04 UAT on physical Windows 11.*
