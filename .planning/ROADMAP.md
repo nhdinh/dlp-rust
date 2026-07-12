@@ -435,13 +435,13 @@ Plans:
 **Goal:** Audit-mode hook-mediated file operations are ALLOWed-with-audit instead of physically blocked, satisfying Phase 55 Success Criterion #2 on the full hook chain — both the agent hook IPC cache-miss path (service.rs closure) and the DLL shared-cache cache-hit fast-path (trampolines.rs) honor the configured enforcement mode.
 **Requirements**: MODE-01
 **Depends on:** Phase 58
-**Plans:** 1/3 plans executed
+**Plans:** 2/3 plans executed
 
 Plans:
 **Wave 1**
 
 - [x] 58.10-01-PLAN.md — Agent hook IPC closure mode gate: extract apply_effective_mode_to_hook_decision, Audit DENY->ALLOW flip, full-parity audit, hook_ipc_mode_gate test matrix
-- [ ] 58.10-02-PLAN.md — Shared-cache header global-mode byte: _reserved[0] ABI contract, CACHE_LAYOUT_VERSION 1->2 (agent+DLL), agent writer, CacheView::global_mode() reader, ABI/DLL tests
+- [x] 58.10-02-PLAN.md — Shared-cache header global-mode byte: _reserved[0] ABI contract, CACHE_LAYOUT_VERSION 1->2 (agent+DLL), agent writer, CacheView::global_mode() reader, ABI/DLL tests
 
 **Wave 2** *(blocked on Wave 1 completion)*
 

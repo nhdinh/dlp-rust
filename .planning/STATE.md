@@ -5,14 +5,14 @@ milestone_name: Real-Time File Access Prevention
 current_phase: 58.10
 status: executing
 stopped_at: Completed 58.10-01-PLAN.md
-last_updated: "2026-07-12T00:24:39.881Z"
+last_updated: "2026-07-12T00:46:05.654Z"
 last_activity: 2026-07-12
 last_activity_desc: "Phase 58.10 Plan 01 complete (hook_ipc_mode_gate 8/8 green; service:: 86/86 green; clippy/fmt clean)"
 progress:
   total_phases: 37
   completed_phases: 26
   total_plans: 170
-  completed_plans: 142
+  completed_plans: 143
   percent: 70
 current_phase_name: 2026-07-11
 ---
@@ -30,7 +30,7 @@ current_phase_name: 2026-07-11
 ## Current Position
 
 Phase: 58.10 — EXECUTING
-Plan: 1 of 3 complete (58.10-01 SUMMARY written)
+Plan: 2 of 3 complete (58.10-01 SUMMARY written)
 Status: Phase 58.10 in progress — Plan 01 (agent-side hook-IPC mode gate) complete; Plans 02-03 (DLL fast-path + e2e) pending
 Last activity: 2026-07-12 — Phase 58.10 Plan 01 complete (hook_ipc_mode_gate 8/8 green; service:: 86/86 green; clippy/fmt clean)
 Verification: 58.10-01 — cargo test -p dlp-agent --lib hook_ipc_mode_gate (8 passed), cargo build -p dlp-agent (no warnings), clippy/fmt clean; sonar environment-blocked (non-gating)
@@ -203,7 +203,7 @@ Phase 59 and later are complete and shipped as part of v0.11.0.
 
 ## Session Continuity
 
-Last session: 2026-07-12T00:24:39.687Z
+Last session: 2026-07-12T00:44:11.189Z
 Stopped at: Phase 58.10 context gathered
 Resume file: .planning/phases/58.10-close-gap-mode-01-apply-enforcement-mode-in-hook-ipc-deny-pa/58.10-CONTEXT.md
 
@@ -269,6 +269,7 @@ Resume file: .planning/phases/58.10-close-gap-mode-01-apply-enforcement-mode-in-
 | Phase 58.9 P02 | 19min | 2 tasks | 3 files |
 | Phase 58.9 P03 | 40min | 2 tasks | 3 files |
 | Phase 58.10 P01 | ~20 min | 2 tasks | 1 files |
+| Phase 58.10 P02 | 13min | 3 tasks | 3 files |
 
 ## Quick Tasks Completed
 
@@ -349,3 +350,6 @@ Resume file: .planning/phases/58.10-close-gap-mode-01-apply-enforcement-mode-in-
 - [Phase 58.9]: Plan 03: Populated EXISTING RunLoopContext::diagnostic_push_shutdown/handle (no new fields); extracted spawn_diagnostic_push_loop helper for testability; lifecycle mirrors health (start on run when server_client present; flush-and-stop on shutdown, 5s join) — Minimal struct-literal drift (T-58.9-15; cargo test --tests --no-run compiles all 12 test binaries); helper makes the (None,None)/(Some,Some) contract unit-testable without booting the service
 - [Phase 58.9]: Plan 03: DIFF-04 still NOT marked complete — spans Plans 01-04; criterion 3 (end-to-end GET /admin/diagnostics) only proven by Plan 04; no main-repo REQUIREMENTS.md to update — Mirrors STATE decisions #339/#342; marking complete now would overstate coverage
 - [Phase 58.10]: Agent hook-IPC mode gate extracted as a pure 3-tuple helper (apply_effective_mode_to_hook_decision) plus a testable evaluate_hook_request taking an explicit global_mode (no CONFIG OnceLock) and returning (HookResponse, Option<AuditEvent>) with the caller emitting the audit. Any Audit-mode DENY from offline_decision flips to ALLOW with a full-parity audit (MODE-01 agent side); Block/AuditAndBlock/PerPolicy stay fail-closed (T-17 preserved).
+- [Phase 58.10]: Plan 02: Reused CacheHeader._reserved[0] for the global enforcement mode byte (no new named field) so the 128-byte size assertion stays green and the existing checksum (folds _reserved on both sides) integrity-protects the byte with zero checksum-logic change
+- [Phase 58.10]: Plan 02: Bumped CACHE_LAYOUT_VERSION 1->2 in BOTH dlp-agent and dlp-hook-dll so a v1 reader rejects a v2 header (fail-closed back-compat, never fail-open) during rolling upgrade
+- [Phase 58.10]: Plan 02: Fail-closed defaults at every layer — current_global_mode() defaults to Block when config uninitialized; CacheView::global_mode() defaults any unrecognized byte to Block (ASVS V5, untrusted shared memory)
