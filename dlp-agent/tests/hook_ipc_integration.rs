@@ -1409,3 +1409,131 @@ fn watchdog_evidence_reconciliation_roundtrip() {
         "expected untracked flag in justification"
     );
 }
+
+// ---------------------------------------------------------------------------
+// MODE-01 (Phase 58.10 Plan 03): end-to-end decision-path tests
+// ---------------------------------------------------------------------------
+//
+// These tests call the REAL `evaluate_hook_request` (the function the production
+// hook-IPC closure delegates to, extracted in Plan 01) directly with an EXPLICIT
+// `global_mode`. This is the concrete mechanism that resolves the harness
+// infeasibility: the `default_mock_handler` returns a hardcoded response and
+// never runs `offline_decision` or the mode gate, and the production closure
+// reads the mode via the `CONFIG: OnceLock` (set-once-per-process) — so neither
+// can drive both an Audit and a Block case in one process. `evaluate_hook_request`
+// takes `global_mode` as an explicit parameter, so a single test process drives
+// both. No named pipe is used, so these are NOT `#[cfg(windows)]`-gated.
+
+use dlp_common::abac::{EnforcementMode, EvaluateResponse};
+
+/// Builds the fixtures `evaluate_hook_request` needs: an `OfflineManager`
+/// backed by a fresh cache, an empty `ApprovalCache` (so the approval-override
+/// early return does not fire), and an empty `HashCache`. Returns the manager
+/// plus the cache so a test can pre-populate a cached DENY (a cache HIT) to
+/// drive the deny path through the real `offline_decision`.
+fn mode_gate_fixtures() -> (
+    dlp_agent::offline::OfflineManager,
+    Arc<dlp_agent::cache::Cache>,
+    dlp_agent::approval_cache::ApprovalCache,
+    dlp_agent::hash_cache::HashCache,
+) {
+    let cache = Arc::new(dlp_agent::cache::Cache::new());
+    let client = dlp_agent::engine_client::EngineClient::default_client()
+        .expect("default engine client constructs");
+    let manager = dlp_agent::offline::OfflineManager::new(client, cache.clone(), None);
+    let approval = dlp_agent::approval_cache::ApprovalCache::new();
+    let hash_cache = dlp_agent::hash_cache::create_hash_cache();
+    (manager, cache, approval, hash_cache)
+}
+
+/// A cached DENY response whose per-policy mode is Audit, standing in for a
+/// T3/T4 sensitive-write denial. The parity audit threads the classification
+/// carried by the `EvaluateRequest` built from the hook request.
+fn cached_sensitive_deny() -> EvaluateResponse {
+    EvaluateResponse {
+        decision: Decision::DENY,
+        matched_policy_id: Some("policy-sensitive-write".to_string()),
+        reason: "sensitive write".to_string(),
+        enforcement_mode: Some(EnforcementMode::Audit),
+        would_have_denied: true,
+        matched_label_id: None,
+    }
+}
+
+fn t3_write_request(path: &str) -> HookRequest {
+    HookRequest {
+        path: path.to_string(),
+        action: "WRITE".to_string(),
+        ..Default::default()
+    }
+}
+
+/// SC#2 evidence (hook path): a global Audit override flips a real cached DENY
+/// to ALLOW and emits a full-parity Access audit (would_have_denied=true,
+/// policy_mode="Audit"). Driven through the REAL `evaluate_hook_request`
+/// decision path — not the mock handler, not the CONFIG OnceLock.
+#[test]
+fn global_audit_returns_allow_for_sensitive_write_with_parity_audit() {
+    let (manager, cache, approval, hash_cache) = mode_gate_fixtures();
+    let path = r"C:\Restricted\secret.xlsx";
+    let sid = "S-1-5-21-999";
+
+    // Pre-populate a cached DENY so `offline_decision` returns a real denial
+    // (a cache HIT) that the mode gate can flip.
+    cache.insert(path, sid, cached_sensitive_deny());
+
+    let req = t3_write_request(path);
+    let (response, audit) = dlp_agent::service::evaluate_hook_request(
+        &req,
+        sid.to_string(),
+        &manager,
+        &approval,
+        &hash_cache,
+        EnforcementMode::Audit,
+    );
+
+    // Global Audit flips the cached DENY to ALLOW.
+    assert_eq!(
+        response.decision,
+        Decision::ALLOW,
+        "global Audit must flip the cached DENY to ALLOW"
+    );
+
+    // Exactly one full-parity Access audit is produced.
+    let audit = audit.expect("parity audit emitted on Audit flip");
+    assert_eq!(audit.event_type, dlp_common::EventType::Access);
+    assert_eq!(audit.policy_mode.as_deref(), Some("Audit"));
+    assert!(
+        audit.would_have_denied,
+        "parity audit must set would_have_denied"
+    );
+}
+
+/// Control (T-17 preserved end-to-end): the SAME request under a global Block
+/// override keeps the DENY. Runs in the SAME process as the Audit case because
+/// `global_mode` is an explicit parameter (no OnceLock).
+#[test]
+fn global_block_preserves_deny_for_sensitive_write() {
+    let (manager, cache, approval, hash_cache) = mode_gate_fixtures();
+    let path = r"C:\Restricted\secret.xlsx";
+    let sid = "S-1-5-21-999";
+
+    cache.insert(path, sid, cached_sensitive_deny());
+
+    let req = t3_write_request(path);
+    let (response, _audit) = dlp_agent::service::evaluate_hook_request(
+        &req,
+        sid.to_string(),
+        &manager,
+        &approval,
+        &hash_cache,
+        EnforcementMode::Block,
+    );
+
+    // DENY preserved under global Block — the mode gate is NOT a no-op.
+    assert_eq!(
+        response.decision,
+        Decision::DENY,
+        "global Block must preserve the cached DENY (T-17)"
+    );
+}
