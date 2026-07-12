@@ -2185,6 +2185,169 @@ pub fn apply_effective_mode_to_hook_decision(
     (final_decision, flipped, effective_mode)
 }
 
+/// Evaluates a single hook-IPC request and returns the response plus an
+/// optional audit event to emit.
+///
+/// This is the extracted, testable body of the hook-IPC decision closure
+/// (MODE-01). It is pure with respect to global state: it takes the
+/// `global_mode` as an EXPLICIT parameter (NOT via the CONFIG `OnceLock`) and
+/// returns the audit event for the caller to emit, so it can be driven in a
+/// unit/integration test without booting the [`HookIpcServer`] or touching the
+/// global emitter.
+///
+/// # Arguments
+///
+/// * `req` — The hook request from the DLL.
+/// * `caller_sid` — The resolved caller SID (identity resolution happens in the
+///   caller; this function assumes it already succeeded).
+/// * `offline` — The offline policy engine (cache-only fast path).
+/// * `approval` — The approval cache for fast-path override checks (DIFF-01).
+/// * `hash_cache` — The content-hash evidence cache for blocked writes (DIFF-03).
+/// * `global_mode` — The live global enforcement mode (read by the caller via
+///   `with_config` on every request — never captured at init).
+///
+/// # Returns
+///
+/// `(HookResponse, Option<AuditEvent>)`. The `HookResponse.decision` reflects
+/// the effective enforcement mode (an Audit-mode DENY is flipped to ALLOW). The
+/// `Option<AuditEvent>` is `Some` when exactly one audit should be emitted:
+/// a full-parity `Access` audit when the Audit flip fires, or the existing
+/// blocked-write `Block` audit otherwise. The caller performs the actual emit.
+///
+/// # Audit-mode parity (D-05/D-07/D-08)
+///
+/// When the effective mode is audit-only and `offline_decision` returned a
+/// DENY, the decision is flipped to ALLOW and a full-parity `Access` audit is
+/// produced (`would_have_denied=true`, `policy_mode="Audit"`, the REAL
+/// classification tier that drove the deny, app-identity enrichment). No
+/// `BlockNotify` UI notification is emitted in Audit mode (nothing is
+/// physically blocked). Exactly one audit is produced per op — the parity
+/// `Access` audit on flip, the existing `Block` audit otherwise.
+#[allow(clippy::too_many_arguments)]
+pub fn evaluate_hook_request(
+    req: &dlp_common::HookRequest,
+    caller_sid: String,
+    offline: &crate::offline::OfflineManager,
+    approval: &crate::approval_cache::ApprovalCache,
+    hash_cache: &crate::hash_cache::HashCache,
+    global_mode: dlp_common::abac::EnforcementMode,
+) -> (dlp_common::HookResponse, Option<dlp_common::AuditEvent>) {
+    // Check approval cache for override (DIFF-01). This is upstream of the
+    // mode gate and unaffected: an override already returns ALLOW.
+    let cache_key =
+        dlp_common::approval::ApprovalCacheKey::new(&caller_sid, &req.path, &req.action, None);
+    if let Some(eval_resp) = approval.check(&cache_key, None) {
+        info!(path = %req.path, "Approval cache hit — granting override");
+        return (
+            dlp_common::HookResponse {
+                decision: eval_resp.decision,
+                reason: eval_resp.reason,
+                cache_hint: None,
+                cache_version: 0,
+                approval_override: Some(true),
+            },
+            None,
+        );
+    }
+
+    // Warn when COPY/MOVE lacks volume-class information (potential hook DLL gap).
+    if matches!(req.action.as_str(), "COPY" | "MOVE") {
+        if req.source_volume_class.is_none() {
+            warn!(path = %req.path, "COPY/MOVE request missing source_volume_class");
+        }
+        if req.destination_volume_class.is_none() {
+            warn!(path = %req.path, "COPY/MOVE request missing destination_volume_class");
+        }
+    }
+
+    // Build EvaluateRequest and run offline ABAC evaluation.
+    let evaluate_req = hook_request_to_evaluate_request(req, caller_sid.clone());
+    // Capture the real tier BEFORE moving fields: this is the classification
+    // that drove the fail-closed deny (offline.rs keys fail_closed_response off
+    // request.resource.classification).
+    let real_classification = evaluate_req.resource.classification;
+    let eval_resp = offline.offline_decision(&evaluate_req);
+
+    // ── Enforcement-mode gate (MODE-01) ─────────────────────────────────────
+    // Mirror the interception path: flip ANY Audit DENY to ALLOW (hit or miss).
+    let (final_decision, flipped, effective_mode) =
+        apply_effective_mode_to_hook_decision(global_mode, &eval_resp);
+
+    let response = dlp_common::HookResponse {
+        decision: final_decision,
+        reason: eval_resp.reason.clone(),
+        cache_hint: None,
+        cache_version: 0,
+        approval_override: None,
+    };
+
+    // ── Exactly-one audit per op ────────────────────────────────────────────
+    let audit_event = if flipped {
+        // Audit-mode flip: emit a full-parity Access audit (D-07). Thread the
+        // REAL classification tier (not the T1 placeholder). No BlockNotify UI
+        // notification fires in Audit mode (D-08 — nothing physically blocked).
+        let policy_id_str = eval_resp.matched_policy_id.clone().unwrap_or_default();
+        let mut ev = dlp_common::AuditEvent::new(
+            dlp_common::EventType::Access,
+            caller_sid.clone(),
+            "hook-dll".to_string(), // user_name not available from PID resolution alone
+            req.path.clone(),
+            real_classification,
+            map_hook_action_to_abac(&req.action),
+            final_decision,
+            "AGENT-01".to_string(), // agent_id not available in this scope
+            0,                      // session_id not available in this scope
+        )
+        .with_access_context(dlp_common::AuditAccessContext::Local)
+        .with_policy(policy_id_str, eval_resp.reason.clone())
+        .with_policy_mode(format!("{:?}", effective_mode))
+        .with_would_have_denied(true);
+
+        // AUDIT-04 parity: enrich with app identity from the initiating process.
+        crate::audit_emitter::enrich_audit_with_app_identity(&mut ev, req.pid);
+        crate::audit_emitter::set_destination_application(&mut ev, None);
+        Some(ev)
+    } else if response.decision.is_denied() && is_write_action(&req.action) {
+        // Existing blocked-write audit path (DIFF-03), unchanged. Only the NEW
+        // parity audit threads the real tier; this existing audit keeps its
+        // current classification handling.
+        let hash = crate::hash_cache::lookup_hash(hash_cache, req.pid, req.handle_value);
+        // Handle-based hooks (WriteFile, NtWriteFile, etc.) populate
+        // `handle_value` so the blocked-write audit can correlate with the
+        // HashEvidenceFrame keyed by (pid, handle_value).
+        let (hash_str, truncated, skipped) = match hash {
+            Some(evidence) => (
+                evidence.content_sha256,
+                evidence.hash_truncated,
+                evidence.hash_skipped,
+            ),
+            None => (None, false, false),
+        };
+
+        let mut ev = dlp_common::AuditEvent::new(
+            dlp_common::EventType::Block,
+            caller_sid,
+            "hook-dll".to_string(), // user_name not available from PID resolution alone
+            req.path.clone(),
+            dlp_common::Classification::T1, // classification not available here
+            map_hook_action_to_abac(&req.action),
+            response.decision,
+            "AGENT-01".to_string(), // agent_id not available in this scope
+            0,                      // session_id not available in this scope
+        )
+        .with_policy_mode(format!("{:?}", eval_resp.enforcement_mode));
+
+        if let Some(h) = hash_str {
+            ev = ev.with_content_hash(h, truncated, skipped);
+        }
+        Some(ev)
+    } else {
+        None
+    };
+
+    (response, audit_event)
+}
+
 /// Unit tests for the hook-IPC enforcement-mode gate (MODE-01).
 ///
 /// Covers the global {Audit, Block, PerPolicy, AuditAndBlock} x cache {hit,
@@ -2278,6 +2441,120 @@ mod hook_ipc_mode_gate {
         assert!(!flipped);
         assert_eq!(mode, EnforcementMode::Audit);
     }
+
+    // ── Direct-call tests of evaluate_hook_request (no OnceLock, no pipe) ────
+
+    use std::sync::Arc;
+
+    /// Builds the fixtures `evaluate_hook_request` needs: an `OfflineManager`
+    /// backed by a fresh cache, an empty `ApprovalCache`, and an empty
+    /// `HashCache`. Returns the manager plus the cache so tests can pre-populate
+    /// a cached decision (a cache HIT) to drive the DENY path.
+    fn fixtures() -> (
+        crate::offline::OfflineManager,
+        Arc<crate::cache::Cache>,
+        crate::approval_cache::ApprovalCache,
+        crate::hash_cache::HashCache,
+    ) {
+        let cache = Arc::new(crate::cache::Cache::new());
+        let client = crate::engine_client::EngineClient::default_client()
+            .expect("default engine client constructs");
+        let manager = crate::offline::OfflineManager::new(client, cache.clone(), None);
+        let approval = crate::approval_cache::ApprovalCache::new();
+        let hash_cache = crate::hash_cache::create_hash_cache();
+        (manager, cache, approval, hash_cache)
+    }
+
+    fn hook_req(path: &str, action: &str) -> dlp_common::HookRequest {
+        dlp_common::HookRequest {
+            path: path.to_string(),
+            action: action.to_string(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn evaluate_hook_request_global_audit_flips_cached_deny_to_allow_with_parity_audit() {
+        let (manager, cache, approval, hash_cache) = fixtures();
+        let path = r"C:\Restricted\secret.xlsx";
+        let sid = "S-1-5-21-999";
+
+        // Pre-populate a cached DENY whose per-policy mode is Audit (D-06: the
+        // policy mode IS known on an agent-cache hit).
+        cache.insert(
+            path,
+            sid,
+            EvaluateResponse {
+                decision: Decision::DENY,
+                matched_policy_id: Some("policy-audit".to_string()),
+                reason: "sensitive write".to_string(),
+                enforcement_mode: Some(EnforcementMode::Audit),
+                would_have_denied: true,
+                matched_label_id: None,
+            },
+        );
+
+        let req = hook_req(path, "WRITE");
+        let (response, audit) = evaluate_hook_request(
+            &req,
+            sid.to_string(),
+            &manager,
+            &approval,
+            &hash_cache,
+            EnforcementMode::Audit,
+        );
+
+        // Global Audit flips the cached DENY to ALLOW.
+        assert_eq!(response.decision, Decision::ALLOW);
+
+        // Exactly one full-parity Access audit is produced.
+        let audit = audit.expect("parity audit emitted on flip");
+        assert_eq!(audit.event_type, dlp_common::EventType::Access);
+        assert_eq!(audit.policy_mode.as_deref(), Some("Audit"));
+        assert!(audit.would_have_denied);
+        // The parity audit threads the classification carried by the
+        // EvaluateRequest built from the hook request.
+        assert_eq!(audit.classification, dlp_common::Classification::T1);
+    }
+
+    #[test]
+    fn evaluate_hook_request_global_block_keeps_cached_deny_with_block_audit() {
+        let (manager, cache, approval, hash_cache) = fixtures();
+        let path = r"C:\Restricted\secret.xlsx";
+        let sid = "S-1-5-21-999";
+
+        // Cached DENY; under global Block the decision is preserved (no flip).
+        cache.insert(
+            path,
+            sid,
+            EvaluateResponse {
+                decision: Decision::DENY,
+                matched_policy_id: Some("policy-block".to_string()),
+                reason: "sensitive write".to_string(),
+                enforcement_mode: Some(EnforcementMode::Block),
+                would_have_denied: true,
+                matched_label_id: None,
+            },
+        );
+
+        let req = hook_req(path, "WRITE");
+        let (response, audit) = evaluate_hook_request(
+            &req,
+            sid.to_string(),
+            &manager,
+            &approval,
+            &hash_cache,
+            EnforcementMode::Block,
+        );
+
+        // DENY preserved under global Block.
+        assert_eq!(response.decision, Decision::DENY);
+
+        // The existing Block audit path fires (not the parity Access audit).
+        let audit = audit.expect("block audit emitted for denied write");
+        assert_eq!(audit.event_type, dlp_common::EventType::Block);
+        assert!(!audit.would_have_denied);
+    }
 }
 
 /// Spawns the hook DLL IPC server on a dedicated `std::thread`.
@@ -2354,85 +2631,26 @@ fn spawn_hook_ipc_server(config: HookIpcServerConfig) -> Option<std::thread::Joi
                 }
             };
 
-            // Check approval cache for override (DIFF-01).
-            let cache_key = dlp_common::approval::ApprovalCacheKey::new(
-                &caller_sid,
-                &req.path,
-                &req.action,
-                None,
+            // Read the global enforcement mode LIVE on every request (never
+            // captured at construction — a runtime server-pushed mode change
+            // must take effect immediately). Fail-safe default: Block.
+            let global_mode = crate::service::with_config(|cfg| cfg.enforcement.global_mode)
+                .unwrap_or(dlp_common::abac::EnforcementMode::Block);
+
+            // Delegate the full decision body to the testable free function.
+            let (response, audit_opt) = evaluate_hook_request(
+                &req,
+                caller_sid,
+                &offline,
+                &approval,
+                &hash_cache_for_closure,
+                global_mode,
             );
-            if let Some(eval_resp) = approval.check(&cache_key, None) {
-                info!(path = %req.path, "Approval cache hit — granting override");
-                return dlp_common::HookResponse {
-                    decision: eval_resp.decision,
-                    reason: eval_resp.reason,
-                    cache_hint: None,
-                    cache_version: 0,
-                    approval_override: Some(true),
-                };
-            }
 
-            // Warn when COPY/MOVE lacks volume-class information (potential hook DLL gap).
-            if matches!(req.action.as_str(), "COPY" | "MOVE") {
-                if req.source_volume_class.is_none() {
-                    warn!(path = %req.path, "COPY/MOVE request missing source_volume_class");
-                }
-                if req.destination_volume_class.is_none() {
-                    warn!(path = %req.path, "COPY/MOVE request missing destination_volume_class");
-                }
-            }
-
-            // Build EvaluateRequest and run offline ABAC evaluation.
-            let evaluate_req = hook_request_to_evaluate_request(&req, caller_sid.clone());
-            let eval_resp = offline.offline_decision(&evaluate_req);
-            let response = dlp_common::HookResponse {
-                decision: eval_resp.decision,
-                reason: eval_resp.reason.clone(),
-                cache_hint: None,
-                cache_version: 0,
-                approval_override: None,
-            };
-
-            // DIFF-03: If this is a blocked write, look up the hash from the cache
-            // and emit an audit event with the hash attached.
-            if response.decision.is_denied() && is_write_action(&req.action) {
-                let hash = crate::hash_cache::lookup_hash(
-                    &hash_cache_for_closure,
-                    req.pid,
-                    req.handle_value,
-                );
-                // Handle-based hooks (WriteFile, NtWriteFile, etc.) populate
-                // `handle_value` so the blocked-write audit can correlate with
-                // the HashEvidenceFrame keyed by (pid, handle_value).
-                let (hash_str, truncated, skipped) = match hash {
-                    Some(evidence) => (
-                        evidence.content_sha256,
-                        evidence.hash_truncated,
-                        evidence.hash_skipped,
-                    ),
-                    None => (None, false, false),
-                };
-
-                let mut audit_event = dlp_common::AuditEvent::new(
-                    dlp_common::EventType::Block,
-                    caller_sid,
-                    "hook-dll".to_string(), // user_name not available from PID resolution alone
-                    req.path.clone(),
-                    dlp_common::Classification::T1, // classification not available here
-                    map_hook_action_to_abac(&req.action),
-                    response.decision,
-                    "AGENT-01".to_string(), // agent_id not available in this scope
-                    0,                      // session_id not available in this scope
-                )
-                .with_policy_mode(format!("{:?}", eval_resp.enforcement_mode));
-
-                if let Some(h) = hash_str {
-                    audit_event = audit_event.with_content_hash(h, truncated, skipped);
-                }
-
-                // Best-effort audit emission via the global emitter.
-                // Errors are logged but never block the hook IPC handler.
-                let _ = crate::audit_emitter::EMITTER.emit(&mut audit_event);
+            // Emit exactly one audit (parity Access on flip, Block otherwise).
+            // Best-effort: errors are logged but never block the hook IPC handler.
+            if let Some(mut ev) = audit_opt {
+                let _ = crate::audit_emitter::EMITTER.emit(&mut ev);
             }
 
             response
