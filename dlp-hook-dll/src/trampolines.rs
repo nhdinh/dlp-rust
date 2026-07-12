@@ -118,6 +118,28 @@ pub(crate) fn reset_fail_state_for_test() {
     *guard = None;
 }
 
+/// Returns `true` when the autonomous cache-hit deny should be SKIPPED so the
+/// operation falls through to the agent pipe.
+///
+/// MODE-01 / D-10: only a GLOBAL Audit override (`_reserved[0] == 1`) relaxes
+/// the DLL fast-path. The DLL knows the data tier from the cache but NOT the
+/// matched policy, so a per-policy Audit (`PerPolicy`) cannot be honored on a
+/// cache-hit — only a global Audit override can. When this returns `true` the
+/// caller MUST fall through to the `classify_path` pipe round-trip (never ALLOW
+/// inline) so the agent applies the mode authoritatively and emits the
+/// full-parity audit (D-07). This is only reachable when the pipe is up
+/// (HEALTHY / DEGRADED-forced / RESYNC); pipe-DOWN fail-mode paths
+/// (`decide_isolated` / `decide_degraded`) stay fail-closed because no parity
+/// audit can be emitted without the agent (scoping A1).
+///
+/// Encoding mirrors [`crate::classification_cache::CacheView::global_mode`]:
+/// 0=Block, 1=Audit, 2=AuditAndBlock, 3=PerPolicy; any unrecognized byte fails
+/// closed to Block (returns `false`).
+#[inline]
+pub(crate) fn should_skip_autonomous_deny(global_mode_byte: u8) -> bool {
+    global_mode_byte == 1
+}
+
 /// Test-only helper to force the global fail-mode state machine into a state.
 ///
 /// Use this to exercise non-pipe deny branches (e.g., `FailState::Isolated`)
@@ -551,10 +573,22 @@ pub(crate) fn classify_and_log_path(
                         fn_name, path_hash, classification
                     );
                     crate::debug_log(&msg);
-                    if let Some(deny) = cache_lookup.and_then(|c| c.decide(classification, op)) {
-                        return Some(deny);
+                    // MODE-01 / D-10: a global Audit override skips the autonomous
+                    // decide() deny and falls through to the pipe so the agent
+                    // applies the mode + emits the parity audit. Block /
+                    // AuditAndBlock / PerPolicy keep the fast-path deny (T-17).
+                    let skip = cache_lookup
+                        .map(|c| should_skip_autonomous_deny(c.global_mode()))
+                        .unwrap_or(false);
+                    if !skip {
+                        if let Some(deny) = cache_lookup.and_then(|c| c.decide(classification, op))
+                        {
+                            return Some(deny);
+                        }
+                        return None;
                     }
-                    return None;
+                    // skip == true: fall through to the classify_path pipe
+                    // round-trip below (do NOT return here).
                 }
 
                 // Cache miss — attempt pipe round-trip.
@@ -611,6 +645,11 @@ pub(crate) fn classify_and_log_path(
             }
             FailState::Degraded => {
                 // DEGRADED: use cache decision if available; retry pipe every 10th call.
+                // MODE-01 / D-10 + A3: under a global Audit override a cache-hit
+                // skips the autonomous decide() deny AND forces a pipe attempt
+                // (bypassing the every-10th-call should_retry_pipe throttle) so
+                // the agent is reached to apply the mode + emit the parity audit.
+                let mut force_pipe = false;
                 if let Some(classification) = cache_classification {
                     classification_source = ClassificationSource::CacheHit;
                     let msg = format!(
@@ -618,14 +657,23 @@ pub(crate) fn classify_and_log_path(
                         fn_name, path_hash, classification
                     );
                     crate::debug_log(&msg);
-                    if let Some(deny) = cache_lookup.and_then(|c| c.decide(classification, op)) {
-                        return Some(deny);
+                    let skip = cache_lookup
+                        .map(|c| should_skip_autonomous_deny(c.global_mode()))
+                        .unwrap_or(false);
+                    if !skip {
+                        if let Some(deny) = cache_lookup.and_then(|c| c.decide(classification, op))
+                        {
+                            return Some(deny);
+                        }
+                        return None;
                     }
-                    return None;
+                    // skip == true: force the pipe attempt below (do NOT return).
+                    force_pipe = true;
                 }
 
-                // Cache miss in Degraded: retry pipe every 10th call.
-                if fail_state.should_retry_pipe() {
+                // Cache miss in Degraded: retry pipe every 10th call — OR always
+                // when a global Audit override forced the pipe on a cache-hit (A3).
+                if force_pipe || fail_state.should_retry_pipe() {
                     match crate::classify_path(
                         path,
                         action,
@@ -700,12 +748,25 @@ pub(crate) fn classify_and_log_path(
                 fail_state.set_state(FailState::Healthy);
 
                 // Retry from Healthy path.
+                // MODE-01 / D-09 full-chain: RESYNC flushes LRU + resets counters
+                // + sets Healthy, then re-runs the cache-hit deny INLINE. Without
+                // the same global-Audit skip it would ALLOW the first write (pipe)
+                // but DENY every subsequent write on the now-Healthy cache hit.
+                // Apply the same guard so global Audit falls through to the pipe
+                // retry below (mirrors the HEALTHY treatment).
                 if let Some(classification) = cache_classification {
                     classification_source = ClassificationSource::CacheHit;
-                    if let Some(deny) = cache_lookup.and_then(|c| c.decide(classification, op)) {
-                        return Some(deny);
+                    let skip = cache_lookup
+                        .map(|c| should_skip_autonomous_deny(c.global_mode()))
+                        .unwrap_or(false);
+                    if !skip {
+                        if let Some(deny) = cache_lookup.and_then(|c| c.decide(classification, op))
+                        {
+                            return Some(deny);
+                        }
+                        return None;
                     }
-                    return None;
+                    // skip == true: fall through to the pipe retry below.
                 }
 
                 // Attempt pipe after RESYNC recovery.
@@ -3246,6 +3307,34 @@ mod tests {
                 std::mem::transmute(NtdllTrampolineNtSetInformationFile as *const ()),
             ]
         };
+    }
+
+    // --- MODE-01 / D-10: should_skip_autonomous_deny predicate ---
+
+    #[test]
+    fn should_skip_autonomous_deny_only_for_global_audit() {
+        // Cross-platform-testable core (INFO 6): the predicate is the single
+        // gate reused at the HEALTHY / DEGRADED / RESYNC cache-hit skip sites.
+        // Only a global Audit override (byte == 1) relaxes the fast-path.
+        assert!(should_skip_autonomous_deny(1), "Audit (1) must skip");
+        assert!(!should_skip_autonomous_deny(0), "Block (0) must NOT skip");
+        assert!(
+            !should_skip_autonomous_deny(2),
+            "AuditAndBlock (2) must NOT skip"
+        );
+        assert!(
+            !should_skip_autonomous_deny(3),
+            "PerPolicy (3) must NOT skip"
+        );
+        // Unrecognized bytes fail closed (mirror CacheView::global_mode default).
+        assert!(
+            !should_skip_autonomous_deny(0xFF),
+            "unrecognized (0xFF) must NOT skip"
+        );
+        assert!(
+            !should_skip_autonomous_deny(0x7F),
+            "unrecognized (0x7F) must NOT skip"
+        );
     }
 
     // --- DIFF-02: Diagnostic snapshot on DENY ---
