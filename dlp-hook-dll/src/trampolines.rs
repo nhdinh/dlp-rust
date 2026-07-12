@@ -400,10 +400,12 @@ fn record_pipe_round_trip_and_maybe_emit() {
         // are dropped rather than re-queued — diagnostics are best-effort and the
         // ring has already been destructively drained.
         for chunk in snapshots.chunks(DIAG_FRAME_SNAPSHOT_CAP) {
-            if let Err(e) =
-                crate::pipe_client::send_diagnostics(crate::current_pipe_name(), chunk)
+            if let Err(e) = crate::pipe_client::send_diagnostics(crate::current_pipe_name(), chunk)
             {
-                crate::debug_log(&format!("[dlp-hook] diagnostics chunk send failed: {}\0", e));
+                crate::debug_log(&format!(
+                    "[dlp-hook] diagnostics chunk send failed: {}\0",
+                    e
+                ));
                 break;
             }
         }
