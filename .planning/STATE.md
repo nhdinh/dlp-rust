@@ -2,19 +2,19 @@
 gsd_state_version: 1.0
 milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
-current_phase: 58.9
-current_phase_name: 2026-07-11
-status: completed
-stopped_at: Phase 58.10 context gathered
-last_updated: "2026-07-11T22:34:35.166Z"
-last_activity: 2026-07-11
-last_activity_desc: "Phase 58.9 complete (58.9-04 close-out: SUMMARY + VERIFICATION written; ROADMAP marked complete)"
+current_phase: 58.10
+status: executing
+stopped_at: Completed 58.10-01-PLAN.md
+last_updated: "2026-07-12T00:24:39.881Z"
+last_activity: 2026-07-12
+last_activity_desc: "Phase 58.10 Plan 01 complete (hook_ipc_mode_gate 8/8 green; service:: 86/86 green; clippy/fmt clean)"
 progress:
-  total_phases: 36
+  total_phases: 37
   completed_phases: 26
-  total_plans: 167
-  completed_plans: 141
-  percent: 72
+  total_plans: 170
+  completed_plans: 142
+  percent: 70
+current_phase_name: 2026-07-11
 ---
 
 # Project State
@@ -23,17 +23,17 @@ progress:
 
 **Project:** DLP-RUST — Enterprise DLP System (NTFS + Active Directory + ABAC)
 **Core Value:** Prevent data exfiltration via a layered enforcement stack (NTFS + ABAC + AD identity)
-**Current Focus:** Phase 58.9 — close-gap-diff-04-agent-diagnostics-producer
+**Current Focus:** Phase null
 
 ---
 
 ## Current Position
 
-Phase: 58.9 — close-gap-diff-04-agent-diagnostics-producer — COMPLETE (2026-07-11)
-Plan: 4 of 4 complete
-Status: DIFF-04 agent diagnostics producer closed end-to-end (DLL emit -> agent ingest -> agent push -> server store -> admin read); UAT 12/12; verification passed.
-Last activity: 2026-07-11 — Phase 58.9 complete (58.9-04 close-out: SUMMARY + VERIFICATION written; ROADMAP marked complete)
-Verification: criteria C1-C4 + invariants I1-I4 PASS (source + UAT); 58.9-owned clippy clean (dlp-agent/dlp-hook-dll lib -D warnings exit 0); workspace fmt/clippy/test red only on pre-existing out-of-scope files (beads dlp-rust-dv8/mpx/opd); sonar environment-blocked (non-gating)
+Phase: 58.10 — EXECUTING
+Plan: 1 of 3 complete (58.10-01 SUMMARY written)
+Status: Phase 58.10 in progress — Plan 01 (agent-side hook-IPC mode gate) complete; Plans 02-03 (DLL fast-path + e2e) pending
+Last activity: 2026-07-12 — Phase 58.10 Plan 01 complete (hook_ipc_mode_gate 8/8 green; service:: 86/86 green; clippy/fmt clean)
+Verification: 58.10-01 — cargo test -p dlp-agent --lib hook_ipc_mode_gate (8 passed), cargo build -p dlp-agent (no warnings), clippy/fmt clean; sonar environment-blocked (non-gating)
 Note: roadmap advanced current_phase to 59 numerically, but v0.11.0 (Phases 59-64) is already shipped — the practical remaining v0.10.0 blocker is Phase 57 OPS-04 UAT on physical Windows 11 hardware.
 
 ### Previous: Phase 58.5 — COMPLETE
@@ -203,7 +203,7 @@ Phase 59 and later are complete and shipped as part of v0.11.0.
 
 ## Session Continuity
 
-Last session: 2026-07-11T22:34:35.150Z
+Last session: 2026-07-12T00:24:39.687Z
 Stopped at: Phase 58.10 context gathered
 Resume file: .planning/phases/58.10-close-gap-mode-01-apply-enforcement-mode-in-hook-ipc-deny-pa/58.10-CONTEXT.md
 
@@ -268,6 +268,7 @@ Resume file: .planning/phases/58.10-close-gap-mode-01-apply-enforcement-mode-in-
 | Phase 58.9 P01 | 11min | 2 tasks | 2 files |
 | Phase 58.9 P02 | 19min | 2 tasks | 3 files |
 | Phase 58.9 P03 | 40min | 2 tasks | 3 files |
+| Phase 58.10 P01 | ~20 min | 2 tasks | 1 files |
 
 ## Quick Tasks Completed
 
@@ -347,3 +348,4 @@ Resume file: .planning/phases/58.10-close-gap-mode-01-apply-enforcement-mode-in-
 - [Phase 58.9]: Plan 03: diagnostic_push_loop calls drain_all (owned Vec) BEFORE awaiting submit_diagnostic_snapshot; 429/non-2xx mapped non-fatal, single-shot POST, no retry — No DashMap guard crosses .await (T-58.9-14 / RESEARCH Pitfall 4); per-agent rate limit honored by 60s cadence + non-fatal mapping (T-58.9-12 / RESEARCH A4)
 - [Phase 58.9]: Plan 03: Populated EXISTING RunLoopContext::diagnostic_push_shutdown/handle (no new fields); extracted spawn_diagnostic_push_loop helper for testability; lifecycle mirrors health (start on run when server_client present; flush-and-stop on shutdown, 5s join) — Minimal struct-literal drift (T-58.9-15; cargo test --tests --no-run compiles all 12 test binaries); helper makes the (None,None)/(Some,Some) contract unit-testable without booting the service
 - [Phase 58.9]: Plan 03: DIFF-04 still NOT marked complete — spans Plans 01-04; criterion 3 (end-to-end GET /admin/diagnostics) only proven by Plan 04; no main-repo REQUIREMENTS.md to update — Mirrors STATE decisions #339/#342; marking complete now would overstate coverage
+- [Phase 58.10]: Agent hook-IPC mode gate extracted as a pure 3-tuple helper (apply_effective_mode_to_hook_decision) plus a testable evaluate_hook_request taking an explicit global_mode (no CONFIG OnceLock) and returning (HookResponse, Option<AuditEvent>) with the caller emitting the audit. Any Audit-mode DENY from offline_decision flips to ALLOW with a full-parity audit (MODE-01 agent side); Block/AuditAndBlock/PerPolicy stay fail-closed (T-17 preserved).
