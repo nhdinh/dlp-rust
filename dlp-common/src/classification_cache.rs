@@ -58,7 +58,18 @@ pub struct CacheHeader {
     pub allowlist_offset: u64,
     /// Number of allowlist entries.
     pub allowlist_count: u64,
-    /// Reserved for forward compatibility — zeroed on init, never read by DLL.
+    /// Reserved for forward compatibility.
+    ///
+    /// `_reserved[0]` carries the **global enforcement mode byte**, written by
+    /// the agent and read by the DLL on the cache-hit fast-path:
+    /// - `0` = Block
+    /// - `1` = Audit
+    /// - `2` = AuditAndBlock
+    /// - `3` = PerPolicy
+    ///
+    /// `_reserved[1..24]` remain zeroed/reserved for forward compatibility.
+    /// The byte is inside the checksummed region (`compute_checksum` folds
+    /// `_reserved` on both writer and reader), so it is integrity-protected.
     pub _reserved: [u8; 24],
 }
 
