@@ -51,7 +51,11 @@ pub use dlp_common::classification_cache::{CacheHeader, HashEntry, PrefixEntry};
 const CACHE_MAGIC: u64 = 0x4454_5001;
 
 /// Layout version expected by this DLL reader.
-const CACHE_LAYOUT_VERSION: u32 = 1;
+///
+/// Bumped 1 -> 2 in Phase 58.10: `_reserved[0]` now carries the global
+/// enforcement mode byte. A v1 DLL rejects a v2 header via `full_validation`
+/// (layout mismatch) -> all lookups miss -> fail-closed to pipe.
+const CACHE_LAYOUT_VERSION: u32 = 2;
 
 /// Total size of the shared-memory mapping (2 MiB).
 const CACHE_TOTAL_SIZE: u64 = 2 * 1024 * 1024;
@@ -158,6 +162,23 @@ impl CacheView {
     /// Returns the version word (high 63 bits = version, low bit = buffer).
     pub fn current_version_word(&self) -> u64 {
         unsafe { (*self.header).version_word.load(Ordering::Acquire) }
+    }
+
+    /// Read the global enforcement mode byte from the header (`_reserved[0]`).
+    ///
+    /// Encoding: 0=Block, 1=Audit, 2=AuditAndBlock, 3=PerPolicy. Any
+    /// unrecognized byte defaults to 0 (Block) — fail-closed per ASVS V5. The
+    /// byte lives in shared memory mapped read-only into hooked (potentially
+    /// compromised) processes, so it is treated as untrusted and never trusted
+    /// blindly.
+    pub fn global_mode(&self) -> u8 {
+        let b = unsafe { (*self.header)._reserved[0] };
+        match b {
+            1 => 1, // Audit
+            2 => 2, // AuditAndBlock
+            3 => 3, // PerPolicy
+            _ => 0, // Block (default / fail-closed)
+        }
     }
 
     /// Look up a path in the cache.
@@ -1070,7 +1091,7 @@ mod tests {
 
         const TEST_CACHE_NAME: &str = "Local\\DlpClassificationCache_TestPhase58_5_Direct";
 
-        fn build_valid_header(base: *mut CacheHeader) {
+        fn build_valid_header(base: *mut CacheHeader, mode_byte: u8) {
             unsafe {
                 std::ptr::addr_of_mut!((*base).version_word)
                     .write(std::sync::atomic::AtomicU64::new(2));
@@ -1087,6 +1108,9 @@ mod tests {
                 (*base).allowlist_offset = 128;
                 (*base).allowlist_count = 0;
                 (*base)._reserved = [0u8; 24];
+                // Phase 58.10: stamp the global-mode byte into _reserved[0]
+                // BEFORE computing the checksum so it is integrity-protected.
+                (*base)._reserved[0] = mode_byte;
 
                 let mut checksum = 0u64;
                 checksum ^= (*base).magic;
@@ -1139,7 +1163,7 @@ mod tests {
                     _ => panic!("MapViewOfFile failed"),
                 };
 
-                build_valid_header(base_ptr as *mut CacheHeader);
+                build_valid_header(base_ptr as *mut CacheHeader, 0);
 
                 let lookup = CacheLookup {
                     header: base_ptr as *const CacheHeader,
@@ -1184,7 +1208,7 @@ mod tests {
                     _ => panic!("MapViewOfFile failed"),
                 };
 
-                build_valid_header(base_ptr as *mut CacheHeader);
+                build_valid_header(base_ptr as *mut CacheHeader, 0);
 
                 let lookup = CacheLookup {
                     header: base_ptr as *const CacheHeader,
@@ -1218,6 +1242,109 @@ mod tests {
 
                 assert!(!is_cache_mapped());
             }
+        }
+
+        // ── Phase 58.10: CacheView::global_mode() reader tests ──────────────
+
+        /// Build a shared-memory mapping whose header carries `mode_byte` in
+        /// `_reserved[0]`, install it as the global cache lookup, and return a
+        /// `CacheView` over it. The caller must hold `PHASE_58_5_TEST_LOCK` and
+        /// call `unmap_cache()` when done.
+        fn view_with_mode_byte(mode_byte: u8) -> CacheView {
+            let name_wide: Vec<u16> = TEST_CACHE_NAME
+                .encode_utf16()
+                .chain(std::iter::once(0))
+                .collect();
+            let name_pcwstr = windows::core::PCWSTR::from_raw(name_wide.as_ptr());
+
+            unsafe {
+                let handle = CreateFileMappingW(
+                    INVALID_HANDLE_VALUE,
+                    None,
+                    PAGE_READWRITE,
+                    0,
+                    CACHE_TOTAL_SIZE as u32,
+                    name_pcwstr,
+                )
+                .expect("CreateFileMappingW failed");
+
+                let view =
+                    MapViewOfFile(handle, FILE_MAP_ALL_ACCESS, 0, 0, CACHE_TOTAL_SIZE as usize);
+                let base_ptr = match view {
+                    MEMORY_MAPPED_VIEW_ADDRESS { Value: ptr } if !ptr.is_null() => ptr as *mut u8,
+                    _ => panic!("MapViewOfFile failed"),
+                };
+
+                build_valid_header(base_ptr as *mut CacheHeader, mode_byte);
+
+                let lookup = CacheLookup {
+                    header: base_ptr as *const CacheHeader,
+                    mapping: CacheMapping {
+                        handle: HANDLE(handle.0),
+                        view: base_ptr as *mut std::ffi::c_void,
+                    },
+                };
+
+                set_cache_lookup_for_test(lookup);
+
+                CacheView {
+                    header: base_ptr as *const CacheHeader,
+                }
+            }
+        }
+
+        #[test]
+        fn global_mode_returns_audit_for_byte_1() {
+            let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+            let view = view_with_mode_byte(1);
+            assert_eq!(view.global_mode(), 1, "_reserved[0]=1 must decode to Audit");
+            unmap_cache();
+        }
+
+        #[test]
+        fn global_mode_returns_block_for_byte_0() {
+            let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+            let view = view_with_mode_byte(0);
+            assert_eq!(view.global_mode(), 0, "_reserved[0]=0 must decode to Block");
+            unmap_cache();
+        }
+
+        #[test]
+        fn global_mode_returns_auditandblock_for_byte_2() {
+            let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+            let view = view_with_mode_byte(2);
+            assert_eq!(
+                view.global_mode(),
+                2,
+                "_reserved[0]=2 must decode to AuditAndBlock"
+            );
+            unmap_cache();
+        }
+
+        #[test]
+        fn global_mode_returns_perpolicy_for_byte_3() {
+            let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+            let view = view_with_mode_byte(3);
+            assert_eq!(
+                view.global_mode(),
+                3,
+                "_reserved[0]=3 must decode to PerPolicy"
+            );
+            unmap_cache();
+        }
+
+        #[test]
+        fn global_mode_defaults_unrecognized_to_block() {
+            let _guard = crate::PHASE_58_5_TEST_LOCK.lock();
+            // 0xFF is not a valid mode byte; the reader must default to Block
+            // (fail-closed) for any unrecognized value.
+            let view = view_with_mode_byte(0xFF);
+            assert_eq!(
+                view.global_mode(),
+                0,
+                "unrecognized _reserved[0] must default to Block (fail-closed)"
+            );
+            unmap_cache();
         }
     }
 }
