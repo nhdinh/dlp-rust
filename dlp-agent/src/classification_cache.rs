@@ -55,7 +55,11 @@ use dlp_common::Classification;
 pub const CACHE_MAGIC: u64 = 0x4454_5001;
 
 /// Layout version of the shared-memory ABI.
-pub const CACHE_LAYOUT_VERSION: u32 = 1;
+///
+/// Bumped 1 -> 2 in Phase 58.10: `_reserved[0]` now carries the global
+/// enforcement mode byte. A v1 reader rejects a v2 header (fail-closed
+/// back-compat, never fail-open).
+pub const CACHE_LAYOUT_VERSION: u32 = 2;
 
 /// Total size of the shared-memory mapping (2 MiB).
 pub const CACHE_TOTAL_SIZE: u64 = 2 * 1024 * 1024;
@@ -311,7 +315,11 @@ impl ClassificationCache {
         header.allowlist_count = 0;
         header.created_at_epoch_secs = 0;
         header.checksum = 0;
+        // Zero the reserved region, then stamp the global-mode byte into
+        // _reserved[0] (Phase 58.10). The byte is refreshed on every rebuild
+        // via build_in_buffer and is covered by the checksum.
         header._reserved = [0u8; 24];
+        header._reserved[0] = mode_to_u8(current_global_mode());
     }
 
     /// Returns a mutable reference to the cache header.
@@ -540,6 +548,13 @@ impl ClassificationCache {
                     ),
                 });
             }
+        }
+
+        // Refresh the global-mode byte so it reflects the live config on every
+        // rebuild (Phase 58.10). This write happens BEFORE rebuild() computes
+        // the checksum, so the byte is integrity-protected.
+        unsafe {
+            (*self.header_mut())._reserved[0] = mode_to_u8(current_global_mode());
         }
 
         Ok(())
@@ -779,6 +794,30 @@ fn tier_to_u8(tier: Classification) -> u8 {
     }
 }
 
+/// Encode the global enforcement mode as the `_reserved[0]` header byte.
+///
+/// Encoding: Block=0, Audit=1, AuditAndBlock=2, PerPolicy=3. The DLL reader
+/// (`CacheView::global_mode`) decodes the same mapping and defaults any
+/// unrecognized byte to 0 (Block) — fail-closed.
+fn mode_to_u8(m: dlp_common::abac::EnforcementMode) -> u8 {
+    use dlp_common::abac::EnforcementMode::*;
+    match m {
+        Audit => 1,
+        AuditAndBlock => 2,
+        PerPolicy => 3,
+        Block => 0,
+    }
+}
+
+/// Read the current global enforcement mode from the live config.
+///
+/// Falls back to `Block` (fail-closed) when the config `OnceLock` is not yet
+/// initialized (e.g., early startup or unit tests).
+fn current_global_mode() -> dlp_common::abac::EnforcementMode {
+    crate::service::with_config(|cfg| cfg.enforcement.global_mode)
+        .unwrap_or(dlp_common::abac::EnforcementMode::Block)
+}
+
 /// Return a priority value for overflow sorting (higher = more important).
 fn tier_priority(tier: Classification) -> u8 {
     match tier {
@@ -848,7 +887,71 @@ mod tests {
 
     #[test]
     fn cache_layout_version_constant() {
-        assert_eq!(CACHE_LAYOUT_VERSION, 1);
+        assert_eq!(CACHE_LAYOUT_VERSION, 2);
+    }
+
+    // ── Phase 58.10: global-mode byte in _reserved[0] ───────────────────────
+
+    #[test]
+    fn mode_to_u8_maps_all_modes() {
+        use dlp_common::abac::EnforcementMode;
+        assert_eq!(mode_to_u8(EnforcementMode::Block), 0);
+        assert_eq!(mode_to_u8(EnforcementMode::Audit), 1);
+        assert_eq!(mode_to_u8(EnforcementMode::AuditAndBlock), 2);
+        assert_eq!(mode_to_u8(EnforcementMode::PerPolicy), 3);
+    }
+
+    /// ABI back-compat: a v1-layout header must be rejected by a v2 reader
+    /// (fail-closed), and the checksum must still validate with `_reserved[0]`
+    /// set to a mode byte.
+    #[test]
+    fn v1_layout_rejected_and_mode_byte_survives_checksum() {
+        // Build a valid v2 header in a raw buffer with _reserved[0] = 1 (Audit).
+        let mut buf = [0u8; 128];
+
+        let magic_offset = std::mem::offset_of!(CacheHeader, magic);
+        buf[magic_offset..magic_offset + 8].copy_from_slice(&CACHE_MAGIC.to_le_bytes());
+
+        let lv_offset = std::mem::offset_of!(CacheHeader, layout_version);
+        buf[lv_offset..lv_offset + 4].copy_from_slice(&CACHE_LAYOUT_VERSION.to_le_bytes());
+
+        let hs_offset = std::mem::offset_of!(CacheHeader, header_size);
+        buf[hs_offset..hs_offset + 4].copy_from_slice(&CACHE_HEADER_SIZE.to_le_bytes());
+
+        let ts_offset = std::mem::offset_of!(CacheHeader, total_size);
+        buf[ts_offset..ts_offset + 8].copy_from_slice(&CACHE_TOTAL_SIZE.to_le_bytes());
+
+        // Set the global-mode byte _reserved[0] = 1 (Audit).
+        let reserved_offset = std::mem::offset_of!(CacheHeader, _reserved);
+        buf[reserved_offset] = 1;
+
+        // Compute the checksum over the buffer (folds _reserved via the raw
+        // helper) and write it into the checksum field.
+        let checksum = compute_checksum_raw(&buf);
+        let cksum_offset = std::mem::offset_of!(CacheHeader, checksum);
+        buf[cksum_offset..cksum_offset + 8].copy_from_slice(&checksum.to_le_bytes());
+
+        // Recompute over the finalized buffer: the checksum must still validate
+        // with _reserved[0] set (the mode byte is integrity-protected).
+        let recomputed = compute_checksum_raw(&buf);
+        assert_eq!(
+            recomputed, checksum,
+            "checksum must validate with _reserved[0] set"
+        );
+
+        // Now mutate layout_version back to 1 (a v1 reader's expectation) and
+        // confirm the layout no longer matches CACHE_LAYOUT_VERSION (== 2).
+        buf[lv_offset..lv_offset + 4].copy_from_slice(&1u32.to_le_bytes());
+        let stored_lv = u32::from_le_bytes([
+            buf[lv_offset],
+            buf[lv_offset + 1],
+            buf[lv_offset + 2],
+            buf[lv_offset + 3],
+        ]);
+        assert_ne!(
+            stored_lv, CACHE_LAYOUT_VERSION,
+            "a v1-layout header must mismatch the v2 reader (fail-closed back-compat)"
+        );
     }
 
     #[test]
