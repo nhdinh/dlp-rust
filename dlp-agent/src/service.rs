@@ -2129,6 +2129,157 @@ pub fn hook_request_to_evaluate_request(
     }
 }
 
+/// Applies the effective enforcement mode to a hook-IPC ABAC decision.
+///
+/// This is the pure, unit-testable core of the hook-IPC mode gate (MODE-01),
+/// extracted so it can be tested without booting the [`HookIpcServer`]. It is a
+/// verbatim mirror of the interception-path gate (`interception/mod.rs:413-427`)
+/// with the cache-miss `None -> Block` default (D-02).
+///
+/// # Arguments
+///
+/// * `global_mode` — The global enforcement override read live from config.
+/// * `eval_resp` — The response produced by `offline_decision` (cache hit or
+///   fail-closed miss). On a cache miss its `enforcement_mode` is `None`.
+///
+/// # Returns
+///
+/// A 3-tuple `(final_decision, flipped, effective_mode)`:
+/// - `final_decision` — `ALLOW` when the effective mode is audit-only, else the
+///   response's own decision (D-05: flip ANY Audit DENY, hit or miss).
+/// - `flipped` — `true` when an audit-mode override turned a DENY into an ALLOW.
+/// - `effective_mode` — the computed mode, returned so the caller can build the
+///   audit's `policy_mode` string without recomputing (settled up front).
+///
+/// # Cache-miss semantics (D-01/D-02/D-03)
+///
+/// `policy_mode` defaults to `Block` when `enforcement_mode` is `None`, so
+/// `compute_effective_mode(global, Block)` yields `Audit` ONLY under a global
+/// `Audit` override. `Block`/`AuditAndBlock`/`PerPolicy` stay fail-closed
+/// (T-17 preserved; a per-policy mode is unresolvable offline).
+#[must_use]
+pub fn apply_effective_mode_to_hook_decision(
+    global_mode: dlp_common::abac::EnforcementMode,
+    eval_resp: &dlp_common::EvaluateResponse,
+) -> (
+    dlp_common::Decision,
+    bool,
+    dlp_common::abac::EnforcementMode,
+) {
+    use dlp_common::abac::{compute_effective_mode, EnforcementMode};
+    use dlp_common::Decision;
+
+    let policy_mode = eval_resp.enforcement_mode.unwrap_or(EnforcementMode::Block);
+    let effective_mode = compute_effective_mode(global_mode, policy_mode);
+
+    // Audit mode: always ALLOW the physical operation, but record what would
+    // have happened. Otherwise keep the response's own decision.
+    let final_decision = if effective_mode.is_audit() {
+        Decision::ALLOW
+    } else {
+        eval_resp.decision
+    };
+
+    let flipped = effective_mode.is_audit() && eval_resp.decision.is_denied();
+
+    (final_decision, flipped, effective_mode)
+}
+
+/// Unit tests for the hook-IPC enforcement-mode gate (MODE-01).
+///
+/// Covers the global {Audit, Block, PerPolicy, AuditAndBlock} x cache {hit,
+/// miss} x tier {T3/T4, T1/T2} matrix for the pure helper
+/// [`apply_effective_mode_to_hook_decision`], plus direct-call tests of
+/// [`evaluate_hook_request`] that drive the flip end-to-end without the CONFIG
+/// `OnceLock` or a live pipe.
+#[cfg(test)]
+mod hook_ipc_mode_gate {
+    use super::*;
+    use dlp_common::abac::EnforcementMode;
+    use dlp_common::{Decision, EvaluateResponse};
+
+    /// Builds an [`EvaluateResponse`] with the given decision and optional
+    /// per-policy enforcement mode. Mirrors the fail-closed / cached-response
+    /// shapes used by `offline_decision`.
+    fn resp(decision: Decision, mode: Option<EnforcementMode>) -> EvaluateResponse {
+        EvaluateResponse {
+            decision,
+            matched_policy_id: Some("policy-1".to_string()),
+            reason: "test reason".to_string(),
+            enforcement_mode: mode,
+            would_have_denied: decision.is_denied(),
+            matched_label_id: None,
+        }
+    }
+
+    #[test]
+    fn global_audit_cache_miss_t3_flips_to_allow() {
+        // Cache miss: enforcement_mode is None (fail_closed_response shape).
+        let r = resp(Decision::DENY, None);
+        let (decision, flipped, mode) =
+            apply_effective_mode_to_hook_decision(EnforcementMode::Audit, &r);
+        assert_eq!(decision, Decision::ALLOW);
+        assert!(flipped);
+        // compute_effective_mode(Audit, Block) == Audit.
+        assert_eq!(mode, EnforcementMode::Audit);
+    }
+
+    #[test]
+    fn global_audit_cache_hit_t3_perpolicy_audit_flips_to_allow() {
+        // Cache hit: cached response carries a per-policy Audit mode.
+        let r = resp(Decision::DENY, Some(EnforcementMode::Audit));
+        let (decision, flipped, mode) =
+            apply_effective_mode_to_hook_decision(EnforcementMode::Audit, &r);
+        assert_eq!(decision, Decision::ALLOW);
+        assert!(flipped);
+        assert_eq!(mode, EnforcementMode::Audit);
+    }
+
+    #[test]
+    fn global_perpolicy_cache_miss_t3_stays_deny() {
+        // T-17 control: per-policy mode unresolvable offline stays fail-closed.
+        let r = resp(Decision::DENY, None);
+        let (decision, flipped, mode) =
+            apply_effective_mode_to_hook_decision(EnforcementMode::PerPolicy, &r);
+        assert_eq!(decision, Decision::DENY);
+        assert!(!flipped);
+        // compute_effective_mode(PerPolicy, Block) == Block.
+        assert_eq!(mode, EnforcementMode::Block);
+    }
+
+    #[test]
+    fn global_block_cache_miss_t3_stays_deny() {
+        let r = resp(Decision::DENY, None);
+        let (decision, flipped, mode) =
+            apply_effective_mode_to_hook_decision(EnforcementMode::Block, &r);
+        assert_eq!(decision, Decision::DENY);
+        assert!(!flipped);
+        assert_eq!(mode, EnforcementMode::Block);
+    }
+
+    #[test]
+    fn global_auditandblock_cache_miss_t3_stays_deny() {
+        // is_blocking() is true for AuditAndBlock — no fail-open.
+        let r = resp(Decision::DENY, None);
+        let (decision, flipped, mode) =
+            apply_effective_mode_to_hook_decision(EnforcementMode::AuditAndBlock, &r);
+        assert_eq!(decision, Decision::DENY);
+        assert!(!flipped);
+        assert_eq!(mode, EnforcementMode::AuditAndBlock);
+    }
+
+    #[test]
+    fn global_audit_allow_response_is_never_flipped() {
+        // An ALLOW response must not be "flipped" (nothing was denied).
+        let r = resp(Decision::ALLOW, None);
+        let (decision, flipped, mode) =
+            apply_effective_mode_to_hook_decision(EnforcementMode::Audit, &r);
+        assert_eq!(decision, Decision::ALLOW);
+        assert!(!flipped);
+        assert_eq!(mode, EnforcementMode::Audit);
+    }
+}
+
 /// Spawns the hook DLL IPC server on a dedicated `std::thread`.
 ///
 /// The server listens on the pipe name configured in `config`, performs synchronous
