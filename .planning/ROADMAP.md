@@ -80,7 +80,7 @@ The DPAPI master-key recovery handoff originally slated for v1.0.0 Phase 52 is f
 - [x] **Phase 58.7: Close gap: DACL protected_paths wiring (INSERTED)** — wire the protected_paths configuration from policy sync through the DACL tripwire repair watcher and agent enforcement path. (completed 2026-07-09)
 - [x] **Phase 58.8: Fix DIFF-01 and DIFF-04 (INSERTED)** — wire automatic override prompt requests from hook DLL deny paths (`IpcPayloadV1::RequestOverride`) with fire-and-forget agent handling, close DIFF-01 by deferring server approval submission until the UI confirms with justification, and close DIFF-04 by adding authenticated `POST /agents/{id}/health` and `POST /agents/{id}/diagnostics`, `GET /admin/health`, production store initialization, and `dlp-admin-cli` verification. **Plans:** 4/4 planned. (completed 2026-07-10)
 - [x] **Phase 58.9: Close gap: DIFF-04 — agent diagnostics producer (INSERTED)** — drain the in-process `diagnostic_aggregator` in `dlp-agent` and push the resulting snapshots to the server via the authenticated `POST /agents/{id}/diagnostics` endpoint shipped in Phase 58.8, closing the producer side of the DIFF-04 gap surfaced in the v0.10.0 milestone re-audit (commit 97ef75d8). Server ingest + store already exists; this phase wires the agent-side collection, batching, and authenticated push with a lifecycle test. (completed 2026-07-11)
-- [ ] **Phase 58.10: Close gap: MODE-01 — apply enforcement mode in hook IPC deny path (INSERTED)** — honor the configured enforcement mode (monitor/audit-only vs block) in the hook IPC deny path so MODE-01 is enforced end-to-end instead of always denying. Surfaced in the v0.10.0 milestone re-audit (MODE-01 partial).
+- [x] **Phase 58.10: Close gap: MODE-01 — apply enforcement mode in hook IPC deny path (INSERTED)** — honor the configured enforcement mode (monitor/audit-only vs block) in the hook IPC deny path so MODE-01 is enforced end-to-end instead of always denying. Surfaced in the v0.10.0 milestone re-audit (MODE-01 partial). (completed 2026-07-12)
 
 ---
 
@@ -435,7 +435,7 @@ Plans:
 **Goal:** Audit-mode hook-mediated file operations are ALLOWed-with-audit instead of physically blocked, satisfying Phase 55 Success Criterion #2 on the full hook chain — both the agent hook IPC cache-miss path (service.rs closure) and the DLL shared-cache cache-hit fast-path (trampolines.rs) honor the configured enforcement mode.
 **Requirements**: MODE-01
 **Depends on:** Phase 58
-**Plans:** 2/3 plans executed
+**Plans:** 3/3 plans complete
 
 Plans:
 **Wave 1**
@@ -445,7 +445,7 @@ Plans:
 
 **Wave 2** *(blocked on Wave 1 completion)*
 
-- [ ] 58.10-03-PLAN.md — DLL fast-path mode check at HEALTHY:554 + DEGRADED:621 (force pipe under global Audit) + end-to-end global-Audit->ALLOW integration test
+- [x] 58.10-03-PLAN.md — DLL fast-path mode check at HEALTHY:554 + DEGRADED:621 (force pipe under global Audit) + end-to-end global-Audit->ALLOW integration test
 
 ### Phase 58.1: Close v0.10.0 ship-gap verification items (INSERTED)
 

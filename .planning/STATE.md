@@ -4,16 +4,16 @@ milestone: v0.10.0
 milestone_name: Real-Time File Access Prevention
 current_phase: 58.10
 status: executing
-stopped_at: Completed 58.10-01-PLAN.md
-last_updated: "2026-07-12T00:46:05.654Z"
+stopped_at: Completed 58.10-03-PLAN.md
+last_updated: "2026-07-12T01:27:23.265Z"
 last_activity: 2026-07-12
-last_activity_desc: "Phase 58.10 Plan 01 complete (hook_ipc_mode_gate 8/8 green; service:: 86/86 green; clippy/fmt clean)"
+last_activity_desc: "Phase 58.10 Plan 03 complete (dlp-hook-dll 339/339 green; hook_ipc_integration 20/20 green; MODE-01 full chain closed)"
 progress:
   total_phases: 37
-  completed_phases: 26
+  completed_phases: 27
   total_plans: 170
-  completed_plans: 143
-  percent: 70
+  completed_plans: 144
+  percent: 73
 current_phase_name: 2026-07-11
 ---
 
@@ -29,11 +29,11 @@ current_phase_name: 2026-07-11
 
 ## Current Position
 
-Phase: 58.10 — EXECUTING
-Plan: 2 of 3 complete (58.10-01 SUMMARY written)
-Status: Phase 58.10 in progress — Plan 01 (agent-side hook-IPC mode gate) complete; Plans 02-03 (DLL fast-path + e2e) pending
-Last activity: 2026-07-12 — Phase 58.10 Plan 01 complete (hook_ipc_mode_gate 8/8 green; service:: 86/86 green; clippy/fmt clean)
-Verification: 58.10-01 — cargo test -p dlp-agent --lib hook_ipc_mode_gate (8 passed), cargo build -p dlp-agent (no warnings), clippy/fmt clean; sonar environment-blocked (non-gating)
+Phase: 58.10 — COMPLETE
+Plan: 3 of 3 complete (58.10-03 SUMMARY written)
+Status: Phase 58.10 complete — Plan 01 (agent-side hook-IPC mode gate), Plan 02 (global-mode byte in cache header), and Plan 03 (DLL fast-path mode-awareness + hook decision-path e2e) all complete. MODE-01 full chain closed: DLL global Audit skips the autonomous T3/T4 cache-hit deny at HEALTHY/DEGRADED/RESYNC and pipes to the agent, which flips Audit DENY -> ALLOW with a full-parity audit.
+Last activity: 2026-07-12 — Phase 58.10 Plan 03 complete (dlp-hook-dll 339/339 green; hook_ipc_integration 20/20 green incl. 2 new mode-gate tests; clippy/fmt clean on touched files)
+Verification: 58.10-03 — cargo test -p dlp-hook-dll --lib (339 passed), cargo test -p dlp-agent --test hook_ipc_integration (20 passed), cargo test -p dlp-common --lib (343 passed), clippy/fmt clean on touched files; 2 pre-existing flaky dlp-agent lib tests (DACL cache construction, CreateFileMappingW Access Denied under concurrent runs) pass in isolation — out of scope, logged to deferred-items.md
 Note: roadmap advanced current_phase to 59 numerically, but v0.11.0 (Phases 59-64) is already shipped — the practical remaining v0.10.0 blocker is Phase 57 OPS-04 UAT on physical Windows 11 hardware.
 
 ### Previous: Phase 58.5 — COMPLETE
@@ -203,7 +203,7 @@ Phase 59 and later are complete and shipped as part of v0.11.0.
 
 ## Session Continuity
 
-Last session: 2026-07-12T00:44:11.189Z
+Last session: 2026-07-12T01:27:23.252Z
 Stopped at: Phase 58.10 context gathered
 Resume file: .planning/phases/58.10-close-gap-mode-01-apply-enforcement-mode-in-hook-ipc-deny-pa/58.10-CONTEXT.md
 
@@ -270,6 +270,7 @@ Resume file: .planning/phases/58.10-close-gap-mode-01-apply-enforcement-mode-in-
 | Phase 58.9 P03 | 40min | 2 tasks | 3 files |
 | Phase 58.10 P01 | ~20 min | 2 tasks | 1 files |
 | Phase 58.10 P02 | 13min | 3 tasks | 3 files |
+| Phase 58.10 P03 | 25min | 2 tasks | 3 files |
 
 ## Quick Tasks Completed
 
@@ -353,3 +354,6 @@ Resume file: .planning/phases/58.10-close-gap-mode-01-apply-enforcement-mode-in-
 - [Phase 58.10]: Plan 02: Reused CacheHeader._reserved[0] for the global enforcement mode byte (no new named field) so the 128-byte size assertion stays green and the existing checksum (folds _reserved on both sides) integrity-protects the byte with zero checksum-logic change
 - [Phase 58.10]: Plan 02: Bumped CACHE_LAYOUT_VERSION 1->2 in BOTH dlp-agent and dlp-hook-dll so a v1 reader rejects a v2 header (fail-closed back-compat, never fail-open) during rolling upgrade
 - [Phase 58.10]: Plan 02: Fail-closed defaults at every layer — current_global_mode() defaults to Block when config uninitialized; CacheView::global_mode() defaults any unrecognized byte to Block (ASVS V5, untrusted shared memory)
+- [Phase 58.10]: Plan 03: Single should_skip_autonomous_deny(global_mode_byte == 1) predicate gates all three DLL cache-hit skip sites (HEALTHY/DEGRADED/RESYNC) — DRY, unit-tested once; only a GLOBAL Audit override relaxes the fast-path (PerPolicy/AuditAndBlock/Block keep the autonomous deny, D-11)
+- [Phase 58.10]: Plan 03: DEGRADED forces the pipe attempt under global Audit (bypasses should_retry_pipe throttle, A3); RESYNC applies the same skip to its inline re-run deny, closing the D-09 full-chain gap; decide_isolated/decide_degraded and the ISOLATED branch stay fail-closed (A1)
+- [Phase 58.10]: Plan 03: e2e hook decision-path tests call the REAL evaluate_hook_request with an explicit global_mode (not the mock handler, not the CONFIG OnceLock) so Audit -> ALLOW + parity audit and Block -> DENY run in one process (SC#2 hook-path evidence)
